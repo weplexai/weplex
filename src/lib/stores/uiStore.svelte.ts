@@ -1,0 +1,107 @@
+import type { OverlayType } from '../types';
+
+const SIDEBAR_WIDTH_KEY = 'weplex_sidebar_width';
+const SIDEBAR_HIDDEN_KEY = 'weplex_sidebar_hidden';
+
+const MIN_WIDTH = 180;
+const MAX_WIDTH = 450;
+const DEFAULT_WIDTH = 240;
+
+function loadSidebarWidth(): number {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    if (!raw) return DEFAULT_WIDTH;
+    const w = Number(raw);
+    return w >= MIN_WIDTH && w <= MAX_WIDTH ? w : DEFAULT_WIDTH;
+  } catch {
+    return DEFAULT_WIDTH;
+  }
+}
+
+function loadSidebarHidden(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_HIDDEN_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+let detailPanelOpen = $state(false);
+let activeOverlay = $state<OverlayType>('none');
+let sidebarWidthVal = $state(loadSidebarWidth());
+let sidebarHidden = $state(loadSidebarHidden());
+
+export const uiStore = {
+  get detailPanelOpen() {
+    return detailPanelOpen;
+  },
+  get activeOverlay() {
+    return activeOverlay;
+  },
+  get sidebarHidden() {
+    return sidebarHidden;
+  },
+
+  get sidebarWidth(): number {
+    if (sidebarHidden) return 0;
+    return sidebarWidthVal;
+  },
+
+  get sidebarWidthRaw(): number {
+    return sidebarWidthVal;
+  },
+
+  MIN_WIDTH,
+  MAX_WIDTH,
+
+  get sidebarVisible() {
+    return !sidebarHidden;
+  },
+
+  toggleSidebar() {
+    sidebarHidden = !sidebarHidden;
+    try {
+      localStorage.setItem(SIDEBAR_HIDDEN_KEY, String(sidebarHidden));
+    } catch {}
+  },
+
+  showSidebar() {
+    sidebarHidden = false;
+    try {
+      localStorage.setItem(SIDEBAR_HIDDEN_KEY, 'false');
+    } catch {}
+  },
+
+  hideSidebar() {
+    sidebarHidden = true;
+    try {
+      localStorage.setItem(SIDEBAR_HIDDEN_KEY, 'true');
+    } catch {}
+  },
+
+  setSidebarWidth(w: number) {
+    // Clamp and also enforce max 50% of window
+    const maxHalf = Math.floor(window.innerWidth / 2);
+    const clamped = Math.min(Math.max(w, MIN_WIDTH), MAX_WIDTH, maxHalf);
+    sidebarWidthVal = clamped;
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped));
+    } catch {}
+  },
+
+  toggleDetailPanel() {
+    detailPanelOpen = !detailPanelOpen;
+  },
+
+  openOverlay(type: OverlayType) {
+    activeOverlay = type;
+  },
+
+  closeOverlay() {
+    activeOverlay = 'none';
+  },
+
+  toggleOverlay(type: OverlayType) {
+    activeOverlay = activeOverlay === type ? 'none' : type;
+  },
+};
