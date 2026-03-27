@@ -1,0 +1,254 @@
+export type SessionType = 'terminal' | 'agent' | 'ssh';
+export type AgentType = 'claude' | 'opencode' | 'aider' | 'gemini' | 'codex';
+export type SessionStatus = 'active' | 'waiting' | 'idle' | 'error' | 'new' | 'disconnected';
+export type SidebarState = 'expanded' | 'collapsed' | 'overlay';
+export type OverlayType =
+  | 'none'
+  | 'command-palette'
+  | 'quick-switcher'
+  | 'new-session'
+  | 'settings'
+  | 'space-modal'
+  | 'agents';
+export type SplitDirection = 'horizontal' | 'vertical';
+
+export interface Session {
+  id: number;
+  name: string;
+  type: SessionType;
+  status: SessionStatus;
+  agentType?: AgentType;
+  spaceId: string;
+  profileId?: string; // overrides space profile, undefined = inherit from space
+  folderId?: string;
+  pinned: boolean;
+  order: number;
+  createdAt: number;
+  lastActivity: number;
+  icon?: string;
+  command?: string;
+  cwd?: string;
+
+  // Tracks if session ever had terminal output (for smart restore)
+  hasOutput?: boolean;
+
+  // Agent metadata
+  claudeSessionId?: string;
+  model?: string;
+  authType?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  turns?: number;
+  cost?: number;
+
+  // Git
+  branch?: string;
+  gitFiles?: GitFileChange[];
+
+  // SSH
+  host?: string;
+  sshUser?: string;
+
+  // Process
+  pid?: number;
+  exitCode?: number;
+
+  // Agent metadata (extended)
+  toolCalls?: number;
+
+  // SSH (extended)
+  sshPort?: number;
+  sshKeyPath?: string;
+
+  // User annotations
+  tags?: string[];
+}
+
+export interface Note {
+  id: string;
+  content: string;
+  key: string; // cwd path or "user@host"
+  keyType: 'cwd' | 'ssh';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface GitFileChange {
+  path: string;
+  status: 'M' | 'A' | 'D' | 'R';
+}
+
+export interface Folder {
+  id: string;
+  name: string;
+  spaceId: string;
+  order: number;
+  collapsed: boolean;
+}
+
+export interface Space {
+  id: string;
+  name: string;
+  color: string;
+  order: number;
+  profileId?: string; // references Profile.id, undefined = default profile
+  bgColor?: string; // background tint color for the space chrome
+}
+
+export interface Profile {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  configDir: string | null; // null = system default (~/.claude/)
+  envVars: Record<string, string>;
+  linkedAccount?: {
+    email?: string;
+    plan?: string; // "Pro", "Max", "API Key"
+  };
+}
+
+export interface DiscoveredProfile {
+  path: string;
+  name: string;
+  source: 'filesystem' | 'shell_config';
+}
+
+export interface AppSettings {
+  defaultShell: string;
+  defaultDirectory: string;
+  fontFamily: string;
+  fontSize: number;
+  theme: 'dark' | 'light';
+  sidebarDefault: SidebarState;
+  idleTimeout: number;
+  persistSessions: boolean;
+}
+
+export interface SplitLeaf {
+  type: 'leaf';
+  id: string;
+  sessionId: number;
+}
+
+export interface SplitBranch {
+  type: 'branch';
+  id: string;
+  direction: SplitDirection;
+  ratio: number;
+  children: [SplitNode, SplitNode];
+}
+
+export type SplitNode = SplitLeaf | SplitBranch;
+
+export const SPACE_COLORS = [
+  '#8B5CF6',
+  '#3B82F6',
+  '#10B981',
+  '#F59E0B',
+  '#EF4444',
+  '#EC4899',
+  '#06B6D4',
+  '#F97316',
+  '#84CC16',
+  '#A855F7',
+];
+
+// Vibrant source colors for space backgrounds (displayed in picker as-is)
+// Applied to chrome via color-mix to produce dark tints
+export const SPACE_BG_COLORS = [
+  // Saturated
+  '#7C3AED', // purple
+  '#2563EB', // blue
+  '#0D9488', // teal
+  '#16A34A', // green
+  '#D97706', // amber
+  '#DC2626', // red
+  '#DB2777', // pink
+  '#9333EA', // violet
+  '#0891B2', // cyan
+  '#EA580C', // orange
+  '#65A30D', // lime
+  '#4F46E5', // indigo
+  // Pastel / light
+  '#A78BFA', // lavender
+  '#60A5FA', // sky
+  '#5EEAD4', // mint
+  '#86EFAC', // light green
+  '#FCD34D', // gold
+  '#FCA5A5', // salmon
+  '#F9A8D4', // rose
+  '#C4B5FD', // soft violet
+  '#67E8F9', // aqua
+  '#FDBA74', // peach
+  '#BEF264', // chartreuse
+  '#A5B4FC', // periwinkle
+];
+
+export const AGENT_ICONS: Record<AgentType, string> = {
+  claude: '⚡',
+  opencode: '⟨⟩',
+  aider: '✎',
+  gemini: '✦',
+  codex: '◎',
+};
+
+export const SESSION_TYPE_ICONS: Record<SessionType, string> = {
+  agent: '⚡',
+  ssh: '↗',
+  terminal: '>_',
+};
+
+// ── Pipeline Run types ──────────────────────────────────────────────────────
+
+export type PipelineRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type StageStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+
+export interface StageRunInfo {
+  name: string;
+  agent: string;
+  state: {
+    status: StageStatus;
+    artifact?: string;
+    output?: string;
+    exit_code?: number;
+    duration_ms?: number;
+  };
+  parallel_group: StageRunInfo[] | null;
+}
+
+export interface PipelineRunInfo {
+  id: string;
+  pipeline_name: string;
+  pipeline_file: string;
+  task: string;
+  cwd: string;
+  status: PipelineRunStatus;
+  stages: StageRunInfo[];
+  started_at: number | null;
+  finished_at: number | null;
+}
+
+export interface WeplexAgent {
+  name: string;
+  description: string;
+  binary: string;
+  model: string;
+  prompt: string;
+  one_shot: string;
+  env: Record<string, string>;
+  file_path: string;
+}
+
+export const HYPERSPACE_ID = '__hyperspace__';
+export type HyperspaceGroupBy = 'space' | 'status' | 'project';
+
+export const STATUS_COLORS: Record<SessionStatus, string> = {
+  active: 'var(--weplex-active)', // green pulsing  — executing a task
+  idle: 'var(--weplex-active)', // green solid    — done, ready for next prompt
+  waiting: 'var(--weplex-warning)', // yellow         — needs user action (question/menu/permission)
+  error: 'var(--weplex-error)', // red            — PTY failed
+  new: 'var(--weplex-info)', // blue           — just created
+  disconnected: 'var(--weplex-text-muted)', // dark gray
+};
