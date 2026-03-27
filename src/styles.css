@@ -1,0 +1,193 @@
+/* ============================================
+   Bundled fonts
+   ============================================ */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMonoNerdFont-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMonoNerdFont-Italic.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMonoNerdFont-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMonoNerdFont-BoldItalic.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
+}
+
+/* ============================================
+   Weplex Design System — CSS Tokens
+   ============================================ */
+
+:root {
+  /* Backgrounds */
+  --weplex-bg: #0a0a0f;
+  --weplex-sidebar-bg: #12121a;
+  --weplex-surface: #1a1a25;
+  --weplex-surface-hover: #22222f;
+
+  /* Borders */
+  --weplex-border: #2a2a3a;
+  --weplex-border-active: #3a3a4f;
+
+  /* Text */
+  --weplex-text: #e8e8ed;
+  --weplex-text-secondary: #9898a8;
+  --weplex-text-muted: #6b6b80;
+  --weplex-text-inverse: #0a0a0f;
+
+  /* Status */
+  --weplex-active: #10b981;
+  --weplex-warning: #f59e0b;
+  --weplex-idle: #6b7280;
+  --weplex-error: #ef4444;
+  --weplex-info: #3b82f6;
+  --weplex-accent: #8b5cf6;
+  --weplex-accent-hover: #7c3aed;
+  --weplex-pink: #ec4899;
+
+  /* Model colors */
+  --weplex-model-opus: #a78bfa;
+  --weplex-model-sonnet: #60a5fa;
+  --weplex-model-haiku: #34d399;
+
+  /* Typography */
+  --weplex-font-ui: 'Inter', system-ui, -apple-system, sans-serif;
+  --weplex-font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  --weplex-text-xs: 11px;
+  --weplex-text-sm: 12px;
+  --weplex-text-base: 13px;
+  --weplex-text-md: 14px;
+  --weplex-text-lg: 16px;
+  --weplex-text-xl: 20px;
+
+  /* Spacing (4px grid) */
+  --weplex-space-1: 4px;
+  --weplex-space-2: 8px;
+  --weplex-space-3: 12px;
+  --weplex-space-4: 16px;
+  --weplex-space-5: 20px;
+  --weplex-space-6: 24px;
+  --weplex-space-8: 32px;
+  --weplex-space-10: 40px;
+
+  /* Border radius */
+  --weplex-radius-sm: 4px;
+  --weplex-radius-md: 6px;
+  --weplex-radius-lg: 8px;
+  --weplex-radius-xl: 12px;
+  --weplex-radius-full: 9999px;
+
+  /* Shadows */
+  --weplex-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --weplex-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --weplex-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --weplex-shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.5);
+
+  /* Animations */
+  --weplex-duration-fast: 100ms;
+  --weplex-duration-normal: 200ms;
+  --weplex-duration-slow: 300ms;
+  --weplex-easing: cubic-bezier(0.4, 0, 0.2, 1);
+  --weplex-easing-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Layout */
+  --weplex-sidebar-width: 240px;
+  --weplex-sidebar-collapsed: 48px;
+  --weplex-header-height: 40px;
+  --weplex-status-height: 28px;
+  --weplex-detail-width: 280px;
+}
+
+/* Light theme */
+[data-theme='light'] {
+  --weplex-bg: #fafafa;
+  --weplex-sidebar-bg: #f3f3f6;
+  --weplex-surface: #ffffff;
+  --weplex-surface-hover: #f0f0f3;
+  --weplex-border: #e5e5ea;
+  --weplex-border-active: #d1d1d6;
+  --weplex-text: #1a1a1f;
+  --weplex-text-secondary: #6b6b80;
+  --weplex-text-muted: #9898a8;
+  --weplex-text-inverse: #ffffff;
+  --weplex-accent: #7c3aed;
+  --weplex-accent-hover: #6d28d9;
+  --weplex-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --weplex-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --weplex-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --weplex-shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.16);
+}
+
+/* ============================================
+   Reset & Global
+   ============================================ */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--weplex-bg);
+  color: var(--weplex-text);
+  font-family: var(--weplex-font-ui);
+  font-size: var(--weplex-text-base);
+  line-height: 1.5;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--weplex-border);
+  border-radius: var(--weplex-radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--weplex-border-active);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font-family: inherit;
+}

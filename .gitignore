@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+dist-ssr/
+target/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local dev
+*.local
+
+# Private docs (not for public repo)
+IDEAS.md
+BRAINSTORM.md
+COMPETITORS.md
+LAUNCH.md
+PROGRESS.md
+RELEASE.md
+
+# Landing page (separate deploy)
+landings/
+
+# Icon drafts
+icon-concept*
+
+# Claude agent memory (local only)
+.claude/agent-memory/
+src-tauri/.claude/
+
+# Update worker (separate deploy)
+update-worker/
+icon-fix*
+icon-final.*
