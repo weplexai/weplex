@@ -88,13 +88,16 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }}
 
+      - name: List build output
+        run: find src-tauri/target/${{ matrix.target }}/release/bundle -type f -name "*.tar.gz*" -o -name "*.dmg" -o -name "*.sig" | sort
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.arch }}
           path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz
-            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz.sig
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/Weplex.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/Weplex.app.tar.gz.sig
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
 
   deploy:
@@ -125,14 +128,20 @@ jobs:
           # Create remote directory
           ssh $SERVER "mkdir -p $REMOTE_DIR"
 
+          # Debug: show what was downloaded
+          find artifacts -type f | sort
+          echo "---"
+
           # Upload all artifacts
           find artifacts -type f | while read f; do
             scp "$f" "$SERVER:$REMOTE_DIR/$(basename $f)"
           done
 
-          # Read signatures
-          AARCH64_SIG=$(cat artifacts/build-aarch64/*.sig 2>/dev/null || echo "")
-          X64_SIG=$(cat artifacts/build-x64/*.sig 2>/dev/null || echo "")
+          # Read signatures (find recursively)
+          AARCH64_SIG=$(find artifacts/build-aarch64 -name "*.sig" -exec cat {} \; 2>/dev/null || echo "")
+          X64_SIG=$(find artifacts/build-x64 -name "*.sig" -exec cat {} \; 2>/dev/null || echo "")
+          echo "aarch64 sig: ${AARCH64_SIG:0:20}..."
+          echo "x64 sig: ${X64_SIG:0:20}..."
 
           # Generate version.json
           cat > /tmp/version.json << EOF
