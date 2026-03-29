@@ -31,9 +31,9 @@
 
     window.addEventListener('keydown', handleGlobalKeydown);
 
-    // Check for updates after a short delay, then every 10 minutes
+    // Check for updates after a short delay, then every minute
     const updateTimer = setTimeout(checkForUpdates, 3000);
-    const updateInterval = setInterval(checkForUpdates, 10 * 60 * 1000);
+    const updateInterval = setInterval(checkForUpdates, 60 * 1000);
 
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown);
