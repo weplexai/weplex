@@ -1,10 +1,15 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { getVersion } from '@tauri-apps/api/app';
   import { settingsStore } from '../../stores/settingsStore';
   import { profileStore } from '../../stores/profileStore';
   import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
   import { checkForUpdates, updateState, installUpdate } from '../../utils/updater';
+  import type { DiscoveredProfile } from '../../types';
+
+  let appVersion = $state('');
+  getVersion().then((v) => (appVersion = v));
 
   let updateChecking = $state(false);
   async function handleCheckUpdates() {
@@ -12,7 +17,6 @@
     await checkForUpdates();
     updateChecking = false;
   }
-  import type { DiscoveredProfile } from '../../types';
 
   let settings = $derived(settingsStore.settings);
   let activeTab = $state('appearance');
@@ -493,7 +497,7 @@
         {/if}
       {:else if activeTab === 'about'}
         <h3 class="section-title">About</h3>
-        <p class="about-text"><strong>Weplex</strong> v0.2.0</p>
+        <p class="about-text"><strong>Weplex</strong> v{appVersion}</p>
         <p class="about-text muted">
           The terminal with a built-in pipeline engine for AI coding agents.
         </p>
