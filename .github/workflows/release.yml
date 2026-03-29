@@ -145,8 +145,8 @@ jobs:
           done
 
           # Read signatures from artifacts (uploaded by build step)
-          AARCH64_SIG=$(cat artifacts/build-aarch64/Weplex.app.tar.gz.sig 2>/dev/null || echo "")
-          X64_SIG=$(cat artifacts/build-x64/Weplex.app.tar.gz.sig 2>/dev/null || echo "")
+          AARCH64_SIG=$(cat artifacts/build-aarch64/macos/Weplex.app.tar.gz.sig 2>/dev/null || echo "")
+          X64_SIG=$(cat artifacts/build-x64/macos/Weplex.app.tar.gz.sig 2>/dev/null || echo "")
           echo "aarch64 sig length: ${#AARCH64_SIG}"
           echo "x64 sig length: ${#X64_SIG}"
 
