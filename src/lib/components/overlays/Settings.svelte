@@ -5,7 +5,12 @@
   import { profileStore } from '../../stores/profileStore';
   import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
-  import { checkForUpdates, updateState, installUpdate } from '../../utils/updater';
+  import {
+    checkForUpdates,
+    updateState,
+    installUpdate,
+    restartToUpdate,
+  } from '../../utils/updater';
   import type { DiscoveredProfile } from '../../types';
 
   let appVersion = $state('');
@@ -505,11 +510,14 @@
 
         <div class="about-divider"></div>
         <h3 class="section-title">Updates</h3>
-        {#if updateState.downloading}
+        {#if updateState.readyToRestart}
+          <p class="about-text">Update downloaded. Restart to apply.</p>
+          <button class="btn-sm save" onclick={restartToUpdate}>Restart Now</button>
+        {:else if updateState.downloading}
           <p class="about-text">Downloading update... {updateState.progress}%</p>
         {:else if updateState.available}
           <p class="about-text">Update available: <strong>v{updateState.version}</strong></p>
-          <button class="btn-sm save" onclick={installUpdate}>Install Update</button>
+          <button class="btn-sm save" onclick={installUpdate}>Download Update</button>
         {:else}
           <p class="about-text muted">You're up to date.</p>
         {/if}

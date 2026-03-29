@@ -6,6 +6,7 @@ export interface UpdateState {
   version: string;
   downloading: boolean;
   progress: number;
+  readyToRestart: boolean;
 }
 
 const state = $state<UpdateState>({
@@ -13,6 +14,7 @@ const state = $state<UpdateState>({
   version: '',
   downloading: false,
   progress: 0,
+  readyToRestart: false,
 });
 
 export const updateState = state;
@@ -53,9 +55,15 @@ export async function installUpdate(): Promise<void> {
       }
     });
 
-    await relaunch();
+    // Don't relaunch automatically — let user decide when
+    state.downloading = false;
+    state.readyToRestart = true;
   } catch (e) {
     console.error('[Weplex] Update install failed:', e);
     state.downloading = false;
   }
+}
+
+export async function restartToUpdate(): Promise<void> {
+  await relaunch();
 }

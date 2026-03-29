@@ -7,9 +7,9 @@
   import { uiStore } from '../../stores/uiStore';
   import { dragStore } from '../../stores/dragStore';
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-  import { Plus, X, User, Download } from 'lucide-svelte';
+  import { Plus, X, User, Download, RotateCw } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
-  import { updateState, installUpdate } from '../../utils/updater';
+  import { updateState, installUpdate, restartToUpdate } from '../../utils/updater';
 
   let updateDismissed = $state(false);
   // Re-show after 1 hour if dismissed
@@ -608,7 +608,18 @@
       {/if}
     </div>
 
-    {#if updateState.available && !updateState.downloading && !updateDismissed}
+    {#if updateState.readyToRestart}
+      <div class="update-banner">
+        <button class="update-btn restart" onclick={restartToUpdate}>
+          <RotateCw size={13} />
+          <span>Restart to Update</span>
+        </button>
+      </div>
+    {:else if updateState.downloading}
+      <div class="update-banner">
+        <span class="update-progress">Downloading... {updateState.progress}%</span>
+      </div>
+    {:else if updateState.available && !updateDismissed}
       <div class="update-banner">
         <button class="update-btn" onclick={installUpdate}>
           <Download size={13} />
@@ -617,10 +628,6 @@
         <button class="update-dismiss" onclick={() => (updateDismissed = true)} title="Dismiss">
           <X size={12} />
         </button>
-      </div>
-    {:else if updateState.downloading}
-      <div class="update-banner">
-        <span class="update-progress">Updating... {updateState.progress}%</span>
       </div>
     {/if}
 
