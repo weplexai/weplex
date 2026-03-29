@@ -1,5 +1,5 @@
 import type { AuthUser, AuthTokens } from '../types';
-import { initApiClient } from '../services/apiClient';
+import { initApiClient, resolveApiEndpoint, getBaseUrl } from '../services/apiClient';
 import { authService } from '../services/authService';
 import { syncService } from '../services/syncService';
 import { invoke } from '@tauri-apps/api/core';
@@ -68,6 +68,9 @@ export const authStore = {
 
   /** Load persisted tokens, fetch profile, trigger sync. Call once at app start. */
   async init(): Promise<void> {
+    // Resolve best API endpoint (try .ai first, fallback to .xyz)
+    await resolveApiEndpoint();
+
     const saved = await keychainLoadTokens();
     if (!saved) return;
 
@@ -127,7 +130,7 @@ export const authStore = {
     error = null;
     try {
       const { listen } = await import('@tauri-apps/api/event');
-      const apiBase = import.meta.env.VITE_API_URL || 'https://api.weplex.ai';
+      const apiBase = getBaseUrl();
       const stateNonce = crypto.randomUUID();
 
       // Listen for the dynamically allocated port from the Rust server

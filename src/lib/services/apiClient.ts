@@ -1,6 +1,34 @@
 // API client with bearer auth injection and single-flight token refresh
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'https://api.weplex.ai';
+const API_ENDPOINTS = import.meta.env.VITE_API_URL
+  ? [import.meta.env.VITE_API_URL as string]
+  : ['https://api.weplex.ai', 'https://api.weplex.xyz'];
+
+let resolvedBaseUrl: string | null = null;
+
+/** Resolve the best available API endpoint. Called once on app start. */
+export async function resolveApiEndpoint(): Promise<string | null> {
+  for (const endpoint of API_ENDPOINTS) {
+    try {
+      const res = await fetch(`${endpoint}/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        resolvedBaseUrl = endpoint;
+        console.log(`[Weplex] API endpoint: ${endpoint}`);
+        return endpoint;
+      }
+    } catch {
+      // try next
+    }
+  }
+  console.warn('[Weplex] No API endpoint available — running offline');
+  return null;
+}
+
+export function getBaseUrl(): string {
+  return resolvedBaseUrl || API_ENDPOINTS[0];
+}
 
 // ── Error classes ──────────────────────────────────────────────────────────
 
@@ -56,7 +84,7 @@ interface RequestOptions extends Omit<RequestInit, 'body'> {
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { body, skipAuth, _isRetry, ...fetchOpts } = options;
-  const url = `${BASE_URL}${path}`;
+  const url = `${getBaseUrl()}${path}`;
 
   const headers = new Headers(fetchOpts.headers);
   if (body !== undefined) {
@@ -141,7 +169,7 @@ async function attemptRefresh(): Promise<boolean> {
 
 async function doRefresh(refreshToken: string): Promise<boolean> {
   try {
-    const response = await fetch(`${BASE_URL}/auth/refresh`, {
+    const response = await fetch(`${getBaseUrl()}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken }),
