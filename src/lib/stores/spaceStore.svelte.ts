@@ -98,7 +98,13 @@ export const spaceStore = {
     }
   },
 
-  create(name: string, color?: string, profileId?: string, bgColor?: string, directory?: string): Space {
+  create(
+    name: string,
+    color?: string,
+    profileId?: string,
+    bgColor?: string,
+    directory?: string,
+  ): Space {
     const id = `space-${Date.now()}`;
     const space: Space = {
       id,

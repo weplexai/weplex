@@ -61,7 +61,9 @@
         if (retryCount++ < MAX_RETRIES) {
           retryTimer = setTimeout(tryMount, 50);
         } else {
-          console.error(`[Weplex] Terminal mount failed for session ${sessionId} after ${MAX_RETRIES} retries`);
+          console.error(
+            `[Weplex] Terminal mount failed for session ${sessionId} after ${MAX_RETRIES} retries`,
+          );
         }
         return;
       }

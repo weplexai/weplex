@@ -209,7 +209,9 @@ export const sessionStore = {
     // Kill the PTY backend
     import('@tauri-apps/api/core')
       .then(({ invoke }) => {
-        invoke('kill_pty', { sessionId: id }).catch((e) => console.error(`[Weplex] Failed to kill PTY ${id}:`, e));
+        invoke('kill_pty', { sessionId: id }).catch((e) =>
+          console.error(`[Weplex] Failed to kill PTY ${id}:`, e),
+        );
       })
       .catch((e) => console.error(`[Weplex] Failed to load Tauri API for killing PTY ${id}:`, e));
 

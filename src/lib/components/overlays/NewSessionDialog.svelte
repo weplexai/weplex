@@ -396,7 +396,7 @@
                         directory = spaceDir;
                       } else {
                         const settingsDir = settingsStore.settings.defaultDirectory;
-                        directory = (settingsDir && settingsDir !== '~') ? settingsDir : '~';
+                        directory = settingsDir && settingsDir !== '~' ? settingsDir : '~';
                       }
                     }}>{space.name}</button
                   >

@@ -80,7 +80,9 @@ export const authStore = {
       // Token expired and refresh failed — clean up
       tokens = null;
       user = null;
-      await keychainDeleteTokens().catch((e) => console.error('[Weplex] Failed to clear keychain during init cleanup:', e));
+      await keychainDeleteTokens().catch((e) =>
+        console.error('[Weplex] Failed to clear keychain during init cleanup:', e),
+      );
     }
   },
 
@@ -92,7 +94,9 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       await keychainSaveTokens(tokens);
-      syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after login:', e));
+      syncService
+        .pull()
+        .catch((e) => console.warn('[Weplex] Settings sync failed after login:', e));
     } catch (e) {
       error = e instanceof Error ? e.message : 'Login failed';
       throw e;
@@ -150,7 +154,9 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       await keychainSaveTokens(tokens);
-      syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after OAuth:', e));
+      syncService
+        .pull()
+        .catch((e) => console.warn('[Weplex] Settings sync failed after OAuth:', e));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('Bind failed')) {
@@ -179,7 +185,9 @@ export const authStore = {
     tokens = null;
     user = null;
     error = null;
-    await keychainDeleteTokens().catch((e) => console.error('[Weplex] Failed to clear keychain on logout:', e));
+    await keychainDeleteTokens().catch((e) =>
+      console.error('[Weplex] Failed to clear keychain on logout:', e),
+    );
   },
 
   async updateProfile(patch: { displayName?: string }): Promise<void> {

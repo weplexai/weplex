@@ -66,7 +66,8 @@
 
   function validateAuthFields(): string | null {
     if (!EMAIL_RE.test(authEmail)) return 'Please enter a valid email address';
-    if (authMode === 'register' && authPassword.length < 8) return 'Password must be at least 8 characters';
+    if (authMode === 'register' && authPassword.length < 8)
+      return 'Password must be at least 8 characters';
     return null;
   }
 
@@ -386,7 +387,9 @@
                       onkeydown={(e) => e.key === 'Enter' && saveDisplayName()}
                     />
                     <button class="btn-sm save" onclick={saveDisplayName}>Save</button>
-                    <button class="btn-sm cancel" onclick={() => (editingName = false)}>Cancel</button>
+                    <button class="btn-sm cancel" onclick={() => (editingName = false)}
+                      >Cancel</button
+                    >
                   </div>
                 {:else}
                   <span class="account-name" onclick={startEditDisplayName}>

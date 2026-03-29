@@ -130,7 +130,9 @@ function checkRunProgress() {
           .then(() => {
             sessionStore.updateStatus(currentStage.sessionId!, 'active');
           })
-          .catch((e) => console.error(`[Weplex] Failed to inject prompt for stage ${currentStage.name}:`, e));
+          .catch((e) =>
+            console.error(`[Weplex] Failed to inject prompt for stage ${currentStage.name}:`, e),
+          );
         runs = [...runs];
         continue;
       }
