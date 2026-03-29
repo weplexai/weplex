@@ -105,7 +105,9 @@ struct StageOutputPayload {
 /// holding it.  The data may be in an inconsistent state but the app
 /// won't crash.
 fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 // ── Engine ───────────────────────────────────────────────────────────────────
@@ -446,8 +448,7 @@ fn execute_parallel(
                         if optional {
                             update_stage_state(run, &stage_name, StageState::Skipped);
                             emit_stage_changed(app, run_id, &stage_name, StageState::Skipped);
-                            lock_or_recover(&results)
-                                .push((stage_name, Err((true, output))));
+                            lock_or_recover(&results).push((stage_name, Err((true, output))));
                         } else {
                             let state = StageState::Failed {
                                 exit_code,
@@ -456,8 +457,7 @@ fn execute_parallel(
                             };
                             update_stage_state(run, &stage_name, state.clone());
                             emit_stage_changed(app, run_id, &stage_name, state);
-                            lock_or_recover(&results)
-                                .push((stage_name, Err((false, output))));
+                            lock_or_recover(&results).push((stage_name, Err((false, output))));
                         }
                     }
                 }

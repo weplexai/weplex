@@ -37,8 +37,7 @@ pub fn start_oauth_server(app: tauri::AppHandle, expected_state: String) -> Resu
         return Err("expected_state must not be empty".to_string());
     }
     // Bind to port 0 — OS assigns a free port
-    let listener =
-        TcpListener::bind("127.0.0.1:0").map_err(|e| format!("Bind failed: {}", e))?;
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("Bind failed: {}", e))?;
     let port = listener
         .local_addr()
         .map_err(|e| format!("Failed to get local addr: {}", e))?
@@ -64,9 +63,7 @@ pub fn start_oauth_server(app: tauri::AppHandle, expected_state: String) -> Resu
                 // Read the request (up to 4KB is plenty for a callback URL)
                 let mut buf = [0u8; 4096];
                 // Brief blocking read on the accepted stream
-                stream
-                    .set_nonblocking(false)
-                    .map_err(|e| e.to_string())?;
+                stream.set_nonblocking(false).map_err(|e| e.to_string())?;
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .map_err(|e| e.to_string())?;
@@ -80,7 +77,8 @@ pub fn start_oauth_server(app: tauri::AppHandle, expected_state: String) -> Resu
                 let path_only = path.split_once('?').map(|(p, _)| p).unwrap_or(path);
                 if path_only != "/auth/callback" {
                     // Respond with 404 and keep listening
-                    let not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    let not_found =
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                     let _ = stream.write_all(not_found.as_bytes());
                     let _ = stream.flush();
                     continue;

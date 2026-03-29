@@ -1090,7 +1090,12 @@ fn open_url(url: String) -> Result<(), String> {
         return Err("Blocked: only https:// and http://localhost URLs are allowed".to_string());
     }
     // Reject URLs containing shell metacharacters (defense in depth)
-    if url.chars().any(|c| matches!(c, '`' | '$' | '|' | ';' | '&' | '\n' | '\r' | '"' | '\'' | '\\' | '<' | '>' | '(' | ')')) {
+    if url.chars().any(|c| {
+        matches!(
+            c,
+            '`' | '$' | '|' | ';' | '&' | '\n' | '\r' | '"' | '\'' | '\\' | '<' | '>' | '(' | ')'
+        )
+    }) {
         return Err("Blocked: URL contains invalid characters".to_string());
     }
 
