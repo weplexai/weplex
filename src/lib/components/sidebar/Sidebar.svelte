@@ -10,6 +10,16 @@
   import { Plus, X, User, Download } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
   import { updateState, installUpdate } from '../../utils/updater';
+
+  let updateDismissed = $state(false);
+  // Re-show after 1 hour if dismissed
+  $effect(() => {
+    if (updateDismissed) {
+      const timer = setTimeout(() => (updateDismissed = false), 60 * 60 * 1000);
+      return () => clearTimeout(timer);
+    }
+  });
+
   import SpaceSwitcher from './SpaceSwitcher.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import SessionItem from './SessionItem.svelte';
@@ -598,14 +608,19 @@
       {/if}
     </div>
 
-    {#if updateState.available && !updateState.downloading}
-      <button class="update-banner" onclick={installUpdate}>
-        <Download size={14} />
-        <span>Update to v{updateState.version}</span>
-      </button>
+    {#if updateState.available && !updateState.downloading && !updateDismissed}
+      <div class="update-banner">
+        <button class="update-btn" onclick={installUpdate}>
+          <Download size={13} />
+          <span>Update Available</span>
+        </button>
+        <button class="update-dismiss" onclick={() => (updateDismissed = true)} title="Dismiss">
+          <X size={12} />
+        </button>
+      </div>
     {:else if updateState.downloading}
-      <div class="update-banner downloading">
-        <span>Updating... {updateState.progress}%</span>
+      <div class="update-banner">
+        <span class="update-progress">Updating... {updateState.progress}%</span>
       </div>
     {/if}
 
@@ -637,27 +652,56 @@
   .update-banner {
     display: flex;
     align-items: center;
+    margin: 0 8px 4px;
+    padding: 0;
+    border-radius: var(--weplex-radius-md);
+    background: rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+  }
+
+  .update-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
     justify-content: center;
     gap: 6px;
-    margin: 0 8px 4px;
-    padding: 8px 12px;
-    border-radius: var(--weplex-radius-md);
+    padding: 7px 12px;
     border: none;
-    background: color-mix(in srgb, var(--weplex-accent) 15%, transparent);
-    color: var(--weplex-accent);
+    background: transparent;
+    color: rgba(255, 255, 255, 0.5);
     font-size: var(--weplex-text-sm);
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: color 0.15s;
   }
 
-  .update-banner:hover {
-    background: color-mix(in srgb, var(--weplex-accent) 25%, transparent);
+  .update-btn:hover {
+    color: rgba(255, 255, 255, 0.8);
   }
 
-  .update-banner.downloading {
-    cursor: default;
-    opacity: 0.7;
+  .update-dismiss {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    padding: 7px 0;
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.2);
+    cursor: pointer;
+    transition: color 0.15s;
+  }
+
+  .update-dismiss:hover {
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .update-progress {
+    flex: 1;
+    text-align: center;
+    padding: 7px 12px;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: var(--weplex-text-sm);
   }
 
   .traffic-light-area {
