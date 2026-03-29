@@ -34,6 +34,9 @@ pnpm-debug.log*
 docs/
 CLAUDE.md
 
+# Release script (contains server paths)
+release.sh
+
 # Landing page (separate deploy)
 landings/
 

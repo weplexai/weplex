@@ -11,6 +11,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "macOS": {
       "signingIdentity": "Developer ID Application: Evgeniy Solomein (L7JBY5W444)"
     },
