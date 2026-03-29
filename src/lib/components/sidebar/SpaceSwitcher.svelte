@@ -187,6 +187,7 @@
     justify-content: center;
     gap: 6px;
     padding: 8px 12px 18px;
+    position: relative;
   }
 
   .space-pill {

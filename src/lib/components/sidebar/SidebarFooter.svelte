@@ -1,6 +1,17 @@
 <script lang="ts">
-  import { Layers, Settings } from 'lucide-svelte';
+  import { Layers, Settings, User } from 'lucide-svelte';
   import { uiStore } from '../../stores/uiStore';
+  import { authStore } from '../../stores/authStore.svelte';
+
+  function openAccount() {
+    uiStore.openOverlay('settings');
+    // Settings overlay will need to switch to Account tab
+    // We use a small delay to let the overlay mount first
+    setTimeout(() => {
+      const accountTab = document.querySelector('[data-tab="account"]') as HTMLElement;
+      accountTab?.click();
+    }, 50);
+  }
 </script>
 
 <div class="footer">
@@ -14,6 +25,22 @@
     </button>
     <button class="icon-btn" title="Settings (⌘,)" onclick={() => uiStore.openOverlay('settings')}>
       <Settings size={15} />
+    </button>
+    <button
+      class="icon-btn account-btn"
+      class:signed-in={authStore.isAuthenticated}
+      title={authStore.isAuthenticated
+        ? authStore.user?.displayName || authStore.user?.email || 'Account'
+        : 'Sign In'}
+      onclick={openAccount}
+    >
+      {#if authStore.isAuthenticated}
+        <span class="avatar-initial"
+          >{(authStore.user?.displayName || authStore.user?.email || '?')[0].toUpperCase()}</span
+        >
+      {:else}
+        <User size={15} />
+      {/if}
     </button>
   </div>
   <button class="new-session" onclick={() => uiStore.openOverlay('new-session')}>
@@ -55,6 +82,16 @@
   .icon-btn:hover {
     background: var(--weplex-surface-hover);
     color: var(--weplex-text);
+  }
+
+  .account-btn.signed-in {
+    color: var(--weplex-accent);
+  }
+
+  .avatar-initial {
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
   }
 
   .new-session {

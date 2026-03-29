@@ -183,6 +183,7 @@
         <button
           class="tab-btn"
           class:active={activeTab === tab.id}
+          data-tab={tab.id}
           onclick={() => (activeTab = tab.id)}
         >
           {tab.label}

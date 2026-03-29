@@ -7,7 +7,8 @@
   import { uiStore } from '../../stores/uiStore';
   import { dragStore } from '../../stores/dragStore';
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-  import { Plus, X } from 'lucide-svelte';
+  import { Plus, X, User } from 'lucide-svelte';
+  import { authStore } from '../../stores/authStore.svelte';
   import SpaceSwitcher from './SpaceSwitcher.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import SessionItem from './SessionItem.svelte';
@@ -431,7 +432,30 @@
       ? `; background: color-mix(in srgb, ${activeBgColor} 15%, var(--weplex-sidebar-bg))`
       : ''}"
   >
-    <div class="traffic-light-area" data-tauri-drag-region></div>
+    <div class="traffic-light-area" data-tauri-drag-region>
+      <button
+        class="account-btn"
+        class:signed-in={authStore.isAuthenticated}
+        title={authStore.isAuthenticated
+          ? authStore.user?.displayName || authStore.user?.email || 'Account'
+          : 'Sign In'}
+        onclick={() => {
+          uiStore.openOverlay('settings');
+          setTimeout(() => {
+            const tab = document.querySelector('[data-tab="account"]') as HTMLElement;
+            tab?.click();
+          }, 50);
+        }}
+      >
+        {#if authStore.isAuthenticated}
+          <span class="avatar-initial"
+            >{(authStore.user?.displayName || authStore.user?.email || '?')[0].toUpperCase()}</span
+          >
+        {:else}
+          <User size={14} />
+        {/if}
+      </button>
+    </div>
     <SidebarSearch />
 
     <!-- Slider viewport -->
@@ -602,6 +626,41 @@
     height: 38px;
     flex-shrink: 0;
     -webkit-app-region: drag;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 10px;
+  }
+
+  .account-btn {
+    -webkit-app-region: no-drag;
+    margin-top: 2px;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--weplex-radius-sm);
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+
+  .account-btn:hover {
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  .account-btn.signed-in {
+    color: var(--weplex-accent);
+  }
+
+  .avatar-initial {
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
   }
 
   .sidebar:not(.resizing) {
