@@ -7,8 +7,9 @@
   import { uiStore } from '../../stores/uiStore';
   import { dragStore } from '../../stores/dragStore';
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-  import { Plus, X, User } from 'lucide-svelte';
+  import { Plus, X, User, Download } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
+  import { updateState, installUpdate } from '../../utils/updater';
   import SpaceSwitcher from './SpaceSwitcher.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import SessionItem from './SessionItem.svelte';
@@ -597,6 +598,17 @@
       {/if}
     </div>
 
+    {#if updateState.available && !updateState.downloading}
+      <button class="update-banner" onclick={installUpdate}>
+        <Download size={14} />
+        <span>Update to v{updateState.version}</span>
+      </button>
+    {:else if updateState.downloading}
+      <div class="update-banner downloading">
+        <span>Updating... {updateState.progress}%</span>
+      </div>
+    {/if}
+
     <SpaceSwitcher />
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -620,6 +632,32 @@
     z-index: 20;
     flex-shrink: 0;
     overflow: hidden;
+  }
+
+  .update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin: 0 8px 4px;
+    padding: 8px 12px;
+    border-radius: var(--weplex-radius-md);
+    border: none;
+    background: color-mix(in srgb, var(--weplex-accent) 15%, transparent);
+    color: var(--weplex-accent);
+    font-size: var(--weplex-text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .update-banner:hover {
+    background: color-mix(in srgb, var(--weplex-accent) 25%, transparent);
+  }
+
+  .update-banner.downloading {
+    cursor: default;
+    opacity: 0.7;
   }
 
   .traffic-light-area {
