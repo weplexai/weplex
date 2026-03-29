@@ -139,12 +139,16 @@ jobs:
           # Create remote directory
           ssh $SERVER "mkdir -p $REMOTE_DIR"
 
-          # Upload build artifacts (DMG + tar.gz + sig)
-          find artifacts -type f | while read f; do
+          # Upload DMGs (already have unique names)
+          find artifacts -name "*.dmg" -type f | while read f; do
             scp "$f" "$SERVER:$REMOTE_DIR/$(basename $f)"
           done
 
-          # Read signatures from artifacts (uploaded by build step)
+          # Upload tar.gz with arch-specific names (both are named Weplex.app.tar.gz)
+          scp artifacts/build-aarch64/macos/Weplex.app.tar.gz "$SERVER:$REMOTE_DIR/Weplex_aarch64.app.tar.gz"
+          scp artifacts/build-x64/macos/Weplex.app.tar.gz "$SERVER:$REMOTE_DIR/Weplex_x64.app.tar.gz"
+
+          # Read signatures from artifacts
           AARCH64_SIG=$(cat artifacts/build-aarch64/macos/Weplex.app.tar.gz.sig 2>/dev/null || echo "")
           X64_SIG=$(cat artifacts/build-x64/macos/Weplex.app.tar.gz.sig 2>/dev/null || echo "")
           echo "aarch64 sig length: ${#AARCH64_SIG}"
