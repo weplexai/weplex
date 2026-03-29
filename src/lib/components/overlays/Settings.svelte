@@ -4,6 +4,14 @@
   import { profileStore } from '../../stores/profileStore';
   import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
+  import { checkForUpdates, updateState, installUpdate } from '../../utils/updater';
+
+  let updateChecking = $state(false);
+  async function handleCheckUpdates() {
+    updateChecking = true;
+    await checkForUpdates();
+    updateChecking = false;
+  }
   import type { DiscoveredProfile } from '../../types';
 
   let settings = $derived(settingsStore.settings);
@@ -485,9 +493,31 @@
         {/if}
       {:else if activeTab === 'about'}
         <h3 class="section-title">About</h3>
-        <p class="about-text"><strong>Weplex</strong> v0.1.0</p>
-        <p class="about-text muted">Modern terminal with AI agent superpowers.</p>
-        <p class="about-text muted">MIT License</p>
+        <p class="about-text"><strong>Weplex</strong> v0.2.0</p>
+        <p class="about-text muted">
+          The terminal with a built-in pipeline engine for AI coding agents.
+        </p>
+        <p class="about-text muted">Apache 2.0 License</p>
+
+        <div class="about-divider"></div>
+        <h3 class="section-title">Updates</h3>
+        {#if updateState.downloading}
+          <p class="about-text">Downloading update... {updateState.progress}%</p>
+        {:else if updateState.available}
+          <p class="about-text">Update available: <strong>v{updateState.version}</strong></p>
+          <button class="btn-sm save" onclick={installUpdate}>Install Update</button>
+        {:else}
+          <p class="about-text muted">You're up to date.</p>
+        {/if}
+        <button
+          class="btn-sm"
+          onclick={handleCheckUpdates}
+          disabled={updateChecking || updateState.downloading}
+          style="margin-top: 8px;"
+        >
+          {updateChecking ? 'Checking...' : 'Check for Updates'}
+        </button>
+
         <div class="about-divider"></div>
         <footer class="shipooor-footer">
           <a class="shipooor-link" href="https://shipooor.xyz" target="_blank" rel="noopener">
