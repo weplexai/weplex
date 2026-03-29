@@ -11,6 +11,7 @@
   import NewSessionDialog from './lib/components/overlays/NewSessionDialog.svelte';
   import SpaceModal from './lib/components/overlays/SpaceModal.svelte';
   import Settings from './lib/components/overlays/Settings.svelte';
+  import AuthOverlay from './lib/components/overlays/AuthOverlay.svelte';
   import AgentsPipelines from './lib/components/overlays/AgentsPipelines.svelte';
   import { sessionStore } from './lib/stores/sessionStore';
   import { spaceStore } from './lib/stores/spaceStore';
@@ -234,6 +235,8 @@
   <SpaceModal />
 {:else if uiStore.activeOverlay === 'settings'}
   <Settings />
+{:else if uiStore.activeOverlay === 'auth'}
+  <AuthOverlay />
 {/if}
 
 <style>

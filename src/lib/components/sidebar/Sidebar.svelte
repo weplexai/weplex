@@ -451,11 +451,7 @@
           ? authStore.user?.displayName || authStore.user?.email || 'Account'
           : 'Sign In'}
         onclick={() => {
-          uiStore.openOverlay('settings');
-          setTimeout(() => {
-            const tab = document.querySelector('[data-tab="account"]') as HTMLElement;
-            tab?.click();
-          }, 50);
+          uiStore.openAuth();
         }}
       >
         {#if authStore.isAuthenticated}

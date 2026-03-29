@@ -104,4 +104,8 @@ export const uiStore = {
   toggleOverlay(type: OverlayType) {
     activeOverlay = activeOverlay === type ? 'none' : type;
   },
+
+  openAuth() {
+    activeOverlay = 'auth';
+  },
 };

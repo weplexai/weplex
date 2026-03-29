@@ -203,6 +203,60 @@ export const authStore = {
     }
   },
 
+  async verifyEmail(code: string): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      await authService.verifyEmail(code);
+      // Refresh profile to get updated emailVerified status
+      user = await authService.getProfile();
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Verification failed';
+      throw e;
+    } finally {
+      loading = false;
+    }
+  },
+
+  async sendVerificationCode(): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      await authService.sendVerification();
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to send code';
+      throw e;
+    } finally {
+      loading = false;
+    }
+  },
+
+  async forgotPassword(email: string): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      await authService.forgotPassword(email);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to send reset code';
+      throw e;
+    } finally {
+      loading = false;
+    }
+  },
+
+  async resetPassword(email: string, code: string, newPassword: string): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      await authService.resetPassword(email, code, newPassword);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Password reset failed';
+      throw e;
+    } finally {
+      loading = false;
+    }
+  },
+
   clearError(): void {
     error = null;
   },

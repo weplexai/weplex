@@ -51,4 +51,33 @@ export const authService = {
       body: patch,
     });
   },
+
+  async verifyEmail(code: string): Promise<void> {
+    return request<void>('/auth/verify-email', {
+      method: 'POST',
+      body: { code },
+    });
+  },
+
+  async sendVerification(): Promise<void> {
+    return request<void>('/auth/send-verification', {
+      method: 'POST',
+    });
+  },
+
+  async forgotPassword(email: string): Promise<void> {
+    return request<void>('/auth/forgot-password', {
+      method: 'POST',
+      body: { email },
+      skipAuth: true,
+    });
+  },
+
+  async resetPassword(email: string, code: string, newPassword: string): Promise<void> {
+    return request<void>('/auth/reset-password', {
+      method: 'POST',
+      body: { email, code, newPassword },
+      skipAuth: true,
+    });
+  },
 };

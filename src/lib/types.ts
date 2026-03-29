@@ -9,7 +9,8 @@ export type OverlayType =
   | 'new-session'
   | 'settings'
   | 'space-modal'
-  | 'agents';
+  | 'agents'
+  | 'auth';
 export type SplitDirection = 'horizontal' | 'vertical';
 
 export interface Session {

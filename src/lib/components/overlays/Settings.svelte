@@ -3,7 +3,6 @@
   import { getVersion } from '@tauri-apps/api/app';
   import { settingsStore } from '../../stores/settingsStore';
   import { profileStore } from '../../stores/profileStore';
-  import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
   import {
     checkForUpdates,
@@ -62,71 +61,13 @@
   let profileEnvKey = $state('');
   let profileEnvVal = $state('');
 
-  // Account tab state
-  let authEmail = $state('');
-  let authPassword = $state('');
-  let authMode = $state<'login' | 'register'>('login');
-  let editDisplayName = $state('');
-  let editingName = $state(false);
-
   const tabs = [
     { id: 'general', label: 'General' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'profiles', label: 'Profiles' },
     { id: 'sessions', label: 'Sessions' },
-    { id: 'account', label: 'Account' },
     { id: 'about', label: 'About' },
   ];
-
-  // Client-side validation helpers
-  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-  function validateAuthFields(): string | null {
-    if (!EMAIL_RE.test(authEmail)) return 'Please enter a valid email address';
-    if (authMode === 'register' && authPassword.length < 8)
-      return 'Password must be at least 8 characters';
-    return null;
-  }
-
-  let authValidationError = $state<string | null>(null);
-
-  async function handleAuthSubmit() {
-    authValidationError = validateAuthFields();
-    if (authValidationError) return;
-    try {
-      if (authMode === 'login') {
-        await authStore.login(authEmail, authPassword);
-      } else {
-        await authStore.register(authEmail, authPassword);
-      }
-      authEmail = '';
-      authPassword = '';
-    } catch {
-      // Error is set in authStore
-    }
-  }
-
-  async function handleOAuth(provider: 'github' | 'google') {
-    try {
-      await authStore.oauthLogin(provider);
-    } catch {
-      // Error is set in authStore
-    }
-  }
-
-  function startEditDisplayName() {
-    editDisplayName = authStore.user?.displayName || '';
-    editingName = true;
-  }
-
-  async function saveDisplayName() {
-    try {
-      await authStore.updateProfile({ displayName: editDisplayName.trim() || undefined });
-      editingName = false;
-    } catch {
-      // Error is set in authStore
-    }
-  }
 
   function startEditProfile(id: string) {
     const p = profileStore.getById(id);
@@ -387,119 +328,6 @@
               settingsStore.update({ persistSessions: (e.target as HTMLInputElement).checked })}
           />
         </div>
-      {:else if activeTab === 'account'}
-        <h3 class="section-title">Account</h3>
-
-        {#if authStore.isAuthenticated}
-          <!-- Logged in -->
-          <div class="account-card">
-            <div class="account-row">
-              <div class="account-info">
-                {#if editingName}
-                  <div class="inline-edit">
-                    <input
-                      class="setting-input"
-                      type="text"
-                      bind:value={editDisplayName}
-                      placeholder="Display name"
-                      onkeydown={(e) => e.key === 'Enter' && saveDisplayName()}
-                    />
-                    <button class="btn-sm save" onclick={saveDisplayName}>Save</button>
-                    <button class="btn-sm cancel" onclick={() => (editingName = false)}
-                      >Cancel</button
-                    >
-                  </div>
-                {:else}
-                  <span class="account-name" onclick={startEditDisplayName}>
-                    {authStore.user?.displayName || authStore.user?.email || 'User'}
-                  </span>
-                {/if}
-                <span class="profile-meta">{authStore.user?.email}</span>
-              </div>
-              <span class="badge">{authStore.user?.plan || 'Free'}</span>
-            </div>
-          </div>
-
-          <div class="setting">
-            <span class="setting-label">Sync status</span>
-            <span class="sync-status" class:sync-error={authStore.syncStatus === 'error'}>
-              {authStore.syncStatus}
-            </span>
-          </div>
-
-          <div class="account-actions">
-            <button class="btn-sm delete" onclick={() => authStore.logout()}>Sign Out</button>
-          </div>
-        {:else}
-          <!-- Logged out -->
-          {#if authValidationError}
-            <div class="auth-error">{authValidationError}</div>
-          {/if}
-          {#if authStore.error}
-            <div class="auth-error">{authStore.error}</div>
-          {/if}
-
-          <div class="auth-form">
-            <input
-              class="setting-input auth-input"
-              type="email"
-              placeholder="Email"
-              bind:value={authEmail}
-              onkeydown={(e) => e.key === 'Enter' && handleAuthSubmit()}
-            />
-            <input
-              class="setting-input auth-input"
-              type="password"
-              placeholder="Password"
-              bind:value={authPassword}
-              onkeydown={(e) => e.key === 'Enter' && handleAuthSubmit()}
-            />
-            <div class="auth-buttons">
-              <button
-                class="btn-sm save"
-                disabled={authStore.loading || !authEmail || !authPassword}
-                onclick={handleAuthSubmit}
-              >
-                {authStore.loading ? '...' : authMode === 'login' ? 'Sign In' : 'Register'}
-              </button>
-              <button
-                class="btn-sm"
-                onclick={() => {
-                  authMode = authMode === 'login' ? 'register' : 'login';
-                  authValidationError = null;
-                  authStore.clearError();
-                }}
-              >
-                {authMode === 'login' ? 'Create account' : 'I have an account'}
-              </button>
-            </div>
-          </div>
-
-          <div class="oauth-divider">
-            <span class="oauth-divider-text">or</span>
-          </div>
-
-          <div class="oauth-buttons">
-            <button
-              class="btn-sm oauth-btn"
-              disabled={authStore.loading}
-              onclick={() => handleOAuth('github')}
-            >
-              GitHub
-            </button>
-            <button
-              class="btn-sm oauth-btn"
-              disabled={authStore.loading}
-              onclick={() => handleOAuth('google')}
-            >
-              Google
-            </button>
-          </div>
-
-          <p class="section-desc" style="margin-top: 16px;">
-            Sign in to sync settings across devices. Weplex works fully without an account.
-          </p>
-        {/if}
       {:else if activeTab === 'about'}
         <h3 class="section-title">About</h3>
         <p class="about-text"><strong>Weplex</strong> v{appVersion}</p>
@@ -1093,125 +921,5 @@
 
   .btn-sm.import:hover {
     background: color-mix(in srgb, var(--weplex-accent) 10%, transparent);
-  }
-
-  /* ═══ Account tab ═══ */
-  .account-card {
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-lg);
-    padding: 12px;
-    margin-bottom: 12px;
-  }
-
-  .account-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .account-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .account-name {
-    font-size: var(--weplex-text-sm);
-    font-weight: 500;
-    cursor: pointer;
-  }
-
-  .account-name:hover {
-    color: var(--weplex-accent);
-  }
-
-  .account-actions {
-    margin-top: 12px;
-  }
-
-  .inline-edit {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .inline-edit .setting-input {
-    width: 160px;
-  }
-
-  .sync-status {
-    font-size: var(--weplex-text-xs);
-    font-family: var(--weplex-font-mono);
-    color: var(--weplex-text-muted);
-    text-transform: uppercase;
-  }
-
-  .sync-status.sync-error {
-    color: var(--weplex-error);
-  }
-
-  .auth-form {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .auth-input {
-    width: 100% !important;
-    box-sizing: border-box;
-  }
-
-  .auth-buttons {
-    display: flex;
-    gap: 6px;
-    margin-top: 4px;
-  }
-
-  .auth-error {
-    font-size: var(--weplex-text-sm);
-    color: var(--weplex-error);
-    padding: 8px;
-    border: 1px solid var(--weplex-error);
-    border-radius: var(--weplex-radius-md);
-    margin-bottom: 12px;
-    background: rgba(239, 68, 68, 0.06);
-  }
-
-  .oauth-divider {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin: 16px 0;
-  }
-
-  .oauth-divider::before,
-  .oauth-divider::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: var(--weplex-border);
-  }
-
-  .oauth-divider-text {
-    font-size: var(--weplex-text-xs);
-    color: var(--weplex-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .oauth-buttons {
-    display: flex;
-    gap: 8px;
-  }
-
-  .oauth-btn {
-    flex: 1;
-    padding: 6px 12px !important;
-    text-align: center;
-    border-color: var(--weplex-border);
-  }
-
-  .oauth-btn:hover {
-    background: var(--weplex-surface-hover);
   }
 </style>
