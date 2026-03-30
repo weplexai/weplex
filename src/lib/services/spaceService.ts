@@ -12,7 +12,7 @@ export const spaceService = {
     type: SpaceType,
     shared = true,
   ): Promise<ServerSpace> {
-    return request<ServerSpace>('/teams/spaces', {
+    return request<ServerSpace>('/spaces', {
       method: 'POST',
       body: { teamId, name, color, type, shared },
     });
@@ -20,7 +20,7 @@ export const spaceService = {
 
   /** List all spaces for a team (shared + team spaces visible to the user). */
   async listSpaces(teamId: string): Promise<ServerSpace[]> {
-    return request<ServerSpace[]>(`/teams/spaces?teamId=${encodeURIComponent(teamId)}`, {
+    return request<ServerSpace[]>(`/spaces?teamId=${encodeURIComponent(teamId)}`, {
       method: 'GET',
     });
   },
@@ -30,7 +30,7 @@ export const spaceService = {
     spaceId: string,
     patch: Partial<Pick<ServerSpace, 'name' | 'color' | 'shared'>>,
   ): Promise<ServerSpace> {
-    return request<ServerSpace>(`/teams/spaces/${spaceId}`, {
+    return request<ServerSpace>(`/spaces/${spaceId}`, {
       method: 'PATCH',
       body: patch,
     });
@@ -38,7 +38,7 @@ export const spaceService = {
 
   /** Delete a server-synced space. */
   async deleteSpace(spaceId: string): Promise<void> {
-    return request<void>(`/teams/spaces/${spaceId}`, {
+    return request<void>(`/spaces/${spaceId}`, {
       method: 'DELETE',
     });
   },
