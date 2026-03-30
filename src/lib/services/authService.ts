@@ -42,11 +42,11 @@ export const authService = {
   },
 
   async getProfile(): Promise<AuthUser> {
-    return request<AuthUser>('/auth/profile', { method: 'GET' });
+    return request<AuthUser>('/auth/me', { method: 'GET' });
   },
 
   async updateProfile(patch: { displayName?: string }): Promise<AuthUser> {
-    return request<AuthUser>('/auth/profile', {
+    return request<AuthUser>('/auth/me', {
       method: 'PATCH',
       body: patch,
     });

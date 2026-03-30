@@ -500,6 +500,18 @@
 
         <div class="profile-meta-row">
           <span class="profile-detail">
+            Email:
+            {#if authStore.user?.emailVerified}
+              <span class="badge badge-green">Verified</span>
+            {:else}
+              <span class="badge badge-yellow">Not verified</span>
+              <button class="link-btn" onclick={() => { screen = 'verify-email'; authStore.sendVerificationCode(); }}>Verify now</button>
+            {/if}
+          </span>
+        </div>
+
+        <div class="profile-meta-row">
+          <span class="profile-detail">
             Plan: <span class="badge">{authStore.user?.plan || 'Free'}</span>
           </span>
         </div>
@@ -780,6 +792,31 @@
     background: color-mix(in srgb, var(--weplex-accent) 15%, transparent);
     color: var(--weplex-accent);
     font-weight: 400;
+  }
+
+  .badge-green {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+  }
+
+  .badge-yellow {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+  }
+
+  .link-btn {
+    background: none;
+    border: none;
+    color: var(--weplex-accent);
+    font-size: var(--weplex-text-xs);
+    cursor: pointer;
+    padding: 0;
+    margin-left: 8px;
+    text-decoration: underline;
+  }
+
+  .link-btn:hover {
+    opacity: 0.8;
   }
 
   .sync-status {

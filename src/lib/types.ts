@@ -263,6 +263,7 @@ export interface AuthUser {
   displayName: string | null;
   plan: string;
   oauthProvider: string | null;
+  emailVerified: boolean;
 }
 
 export interface AuthTokens {
