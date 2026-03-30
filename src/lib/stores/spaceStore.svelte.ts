@@ -2,6 +2,7 @@ import type { Space, ServerSpace } from '../types';
 import { SPACE_COLORS, HYPERSPACE_ID } from '../types';
 import { durableSave } from '../utils/durablePersist';
 import { spaceService } from '../services/spaceService';
+import { pipelineWsService } from '../services/pipelineWsService';
 
 const STORAGE_KEY = 'weplex_spaces';
 const ACTIVE_KEY = 'weplex_active_space';
@@ -57,6 +58,21 @@ let editingSpaceIdVal = $state<string | null>(null);
 
 // Per-space last active session id
 let spaceSessions = $state<Record<string, number>>(loadSpaceSessions());
+
+// ── WS listener cleanup handles ──────────────────────────────────────────
+
+let unsubSpaceCreated: (() => void) | null = null;
+let unsubSpaceUpdated: (() => void) | null = null;
+let unsubSpaceDeleted: (() => void) | null = null;
+
+function cleanupSpaceListeners(): void {
+  unsubSpaceCreated?.();
+  unsubSpaceUpdated?.();
+  unsubSpaceDeleted?.();
+  unsubSpaceCreated = null;
+  unsubSpaceUpdated = null;
+  unsubSpaceDeleted = null;
+}
 
 function persist() {
   try {
@@ -285,6 +301,67 @@ export const spaceStore = {
       spaces[i].order = i;
     }
     persist();
+  },
+
+  /** Subscribe to real-time space events from WS. Call after WS connects. */
+  subscribeToSpaceEvents(): void {
+    // Clean up previous subscriptions
+    cleanupSpaceListeners();
+
+    unsubSpaceCreated = pipelineWsService.onSpaceCreated(({ teamId, space: ss }) => {
+      // Skip if already exists locally by serverId
+      if (spaces.find((s) => s.serverId === ss.id)) return;
+
+      const id = `space-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      spaces = [
+        ...spaces,
+        {
+          id,
+          name: ss.name,
+          color: ss.color,
+          order: spaces.length,
+          type: ss.type,
+          shared: ss.shared,
+          teamId: ss.teamId,
+          serverId: ss.id,
+          createdBy: ss.createdBy,
+        },
+      ];
+      persist();
+    });
+
+    unsubSpaceUpdated = pipelineWsService.onSpaceUpdated(({ teamId, space: ss }) => {
+      const existing = spaces.find((s) => s.serverId === ss.id);
+      if (!existing) return;
+
+      const idx = spaces.indexOf(existing);
+      spaces[idx] = {
+        ...existing,
+        name: ss.name,
+        color: ss.color,
+        shared: ss.shared,
+      };
+      spaces = [...spaces]; // trigger reactivity
+      persist();
+    });
+
+    unsubSpaceDeleted = pipelineWsService.onSpaceDeleted(({ teamId, spaceId }) => {
+      const existing = spaces.find((s) => s.serverId === spaceId);
+      if (!existing) return;
+
+      const removedLocalId = existing.id;
+      spaces = spaces.filter((s) => s.serverId !== spaceId);
+      if (activeSpaceId === removedLocalId) {
+        activeSpaceId = 'default';
+      }
+      delete spaceSessions[removedLocalId];
+      persist();
+    });
+  },
+
+  /** Clean up WS space event listeners. */
+  unsubscribeFromSpaceEvents(): void {
+    cleanupSpaceListeners();
   },
 
   remove(id: string) {

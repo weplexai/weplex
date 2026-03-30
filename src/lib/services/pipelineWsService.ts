@@ -2,13 +2,14 @@
 
 import { io, type Socket } from 'socket.io-client';
 import { getBaseUrl } from './apiClient';
-import type { CollaborativeRun, PipelineNotification, SessionMeta, MemberPresence } from '../types';
+import type { CollaborativeRun, PipelineNotification, SessionMeta, MemberPresence, TeamMember, ServerSpace } from '../types';
 
 let socket: Socket | null = null;
 
 // Track joined rooms for re-joining on reconnect
 const joinedRuns: Set<string> = new Set();
 const joinedSpaces: Map<string, string | undefined> = new Map();
+const joinedTeams: Set<string> = new Set();
 
 export const pipelineWsService = {
   /** Connect to the /pipeline namespace with bearer auth. */
@@ -35,6 +36,9 @@ export const pipelineWsService = {
       for (const [spaceId, displayName] of joinedSpaces) {
         socket?.emit('join-space', { spaceId, displayName });
       }
+      for (const teamId of joinedTeams) {
+        socket?.emit('join-team', { teamId });
+      }
     });
 
     socket.on('disconnect', (reason) => {
@@ -54,6 +58,7 @@ export const pipelineWsService = {
     socket = null;
     joinedRuns.clear();
     joinedSpaces.clear();
+    joinedTeams.clear();
   },
 
   /** Join a run room to receive updates. */
@@ -135,6 +140,99 @@ export const pipelineWsService = {
     socket.on('member-offline', cb);
     return () => {
       socket?.off('member-offline', cb);
+    };
+  },
+
+  // ── Team Events ────────────────────────────────────────────────────────
+
+  /** Join a team room to receive team/space events. */
+  joinTeamRoom(teamId: string): void {
+    joinedTeams.add(teamId);
+    socket?.emit('join-team', { teamId });
+  },
+
+  /** Leave a team room. */
+  leaveTeamRoom(teamId: string): void {
+    joinedTeams.delete(teamId);
+    socket?.emit('leave-team', { teamId });
+  },
+
+  /** Subscribe to team member joined events. Returns an unsubscribe function. */
+  onTeamMemberJoined(
+    cb: (data: { teamId: string; member: TeamMember }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('team-member-joined', cb);
+    return () => {
+      socket?.off('team-member-joined', cb);
+    };
+  },
+
+  /** Subscribe to team member left events. Returns an unsubscribe function. */
+  onTeamMemberLeft(
+    cb: (data: { teamId: string; userId: string }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('team-member-left', cb);
+    return () => {
+      socket?.off('team-member-left', cb);
+    };
+  },
+
+  /** Subscribe to team updated events. Returns an unsubscribe function. */
+  onTeamUpdated(
+    cb: (data: { teamId: string; name?: string; inviteCode?: string; inviteCodeExpiresAt?: string; ownerId?: string }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('team-updated', cb);
+    return () => {
+      socket?.off('team-updated', cb);
+    };
+  },
+
+  /** Subscribe to team deleted events. Returns an unsubscribe function. */
+  onTeamDeleted(
+    cb: (data: { teamId: string }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('team-deleted', cb);
+    return () => {
+      socket?.off('team-deleted', cb);
+    };
+  },
+
+  // ── Space Events ──────────────────────────────────────────────────────
+
+  /** Subscribe to space created events. Returns an unsubscribe function. */
+  onSpaceCreated(
+    cb: (data: { teamId: string; space: ServerSpace }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('space-created', cb);
+    return () => {
+      socket?.off('space-created', cb);
+    };
+  },
+
+  /** Subscribe to space updated events. Returns an unsubscribe function. */
+  onSpaceUpdated(
+    cb: (data: { teamId: string; space: ServerSpace }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('space-updated', cb);
+    return () => {
+      socket?.off('space-updated', cb);
+    };
+  },
+
+  /** Subscribe to space deleted events. Returns an unsubscribe function. */
+  onSpaceDeleted(
+    cb: (data: { teamId: string; spaceId: string }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('space-deleted', cb);
+    return () => {
+      socket?.off('space-deleted', cb);
     };
   },
 
