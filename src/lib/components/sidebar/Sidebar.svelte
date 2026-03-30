@@ -20,6 +20,7 @@
     }
   });
 
+
   import SpaceSwitcher from './SpaceSwitcher.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import SessionItem from './SessionItem.svelte';
