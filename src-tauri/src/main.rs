@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(clippy::too_many_arguments)]
 
+mod ipc_server;
 mod keychain;
 mod oauth_server;
 mod pipeline_engine;
@@ -17,7 +18,8 @@ use tauri::{Manager, State};
 
 struct AppState {
     pty_manager: Mutex<PtyManager>,
-    pipeline_engine: Mutex<PipelineEngine>,
+    pipeline_engine: std::sync::Arc<Mutex<PipelineEngine>>,
+    ipc_pool: Mutex<ipc_server::IpcSocketPool>,
 }
 
 #[tauri::command]
@@ -1037,14 +1039,68 @@ fn start_pipeline(
     cwd: String,
     env_vars: Option<std::collections::HashMap<String, String>>,
 ) -> Result<String, String> {
-    let mut engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
-    engine.start_run(
-        &pipeline_file,
-        &task,
-        &cwd,
-        env_vars.unwrap_or_default(),
-        app,
-    )
+    // Phase 1: Prepare run (parse config, create run record) — no thread spawned yet
+    let prepared = {
+        let mut engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
+        engine.prepare_run(
+            &pipeline_file,
+            &task,
+            &cwd,
+            env_vars.unwrap_or_default(),
+            &app,
+        )?
+    };
+
+    let run_id = prepared.run_id.clone();
+
+    // Phase 2: Start MCP IPC socket BEFORE launching the orchestrator thread,
+    // so the socket is ready when the first stage agent tries to connect
+    {
+        let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
+        let mut pool = state.ipc_pool.lock().map_err(|e| e.to_string())?;
+        if let Err(e) = pool.start_run_socket(run_id.clone(), engine_arc, app.clone()) {
+            eprintln!("[weplex] Failed to start MCP socket for run {}: {}", run_id, e);
+        }
+    }
+
+    // Phase 3: Launch orchestrator thread (now socket is guaranteed ready)
+    {
+        let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
+        PipelineEngine::launch_run(prepared, engine_arc, app.clone());
+    }
+
+    // Phase 4: Schedule socket cleanup when the pipeline run finishes
+    {
+        let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
+        let run_id_clone = run_id.clone();
+        let app_for_cleanup = app;
+
+        std::thread::spawn(move || {
+            // Poll until the run is no longer "running"
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let eng = engine_arc
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                if let Some(run) = eng.get_run(&run_id_clone) {
+                    if run.status != pipeline_engine::RunStatus::Running {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            // Stop the socket via app state
+            let state: State<AppState> = app_for_cleanup.state();
+            let mut pool = state
+                .ipc_pool
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            pool.stop_run_socket(&run_id_clone);
+        });
+    }
+
+    Ok(run_id)
 }
 
 #[tauri::command]
@@ -1124,11 +1180,190 @@ fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── MCP Commands ───────────────────────────────────────────────────────────
+
+/// Validate run_id to prevent path traversal in socket paths.
+fn validate_run_id(run_id: &str) -> Result<(), String> {
+    if run_id.is_empty()
+        || !run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("Invalid run_id format".to_string());
+    }
+    Ok(())
+}
+
+/// Start a scoped IPC socket for a pipeline run. Returns the socket path.
+#[tauri::command]
+fn start_mcp_for_run(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    run_id: String,
+) -> Result<String, String> {
+    validate_run_id(&run_id)?;
+    let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
+    let mut pool = state.ipc_pool.lock().map_err(|e| e.to_string())?;
+    pool.start_run_socket(run_id, engine_arc, app)
+}
+
+/// Stop and clean up an IPC socket for a pipeline run.
+#[tauri::command]
+fn stop_mcp_for_run(state: State<AppState>, run_id: String) -> Result<(), String> {
+    validate_run_id(&run_id)?;
+    let mut pool = state.ipc_pool.lock().map_err(|e| e.to_string())?;
+    pool.stop_run_socket(&run_id);
+    Ok(())
+}
+
+/// Store an MCP artifact for a stage (called from frontend for prefetching).
+#[tauri::command]
+fn set_run_artifact(
+    state: State<AppState>,
+    run_id: String,
+    stage_name: String,
+    artifact: String,
+) -> Result<(), String> {
+    validate_run_id(&run_id)?;
+    let mut engine = state
+        .pipeline_engine
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    engine.set_mcp_artifact(&run_id, &stage_name, &artifact);
+    Ok(())
+}
+
+/// Get the path to the weplex-mcp binary.
+/// In dev mode: looks in src-tauri/mcp-server/target/debug/
+/// In release: looks next to the main binary (Contents/MacOS/)
+#[tauri::command]
+fn get_mcp_binary_path(app: tauri::AppHandle) -> Result<String, String> {
+    find_mcp_binary(&app)
+}
+
+/// Register the weplex MCP server in ~/.claude.json.
+/// Creates the file if it doesn't exist, adds/updates the mcpServers.weplex entry.
+#[tauri::command]
+fn register_mcp_in_claude(app: tauri::AppHandle) -> Result<(), String> {
+    do_register_mcp_in_claude(&app)
+}
+
+/// Find the weplex-mcp binary path based on build mode and platform.
+fn find_mcp_binary(app: &tauri::AppHandle) -> Result<String, String> {
+    // Dev mode: check mcp-server build directory
+    if cfg!(debug_assertions) {
+        let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("mcp-server/target/debug/weplex-mcp");
+        if dev_path.exists() {
+            return Ok(dev_path.to_string_lossy().to_string());
+        }
+        // Also check release dir in dev mode
+        let dev_release = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("mcp-server/target/release/weplex-mcp");
+        if dev_release.exists() {
+            return Ok(dev_release.to_string_lossy().to_string());
+        }
+        return Err("weplex-mcp binary not found. Run: cd src-tauri/mcp-server && cargo build".to_string());
+    }
+
+    // Production: next to the main binary
+    let exe_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?;
+    let prod_path = exe_dir.join("weplex-mcp");
+    if prod_path.exists() {
+        return Ok(prod_path.to_string_lossy().to_string());
+    }
+
+    // macOS: Contents/MacOS/weplex-mcp
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let macos_path = dir.join("weplex-mcp");
+                if macos_path.exists() {
+                    return Ok(macos_path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    Err("weplex-mcp binary not found".to_string())
+}
+
+/// Register or update the weplex MCP server entry in ~/.claude.json.
+fn do_register_mcp_in_claude(app: &tauri::AppHandle) -> Result<(), String> {
+    let binary_path = match find_mcp_binary(app) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[weplex] MCP registration skipped: {}", e);
+            return Ok(()); // Don't fail startup if binary not found
+        }
+    };
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let claude_json_path = format!("{}/.claude.json", home);
+
+    // Read existing config or create empty object
+    let mut config: serde_json::Value = if let Ok(content) = std::fs::read_to_string(&claude_json_path) {
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure mcpServers object exists
+    if !config.get("mcpServers").is_some() {
+        config["mcpServers"] = serde_json::json!({});
+    }
+
+    // Check if weplex entry exists and matches
+    let current_command = config
+        .get("mcpServers")
+        .and_then(|s| s.get("weplex"))
+        .and_then(|w| w.get("command"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    if current_command == binary_path {
+        // Already up to date
+        return Ok(());
+    }
+
+    // Add/update weplex entry
+    config["mcpServers"]["weplex"] = serde_json::json!({
+        "command": binary_path
+    });
+
+    // Write back — preserve formatting
+    let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&claude_json_path, json_str).map_err(|e| e.to_string())?;
+
+    eprintln!(
+        "[weplex] MCP server registered in ~/.claude.json (binary: {})",
+        binary_path
+    );
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState {
             pty_manager: Mutex::new(PtyManager::new()),
-            pipeline_engine: Mutex::new(PipelineEngine::new()),
+            pipeline_engine: std::sync::Arc::new(Mutex::new(PipelineEngine::new())),
+            ipc_pool: Mutex::new(ipc_server::IpcSocketPool::new()),
+        })
+        .setup(|app| {
+            // Clean up stale socket files from previous crashes
+            ipc_server::IpcSocketPool::cleanup_stale_socket_files();
+
+            // Register MCP server in ~/.claude.json
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let _ = do_register_mcp_in_claude(&handle);
+            });
+
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             create_pty,
@@ -1165,10 +1400,26 @@ fn main() {
             keychain::keychain_save,
             keychain::keychain_load,
             keychain::keychain_delete,
+            start_mcp_for_run,
+            stop_mcp_for_run,
+            set_run_artifact,
+            get_mcp_binary_path,
+            register_mcp_in_claude,
         ])
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .run(tauri::generate_context!())
-        .expect("error while running Weplex");
+        .build(tauri::generate_context!())
+        .expect("error while building Weplex")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Clean up all IPC sockets on app exit
+                let state: State<AppState> = app.state();
+                let mut pool = state
+                    .ipc_pool
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                pool.cleanup_all();
+            }
+        });
 }

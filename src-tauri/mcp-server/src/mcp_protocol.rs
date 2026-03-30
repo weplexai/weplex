@@ -1,0 +1,67 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+// ── JSON-RPC types ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct JsonRpcRequest {
+    #[allow(dead_code)]
+    pub jsonrpc: String,
+    pub id: Option<Value>,
+    pub method: String,
+    #[serde(default)]
+    pub params: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsonRpcResponse {
+    pub jsonrpc: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<JsonRpcError>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsonRpcError {
+    pub code: i64,
+    pub message: String,
+}
+
+impl JsonRpcResponse {
+    pub fn success(id: Option<Value>, result: Value) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    pub fn error(id: Option<Value>, code: i64, message: String) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: None,
+            error: Some(JsonRpcError { code, message }),
+        }
+    }
+}
+
+// ── MCP initialize response ────────────────────────────────────────────────
+
+/// Build the response for the MCP `initialize` method.
+pub fn initialize_result() -> Value {
+    serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {
+            "tools": {}
+        },
+        "serverInfo": {
+            "name": "weplex",
+            "version": env!("CARGO_PKG_VERSION")
+        }
+    })
+}

@@ -5,6 +5,16 @@ import type { PipelineConfig, PipelineStage } from '../components/overlays/types
 import { sessionStore } from './sessionStore.svelte';
 import { collabPipelineStore } from './collabPipelineStore.svelte';
 
+// ── MCP event payload ─────────────────────────────────────────────────────
+
+interface McpStageCompletePayload {
+  run_id: string;
+  stage_name: string;
+  artifact: string;
+  status: string; // "success" or "failure"
+  error: string;
+}
+
 // ── Interactive Pipeline Run ────────────────────────────────────────────────
 
 interface InteractiveRun {
@@ -19,6 +29,8 @@ interface InteractiveRun {
   currentStageIndex: number;
   startedAt: number;
   finishedAt: number | null;
+  /** MCP socket path for this run (set after start_mcp_for_run) */
+  mcpSocketPath: string | null;
 }
 
 interface InteractiveStage {
@@ -33,11 +45,88 @@ interface InteractiveStage {
   promptInjected: boolean;
   /** Track if Claude was ever 'active' — only then does 'idle' mean "finished" */
   wasActive: boolean;
+  /** Artifact from MCP completion (takes priority over PTY output) */
+  mcpArtifact: string | null;
+  /** Whether stage was completed via MCP (skip idle detection) */
+  completedViaMcp: boolean;
 }
 
 let runs = $state<InteractiveRun[]>([]);
 let activeRunId = $state<string | null>(null);
 let watchInterval: ReturnType<typeof setInterval> | null = null;
+let mcpUnlisten: UnlistenFn | null = null;
+
+// ── MCP event handler ─────────────────────────────────────────────────────
+
+function handleMcpStageComplete(payload: McpStageCompletePayload) {
+  const run = runs.find((r) => r.id === payload.run_id);
+  if (!run || run.status !== 'running') {
+    console.warn(`[Weplex] MCP event for unknown/inactive run: ${payload.run_id}`);
+    return;
+  }
+
+  const currentStage = run.stages[run.currentStageIndex];
+  if (!currentStage || currentStage.name !== payload.stage_name) {
+    console.warn(
+      `[Weplex] MCP event for non-current stage "${payload.stage_name}" (current: "${currentStage?.name}")`,
+    );
+    return;
+  }
+
+  if (currentStage.status !== 'running') return;
+
+  if (payload.status === 'success') {
+    currentStage.completedViaMcp = true;
+    currentStage.mcpArtifact = payload.artifact;
+    currentStage.status = 'completed';
+    console.log(`[Weplex] Stage "${payload.stage_name}" completed via MCP`);
+    advanceRun(run);
+  } else {
+    currentStage.completedViaMcp = true;
+    currentStage.status = 'failed';
+    run.status = 'failed';
+    run.finishedAt = Date.now();
+    console.error(`[Weplex] Stage "${payload.stage_name}" failed via MCP: ${payload.error}`);
+    // Stop MCP socket on failure
+    stopMcpForRun(run.id);
+  }
+
+  runs = [...runs]; // trigger reactivity
+}
+
+// ── MCP lifecycle ─────────────────────────────────────────────────────────
+
+async function startMcpForRun(runId: string): Promise<string | null> {
+  try {
+    const socketPath = await invoke<string>('start_mcp_for_run', { runId });
+    console.log(`[Weplex] MCP socket started for run ${runId}: ${socketPath}`);
+    return socketPath;
+  } catch (e) {
+    console.warn(`[Weplex] Failed to start MCP for run ${runId}:`, e);
+    return null;
+  }
+}
+
+async function stopMcpForRun(runId: string): Promise<void> {
+  try {
+    await invoke('stop_mcp_for_run', { runId });
+    console.log(`[Weplex] MCP socket stopped for run ${runId}`);
+  } catch (e) {
+    console.warn(`[Weplex] Failed to stop MCP for run ${runId}:`, e);
+  }
+}
+
+async function setupMcpListener(): Promise<void> {
+  if (mcpUnlisten) return; // already listening
+  mcpUnlisten = await listen<McpStageCompletePayload>('mcp-stage-complete', (event) => {
+    handleMcpStageComplete(event.payload);
+  });
+}
+
+function teardownMcpListener(): void {
+  mcpUnlisten?.();
+  mcpUnlisten = null;
+}
 
 function flattenPipelineStages(stages: PipelineStage[]): InteractiveStage[] {
   const result: InteractiveStage[] = [];
@@ -55,6 +144,8 @@ function flattenPipelineStages(stages: PipelineStage[]): InteractiveStage[] {
           parallel: null,
           promptInjected: false,
           wasActive: false,
+          mcpArtifact: null,
+          completedViaMcp: false,
         });
       }
     } else {
@@ -68,6 +159,8 @@ function flattenPipelineStages(stages: PipelineStage[]): InteractiveStage[] {
         parallel: null,
         promptInjected: false,
         wasActive: false,
+        mcpArtifact: null,
+        completedViaMcp: false,
       });
     }
   }
@@ -111,6 +204,9 @@ function checkRunProgress() {
 
     const currentStage = run.stages[run.currentStageIndex];
     if (!currentStage || currentStage.status !== 'running') continue;
+
+    // Skip if already completed via MCP (MCP has priority over idle detection)
+    if (currentStage.completedViaMcp) continue;
 
     if (currentStage.sessionId !== null) {
       const session = sessionStore.sessions.find((s) => s.id === currentStage.sessionId);
@@ -166,6 +262,8 @@ function advanceRun(run: InteractiveRun) {
     // All stages done
     run.status = 'completed';
     run.finishedAt = Date.now();
+    // Stop MCP socket when pipeline completes
+    stopMcpForRun(run.id);
     return;
   }
 
@@ -180,6 +278,18 @@ function startStage(run: InteractiveRun, index: number) {
   stage.status = 'running';
   stage.promptInjected = false;
   stage.wasActive = false;
+  stage.completedViaMcp = false;
+  stage.mcpArtifact = null;
+
+  // Build extra env vars for MCP integration
+  const extraEnvVars: Record<string, string> = {
+    ...run.envVars,
+    WEPLEX_RUN_ID: run.id,
+    WEPLEX_STAGE_NAME: stage.name,
+  };
+  if (run.mcpSocketPath) {
+    extraEnvVars['WEPLEX_MCP_SOCKET'] = run.mcpSocketPath;
+  }
 
   // Create a real PTY session — prompt injection handled by checkRunProgress
   const session = sessionStore.create({
@@ -187,6 +297,7 @@ function startStage(run: InteractiveRun, index: number) {
     cwd: run.cwd,
     name: `${run.pipelineName}: ${stage.agent}`,
     spaceId: sessionStore.activeSession?.spaceId || 'default',
+    extraEnvVars,
   });
 
   stage.sessionId = session.id;
@@ -258,6 +369,7 @@ async function executeStageLocally(
   task: string,
   cwd: string,
   artifacts: Record<string, string>,
+  mcpContext?: { runId: string; socketPath: string },
 ): Promise<string> {
   // Build prompt with artifact context
   let prompt = `## Collaborative Pipeline Stage: ${stage.name}\n\n`;
@@ -277,12 +389,21 @@ async function executeStageLocally(
     }
   }
 
+  // Build extra env vars for MCP integration
+  const extraEnvVars: Record<string, string> = {};
+  if (mcpContext) {
+    extraEnvVars['WEPLEX_RUN_ID'] = mcpContext.runId;
+    extraEnvVars['WEPLEX_STAGE_NAME'] = stage.name;
+    extraEnvVars['WEPLEX_MCP_SOCKET'] = mcpContext.socketPath;
+  }
+
   // Create PTY session for this stage
   const session = sessionStore.create({
     command: stage.agent || 'claude',
     cwd,
     name: `Collab: ${stage.name}`,
     spaceId: sessionStore.activeSession?.spaceId || 'default',
+    extraEnvVars: Object.keys(extraEnvVars).length > 0 ? extraEnvVars : undefined,
   });
 
   sessionStore.activate(session.id);
@@ -309,6 +430,19 @@ async function executeStageLocally(
   // Await the listener setup
   unlistenOutput = await outputReady;
 
+  // Listen for MCP stage completion (takes priority over idle detection)
+  let mcpUnlistenLocal: UnlistenFn | null = null;
+  let mcpResult: { artifact: string; status: string; error: string } | null = null;
+
+  if (mcpContext) {
+    mcpUnlistenLocal = await listen<McpStageCompletePayload>('mcp-stage-complete', (event) => {
+      const p = event.payload;
+      if (p.run_id === mcpContext.runId && p.stage_name === stage.name && !mcpResult) {
+        mcpResult = { artifact: p.artifact, status: p.status, error: p.error };
+      }
+    });
+  }
+
   // Wait for the agent to become idle (ready for input), then inject prompt
   return new Promise<string>((resolve, reject) => {
     let promptInjected = false;
@@ -317,9 +451,21 @@ async function executeStageLocally(
     function cleanup() {
       clearInterval(checkInterval);
       unlistenOutput?.();
+      mcpUnlistenLocal?.();
     }
 
     const checkInterval = setInterval(() => {
+      // MCP completion takes priority over idle detection
+      if (mcpResult) {
+        cleanup();
+        if (mcpResult.status === 'success') {
+          resolve(mcpResult.artifact || `Stage "${stage.name}" completed via MCP`);
+        } else {
+          reject(new Error(`Stage "${stage.name}" failed via MCP: ${mcpResult.error}`));
+        }
+        return;
+      }
+
       const s = sessionStore.sessions.find((sess) => sess.id === session.id);
       if (!s) {
         cleanup();
@@ -383,7 +529,15 @@ export const pipelineRunStore = {
   },
 
   init() {
-    // No-op for interactive mode (no Tauri event listeners needed)
+    // Set up MCP event listener for stage completion signals from Rust IPC
+    setupMcpListener().catch((e) =>
+      console.warn('[Weplex] Failed to set up MCP listener:', e),
+    );
+  },
+
+  /** Clean up MCP listener. Call on app shutdown if needed. */
+  destroy() {
+    teardownMcpListener();
   },
 
   /** Execute a single stage locally for collaborative pipeline delegation. */
@@ -409,6 +563,9 @@ export const pipelineRunStore = {
     const runId = crypto.randomUUID();
     const stages = flattenPipelineStages(config.stages);
 
+    // Start MCP socket for this run before creating the run object
+    const mcpSocketPath = await startMcpForRun(runId);
+
     const run: InteractiveRun = {
       id: runId,
       pipelineName: config.name,
@@ -421,6 +578,7 @@ export const pipelineRunStore = {
       currentStageIndex: 0,
       startedAt: Date.now(),
       finishedAt: null,
+      mcpSocketPath,
     };
 
     runs = [...runs, run];
@@ -445,6 +603,8 @@ export const pipelineRunStore = {
     if (currentStage?.sessionId) {
       sessionStore.kill(currentStage.sessionId);
     }
+    // Stop MCP socket on cancel
+    stopMcpForRun(runId);
     runs = [...runs];
   },
 

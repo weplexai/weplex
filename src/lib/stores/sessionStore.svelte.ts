@@ -86,6 +86,7 @@ export const sessionStore = {
       profileId?: string;
       folderId?: string;
       pinned?: boolean;
+      extraEnvVars?: Record<string, string>;
     } = {},
   ): Session {
     const id = nextId++;
@@ -108,6 +109,7 @@ export const sessionStore = {
       lastActivity: now,
       command: opts.command,
       cwd: opts.cwd || '~',
+      extraEnvVars: opts.extraEnvVars,
     };
 
     sessions.push(session);

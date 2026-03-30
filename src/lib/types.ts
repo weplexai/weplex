@@ -66,6 +66,9 @@ export interface Session {
 
   // User annotations
   tags?: string[];
+
+  // Extra environment variables (e.g. MCP socket path for pipeline stages)
+  extraEnvVars?: Record<string, string>;
 }
 
 export interface Note {

@@ -110,6 +110,21 @@ fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, 
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+// ── Prepared run (returned by prepare_run, consumed by launch_run) ──────────
+
+/// Data needed to launch a pipeline run on a background thread.
+/// Created by `PipelineEngine::prepare_run()`, consumed by `PipelineEngine::launch_run()`.
+pub struct PreparedRun {
+    pub run_id: String,
+    run_arc: Arc<Mutex<PipelineRun>>,
+    cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+    pipeline_stages: Vec<PipelineStage>,
+    agent_map: HashMap<String, weplex_agents::WeplexAgent>,
+    task: String,
+    cwd: String,
+    profile_env: HashMap<String, String>,
+}
+
 // ── Engine ───────────────────────────────────────────────────────────────────
 
 /// Orchestrates pipeline runs: parses YAML configs, spawns agent processes,
@@ -118,6 +133,8 @@ pub struct PipelineEngine {
     runs: HashMap<String, Arc<Mutex<PipelineRun>>>,
     /// Flags for cancellation — checked by orchestrator threads
     cancel_flags: HashMap<String, Arc<std::sync::atomic::AtomicBool>>,
+    /// MCP artifacts stored by (run_id, stage_name) — set via deck_stage_complete
+    mcp_artifacts: HashMap<(String, String), String>,
 }
 
 impl PipelineEngine {
@@ -125,17 +142,36 @@ impl PipelineEngine {
         Self {
             runs: HashMap::new(),
             cancel_flags: HashMap::new(),
+            mcp_artifacts: HashMap::new(),
         }
     }
 
-    pub fn start_run(
+    /// Store an MCP artifact for a stage (called from IPC handler).
+    pub fn set_mcp_artifact(&mut self, run_id: &str, stage_name: &str, artifact: &str) {
+        self.mcp_artifacts.insert(
+            (run_id.to_string(), stage_name.to_string()),
+            artifact.to_string(),
+        );
+    }
+
+    /// Retrieve an MCP artifact for a stage.
+    pub fn get_mcp_artifact(&self, run_id: &str, stage_name: &str) -> Option<&String> {
+        self.mcp_artifacts
+            .get(&(run_id.to_string(), stage_name.to_string()))
+    }
+
+    /// Prepare a pipeline run: parse config, create run record, emit initial event.
+    /// Returns a `PreparedRun` that the caller can launch with `launch_run()`.
+    /// This allows the caller to start the MCP socket BEFORE spawning the
+    /// orchestration thread, avoiding a race condition in headless mode.
+    pub fn prepare_run(
         &mut self,
         pipeline_file: &str,
         task: &str,
         cwd: &str,
         profile_env: HashMap<String, String>,
-        app: AppHandle,
-    ) -> Result<String, String> {
+        app: &AppHandle,
+    ) -> Result<PreparedRun, String> {
         // Cleanup old finished runs before adding a new one
         self.cleanup_old_runs();
 
@@ -178,26 +214,43 @@ impl PipelineEngine {
             },
         );
 
-        let run_id_clone = run_id.clone();
-        let task_owned = task.to_string();
-        let cwd_owned = resolve_cwd(cwd);
-        let pipeline_stages = config.stages;
+        Ok(PreparedRun {
+            run_id,
+            run_arc,
+            cancel_flag,
+            pipeline_stages: config.stages,
+            agent_map,
+            task: task.to_string(),
+            cwd: resolve_cwd(cwd),
+            profile_env,
+        })
+    }
+
+    /// Launch a previously prepared run on a background thread.
+    /// `engine_arc` is needed so the orchestrator can read MCP artifacts.
+    pub fn launch_run(
+        prepared: PreparedRun,
+        engine_arc: Arc<Mutex<PipelineEngine>>,
+        app: AppHandle,
+    ) -> String {
+        let run_id = prepared.run_id.clone();
 
         std::thread::spawn(move || {
             orchestrate(
-                run_id_clone,
-                run_arc,
-                cancel_flag,
-                pipeline_stages,
-                agent_map,
-                task_owned,
-                cwd_owned,
-                profile_env,
+                prepared.run_id,
+                prepared.run_arc,
+                prepared.cancel_flag,
+                prepared.pipeline_stages,
+                prepared.agent_map,
+                prepared.task,
+                prepared.cwd,
+                prepared.profile_env,
+                engine_arc,
                 app,
             );
         });
 
-        Ok(run_id)
+        run_id
     }
 
     pub fn cancel_run(&mut self, run_id: &str) -> Result<(), String> {
@@ -272,6 +325,7 @@ fn orchestrate(
     task: String,
     cwd: String,
     profile_env: HashMap<String, String>,
+    engine_arc: Arc<Mutex<PipelineEngine>>,
     app: AppHandle,
 ) {
     let mut artifacts: HashMap<String, String> = HashMap::new();
@@ -300,7 +354,12 @@ fn orchestrate(
             for (name, result) in results {
                 match result {
                     Ok(artifact) => {
-                        artifacts.insert(name, artifact);
+                        // Prefer MCP artifact over stdout capture
+                        let final_artifact = lock_or_recover(&engine_arc)
+                            .get_mcp_artifact(&run_id, &name)
+                            .cloned()
+                            .unwrap_or(artifact);
+                        artifacts.insert(name, final_artifact);
                     }
                     Err((is_optional, _)) => {
                         if !is_optional {
@@ -340,13 +399,18 @@ fn orchestrate(
                 &app,
             ) {
                 Ok((artifact, duration_ms)) => {
+                    // Prefer MCP artifact over stdout capture
+                    let final_artifact = lock_or_recover(&engine_arc)
+                        .get_mcp_artifact(&run_id, &stage_name)
+                        .cloned()
+                        .unwrap_or(artifact);
                     let state = StageState::Completed {
-                        artifact: artifact.clone(),
+                        artifact: final_artifact.clone(),
                         duration_ms,
                     };
                     update_stage_state(&run, &stage_name, state.clone());
                     emit_stage_changed(&app, &run_id, &stage_name, state);
-                    artifacts.insert(stage_name, artifact);
+                    artifacts.insert(stage_name, final_artifact);
                 }
                 Err((exit_code, output, duration_ms)) => {
                     if optional {
@@ -529,6 +593,16 @@ fn execute_stage(
     // Merge profile env (auth, config) with agent-specific safe env
     let mut merged_env = profile_env.clone();
     merged_env.extend(safe_env);
+
+    // Inject MCP env vars so the weplex-mcp server can connect to the right socket
+    merged_env.insert("WEPLEX_RUN_ID".to_string(), run_id.to_string());
+    merged_env.insert("WEPLEX_STAGE_NAME".to_string(), stage_name.to_string());
+    merged_env.insert(
+        "WEPLEX_MCP_SOCKET".to_string(),
+        crate::ipc_server::IpcSocketPool::socket_path_for_run(run_id)
+            .to_string_lossy()
+            .to_string(),
+    );
 
     let mut child = Command::new(&resolved_binary)
         .args(&args)

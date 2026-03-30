@@ -19,9 +19,11 @@
   import { uiStore } from './lib/stores/uiStore';
   import { splitStore } from './lib/stores/splitStore';
   import { authStore } from './lib/stores/authStore.svelte';
+  import { pipelineRunStore } from './lib/stores/pipelineRunStore.svelte';
   import { HYPERSPACE_ID } from './lib/types';
   import { handleGlobalKeydown } from './lib/utils/shortcuts';
   import { checkForUpdates } from './lib/utils/updater';
+  import { invoke } from '@tauri-apps/api/core';
 
   onMount(() => {
     if (sessionStore.sessions.length === 0) {
@@ -30,6 +32,14 @@
 
     // Initialize auth (load tokens, fetch profile, sync) — silent on failure
     authStore.init().catch((e) => console.error('[Weplex] Auth init failed:', e));
+
+    // Initialize MCP event listener for pipeline stage completions
+    pipelineRunStore.init();
+
+    // Register MCP server config in Claude's settings (~/.claude.json)
+    invoke('register_mcp_in_claude').catch((e) =>
+      console.warn('[Weplex] Failed to register MCP in Claude config:', e),
+    );
 
     window.addEventListener('keydown', handleGlobalKeydown);
 

@@ -288,6 +288,11 @@
         }
       }
 
+      // Merge extra env vars from session (e.g. MCP socket path for pipeline stages)
+      if (session?.extraEnvVars) {
+        envVars = { ...(envVars || {}), ...session.extraEnvVars };
+      }
+
       await invoke('create_pty', {
         sessionId,
         cols: term.cols > 2 ? term.cols : 80,

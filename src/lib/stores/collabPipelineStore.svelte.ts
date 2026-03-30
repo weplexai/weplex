@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   CollaborativeRun,
   StageDefinitionPayload,
@@ -8,6 +10,16 @@ import { pipelineWsService } from '../services/pipelineWsService';
 import { getAccessToken } from '../services/apiClient';
 import { showNativeNotification } from '../utils/notifications';
 import { authStore } from './authStore.svelte';
+
+// ── MCP event payload (same as pipelineRunStore) ──────────────────────────
+
+interface McpStageCompletePayload {
+  run_id: string;
+  stage_name: string;
+  artifact: string;
+  status: string;
+  error: string;
+}
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -20,6 +32,7 @@ let error = $state<string | null>(null);
 let unsubRunUpdated: (() => void) | null = null;
 let unsubStageReady: (() => void) | null = null;
 let unsubNotification: (() => void) | null = null;
+let mcpUnlisten: UnlistenFn | null = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -64,13 +77,70 @@ async function triggerNativeNotification(title: string, body: string): Promise<v
   await showNativeNotification(title, body);
 }
 
+/** Handle MCP stage completion for collaborative runs — sync artifact to server. */
+async function handleMcpStageComplete(payload: McpStageCompletePayload): Promise<void> {
+  const run = runs.find((r) => r.id === payload.run_id);
+  if (!run || run.status !== 'running') return;
+
+  const stage = run.stages.find((s) => s.name === payload.stage_name);
+  if (!stage || stage.status !== 'running') return;
+
+  try {
+    if (payload.status === 'success') {
+      const updatedRun = await pipelineCollabService.completeStage(
+        payload.run_id,
+        payload.stage_name,
+        payload.artifact,
+      );
+      updateRunInList(updatedRun);
+      console.log(`[Weplex] Collab stage "${payload.stage_name}" completed via MCP`);
+    } else {
+      const updatedRun = await pipelineCollabService.failStage(
+        payload.run_id,
+        payload.stage_name,
+        payload.error || 'MCP stage failed',
+      );
+      updateRunInList(updatedRun);
+      console.error(`[Weplex] Collab stage "${payload.stage_name}" failed via MCP: ${payload.error}`);
+    }
+  } catch (e) {
+    console.error(`[Weplex] Failed to sync MCP stage result to server:`, e);
+  }
+}
+
+async function setupMcpListener(): Promise<void> {
+  if (mcpUnlisten) return;
+  mcpUnlisten = await listen<McpStageCompletePayload>('mcp-stage-complete', (event) => {
+    // Only handle events for collaborative runs (check if run ID matches a collab run)
+    const run = runs.find((r) => r.id === event.payload.run_id);
+    if (run) {
+      handleMcpStageComplete(event.payload);
+    }
+  });
+}
+
+/** Pre-fetch artifacts for a collaborative stage's dependencies. */
+async function prefetchArtifacts(runId: string, receives: string[]): Promise<void> {
+  for (const dep of receives) {
+    try {
+      const artifact = await pipelineCollabService.getArtifact(runId, dep);
+      // Store artifact locally so MCP deck_get_artifact can find it
+      await invoke('set_run_artifact', { runId, stageName: dep, artifact });
+    } catch (e) {
+      console.warn(`[Weplex] Failed to pre-fetch artifact for "${dep}":`, e);
+    }
+  }
+}
+
 function cleanupWs(): void {
   unsubRunUpdated?.();
   unsubStageReady?.();
   unsubNotification?.();
+  mcpUnlisten?.();
   unsubRunUpdated = null;
   unsubStageReady = null;
   unsubNotification = null;
+  mcpUnlisten = null;
   pipelineWsService.disconnect();
 }
 
@@ -104,6 +174,11 @@ export const collabPipelineStore = {
         pipelineCollabService.getRuns('pending').catch(() => [] as CollaborativeRun[]),
       ]);
       runs = [...active, ...pending];
+
+      // Set up MCP event listener for collaborative stage completions
+      setupMcpListener().catch((e) =>
+        console.warn('[Weplex] Failed to set up collab MCP listener:', e),
+      );
 
       // Connect WebSocket for real-time updates
       const user = authStore.user;
@@ -166,10 +241,19 @@ export const collabPipelineStore = {
     }
   },
 
-  /** Mark a stage as running (claimed by current user). */
+  /** Mark a stage as running (claimed by current user). Pre-fetches dependency artifacts. */
   async claimStage(runId: string, stageName: string): Promise<void> {
     error = null;
     try {
+      // Find the stage to get its dependency list
+      const run = runs.find((r) => r.id === runId);
+      const stage = run?.stages.find((s) => s.name === stageName);
+
+      // Pre-fetch artifacts from dependencies so MCP deck_get_artifact works locally
+      if (stage && stage.receives.length > 0) {
+        await prefetchArtifacts(runId, stage.receives);
+      }
+
       const updatedRun = await pipelineCollabService.startStage(runId, stageName);
       updateRunInList(updatedRun);
     } catch (e) {
