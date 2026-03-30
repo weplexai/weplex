@@ -5,6 +5,7 @@ import { syncService } from '../services/syncService';
 import { invoke } from '@tauri-apps/api/core';
 import { teamStore } from './teamStore.svelte';
 import { collabPipelineStore } from './collabPipelineStore.svelte';
+import { presenceStore } from './presenceStore.svelte';
 import { pipelineWsService } from '../services/pipelineWsService';
 
 const KEYCHAIN_KEY = 'auth_tokens';
@@ -133,6 +134,7 @@ export const authStore = {
       // Initialize team and collaborative pipelines after auth
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
       collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
+      presenceStore.init();
       // Ensure file backup is in sync
       fileSaveTokens(tokens!).catch(() => {});
     } catch (e: any) {
@@ -171,6 +173,7 @@ export const authStore = {
         syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after retry:', e));
         teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
         collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
+      presenceStore.init();
         // Clean up listener
         if (focusRetryCleanup) {
           focusRetryCleanup();
@@ -221,6 +224,7 @@ export const authStore = {
       // Initialize team and collaborative pipelines after login
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
       collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
+      presenceStore.init();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Login failed';
       throw e;
@@ -286,6 +290,7 @@ export const authStore = {
       // Initialize team and collaborative pipelines after OAuth
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
       collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
+      presenceStore.init();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('Bind failed')) {
@@ -314,6 +319,7 @@ export const authStore = {
     // Clean up team and collaborative pipeline state
     teamStore.reset();
     collabPipelineStore.reset();
+    presenceStore.reset();
     pipelineWsService.disconnect();
 
     // Clean up any pending retry listener
