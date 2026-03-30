@@ -22,6 +22,7 @@ export type PipelineStage = {
   receives: string[];
   optional: boolean | null;
   parallel: PipelineStage[] | null;
+  owner: string | null;
 };
 
 export type PipelineConfig = {

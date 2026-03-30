@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import Select from '../Select.svelte';
   import { modelClass, initial, shortenPath, getMissingAgents } from './helpers';
   import {
     ChevronDown,
@@ -104,7 +105,7 @@
     editingPipeline = {
       name: 'New Pipeline',
       description: '',
-      stages: [{ agent: '', role: '', optional: null, parallel: null }],
+      stages: [{ agent: '', role: '', optional: null, parallel: null, owner: null }],
     };
     selectedNodeIndex = 0;
     undoStack = [];
@@ -219,7 +220,7 @@
 
   function addStageAt(index: number) {
     mutateStages((stages) => {
-      stages.splice(index, 0, { agent: '', role: '', optional: null, parallel: null });
+      stages.splice(index, 0, { agent: '', role: '', optional: null, parallel: null, owner: null });
       return stages;
     });
     selectedNodeIndex = index;
@@ -232,9 +233,10 @@
         role: null,
         optional: null,
         parallel: [
-          { agent: '', role: '', optional: null, parallel: null },
-          { agent: '', role: '', optional: null, parallel: null },
+          { agent: '', role: '', optional: null, parallel: null, owner: null },
+          { agent: '', role: '', optional: null, parallel: null, owner: null },
         ],
+        owner: null,
       });
       return stages;
     });
@@ -282,7 +284,7 @@
       if (stage.parallel) {
         stage.parallel = [
           ...stage.parallel,
-          { agent: '', role: '', optional: null, parallel: null },
+          { agent: '', role: '', optional: null, parallel: null, owner: null },
         ];
       }
       return stages;
@@ -589,22 +591,14 @@
                     <div class="n8n-node-body">
                       {#if selectedNodeIndex === i}
                         <div class="n8n-node-edit">
-                          <select
+                          <Select
                             value={ps.agent || ''}
-                            onchange={(e) =>
-                              updateParallelSubField(
-                                i,
-                                j,
-                                'agent',
-                                (e.target as HTMLSelectElement).value,
-                              )}
-                            onclick={(e) => e.stopPropagation()}
-                          >
-                            <option value="">Select agent...</option>
-                            {#each sortedAgents as a}
-                              <option value={a.name}>{a.name}</option>
-                            {/each}
-                          </select>
+                            options={[
+                              { value: '', label: 'Select agent...' },
+                              ...sortedAgents.map((a) => ({ value: a.name, label: a.name })),
+                            ]}
+                            onchange={(v) => updateParallelSubField(i, j, 'agent', v)}
+                          />
                           <input
                             type="text"
                             value={ps.role || ''}
@@ -718,17 +712,14 @@
               <div class="n8n-node-body">
                 {#if selectedNodeIndex === i}
                   <div class="n8n-node-edit">
-                    <select
+                    <Select
                       value={stage.agent || ''}
-                      onchange={(e) =>
-                        updateStageField(i, 'agent', (e.target as HTMLSelectElement).value)}
-                      onclick={(e) => e.stopPropagation()}
-                    >
-                      <option value="">Select agent...</option>
-                      {#each sortedAgents as a}
-                        <option value={a.name}>{a.name}</option>
-                      {/each}
-                    </select>
+                      options={[
+                        { value: '', label: 'Select agent...' },
+                        ...sortedAgents.map((a) => ({ value: a.name, label: a.name })),
+                      ]}
+                      onchange={(v) => updateStageField(i, 'agent', v)}
+                    />
                     <input
                       type="text"
                       value={stage.role || ''}

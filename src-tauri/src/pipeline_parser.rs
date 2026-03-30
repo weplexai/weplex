@@ -23,6 +23,9 @@ pub struct PipelineStage {
     /// If present, sub-stages run concurrently
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel: Option<Vec<PipelineStage>>,
+    /// Owner (team member email) for collaborative pipeline delegation
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// Visual layout positions (optional, for canvas editor).
@@ -209,10 +212,15 @@ pub fn generate_instructions(file_path: &str, task: &str) -> Result<String, Stri
                     } else {
                         ""
                     };
+                    let owner_info = match ps.owner {
+                        Some(ref o) => format!(" [owner: {}]", o),
+                        None => String::new(),
+                    };
                     out.push_str(&format!(
-                        "- **{}**{}: {}\n",
+                        "- **{}**{}{}: {}\n",
                         agent,
                         opt,
+                        owner_info,
                         ps.role.as_deref().unwrap_or("Execute your role")
                     ));
                 }
@@ -224,11 +232,16 @@ pub fn generate_instructions(file_path: &str, task: &str) -> Result<String, Stri
             } else {
                 ""
             };
+            let owner_info = match stage.owner {
+                Some(ref o) => format!(" (owner: {})", o),
+                None => String::new(),
+            };
             out.push_str(&format!(
-                "### Stage {}: {}{}\n\nUse the Agent tool to invoke the `{}` sub-agent with this role:\n> {}\n\n",
+                "### Stage {}: {}{}{}\n\nUse the Agent tool to invoke the `{}` sub-agent with this role:\n> {}\n\n",
                 i + 1,
                 agent,
                 opt,
+                owner_info,
                 agent,
                 stage.role.as_deref().unwrap_or("Execute your role")
             ));

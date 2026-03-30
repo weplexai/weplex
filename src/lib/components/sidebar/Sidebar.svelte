@@ -7,7 +7,7 @@
   import { uiStore } from '../../stores/uiStore';
   import { dragStore } from '../../stores/dragStore';
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-  import { Plus, X, User, Download, RotateCw } from 'lucide-svelte';
+  import { Plus, X, User, Settings, Download, RotateCw } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
   import { updateState, installUpdate, restartToUpdate } from '../../utils/updater';
 
@@ -26,6 +26,7 @@
   import FolderItem from './FolderItem.svelte';
   import HyperspaceView from './HyperspaceView.svelte';
   import PipelineGroup from './PipelineGroup.svelte';
+  import CollabPipelineList from './CollabPipelineList.svelte';
   import { splitStore } from '../../stores/splitStore';
   import { findNode } from '../../utils/splitTree';
   import type { DropTargetType } from '../../stores/dragStore';
@@ -445,7 +446,7 @@
   >
     <div class="traffic-light-area" data-tauri-drag-region>
       <button
-        class="account-btn"
+        class="header-icon-btn"
         class:signed-in={authStore.isAuthenticated}
         title={authStore.isAuthenticated
           ? authStore.user?.displayName || authStore.user?.email || 'Account'
@@ -461,6 +462,13 @@
         {:else}
           <User size={14} />
         {/if}
+      </button>
+      <button
+        class="header-icon-btn"
+        title="Settings"
+        onclick={() => uiStore.openOverlay('settings')}
+      >
+        <Settings size={14} />
       </button>
     </div>
     <SidebarSearch />
@@ -530,6 +538,9 @@
               .slice(-3) as run (run.id)}
               <PipelineGroup {run} />
             {/each}
+
+            <!-- Collaborative pipeline runs -->
+            <CollabPipelineList />
 
             <!-- Pinned zone -->
             <div
@@ -714,10 +725,11 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: 4px;
     padding-right: 10px;
   }
 
-  .account-btn {
+  .header-icon-btn {
     -webkit-app-region: no-drag;
     margin-top: 2px;
     width: 22px;
@@ -725,7 +737,7 @@
     border-radius: var(--weplex-radius-sm);
     border: none;
     background: transparent;
-    color: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -734,11 +746,12 @@
     transition: color 0.15s;
   }
 
-  .account-btn:hover {
-    color: rgba(255, 255, 255, 0.45);
+  .header-icon-btn:hover,
+  .header-icon-btn:active {
+    color: rgba(255, 255, 255, 0.9);
   }
 
-  .account-btn.signed-in {
+  .header-icon-btn.signed-in {
     color: var(--weplex-accent);
   }
 

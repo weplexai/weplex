@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { ChevronRight, ExternalLink, Trash2, Save, Terminal } from 'lucide-svelte';
+  import Select from '../Select.svelte';
   import { modelClass, initial, shortenPath } from './helpers';
 
   interface WeplexAgentData {
@@ -152,12 +153,14 @@
       <div class="form-row">
         <label
           >Binary
-          <select bind:value={formBinary}>
-            {#each BINARIES as bin}
-              <option value={bin}>{binaryIcon(bin)} {bin}</option>
-            {/each}
-            <option value="">Custom path...</option>
-          </select>
+          <Select
+            value={formBinary}
+            options={[
+              ...BINARIES.map((bin) => ({ value: bin, label: `${binaryIcon(bin)} ${bin}` })),
+              { value: '', label: 'Custom path...' },
+            ]}
+            onchange={(v) => { formBinary = v; }}
+          />
         </label>
       </div>
       <div class="form-row">

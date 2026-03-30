@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import Select from '../Select.svelte';
   import { uiStore } from '../../stores/uiStore.svelte';
   import { sessionStore } from '../../stores/sessionStore.svelte';
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
   import { pipelineInjectStore } from '../../stores/pipelineInjectStore.svelte';
+  import { teamStore } from '../../stores/teamStore.svelte';
+  import { collabPipelineStore } from '../../stores/collabPipelineStore.svelte';
+  import { Users } from 'lucide-svelte';
   import { modelShort, modelClass, initial, shortenPath, getMissingAgents } from './helpers';
   import AgentDetail from './AgentDetail.svelte';
   import WeplexAgentDetail from './WeplexAgentDetail.svelte';
@@ -61,6 +65,13 @@
   // Run pipeline state
   let runPipelineCwd = $state('~');
   let runPipelineTask = $state('');
+
+  // Owner assignment for collaborative runs
+  let stageOwners = $state<Record<string, string>>({});
+  let team = $derived(teamStore.team);
+  let teamMembers = $derived(team?.members ?? []);
+  let hasAnyOwner = $derived(Object.values(stageOwners).some((v) => v !== ''));
+  let isCollabMode = $derived(hasAnyOwner && team !== null);
 
   // Pipeline flow editor ref
   let pipelineEditor = $state<PipelineFlowEditor>();
@@ -283,6 +294,21 @@
     runPipelineTask = '';
     editMode = 'run-pipeline';
     editError = null;
+
+    // Initialize owner assignments from YAML owner fields
+    const owners: Record<string, string> = {};
+    for (const stage of selectedPipeline.stages) {
+      if (stage.parallel) {
+        for (const ps of stage.parallel) {
+          const key = ps.name || ps.agent || '';
+          owners[key] = ps.owner || '';
+        }
+      } else {
+        const key = stage.name || stage.agent || '';
+        owners[key] = stage.owner || '';
+      }
+    }
+    stageOwners = owners;
   }
 
   async function launchPipelineEngine() {
@@ -293,7 +319,41 @@
     runPipelineLaunching = true;
     editError = null;
     try {
-      await pipelineRunStore.startRun(selectedPipeline.file_path, runPipelineTask, runPipelineCwd);
+      if (isCollabMode) {
+        // Launch as collaborative run via relay
+        const stageDefs = selectedPipeline.stages.flatMap((stage) => {
+          if (stage.parallel) {
+            return stage.parallel.map((ps) => {
+              const key = ps.name || ps.agent || '';
+              return {
+                name: key,
+                agent: ps.agent || undefined,
+                role: ps.role || undefined,
+                receives: ps.receives || [],
+                optional: ps.optional || undefined,
+                ownerEmail: stageOwners[key] || undefined,
+              };
+            });
+          }
+          const key = stage.name || stage.agent || '';
+          return [{
+            name: key,
+            agent: stage.agent || undefined,
+            role: stage.role || undefined,
+            receives: stage.receives || [],
+            optional: stage.optional || undefined,
+            ownerEmail: stageOwners[key] || undefined,
+          }];
+        });
+        await collabPipelineStore.startCollabRun(
+          selectedPipeline.name,
+          runPipelineTask,
+          stageDefs,
+        );
+      } else {
+        // Solo pipeline run
+        await pipelineRunStore.startRun(selectedPipeline.file_path, runPipelineTask, runPipelineCwd);
+      }
       editMode = 'view';
       close();
     } catch (e: unknown) {
@@ -499,23 +559,31 @@
           <div class="form-row">
             <label
               >Model
-              <select bind:value={editAgent.model}>
-                <option value="opus">Opus</option>
-                <option value="sonnet">Sonnet</option>
-                <option value="haiku">Haiku</option>
-                <option value="inherit">Inherit</option>
-              </select>
+              <Select
+                value={editAgent.model}
+                options={[
+                  { value: 'opus', label: 'Opus' },
+                  { value: 'sonnet', label: 'Sonnet' },
+                  { value: 'haiku', label: 'Haiku' },
+                  { value: 'inherit', label: 'Inherit' },
+                ]}
+                onchange={(v) => { editAgent!.model = v; }}
+              />
             </label>
           </div>
           <div class="form-row">
             <label
               >Permission Mode
-              <select bind:value={editAgent.permission_mode}>
-                <option value="default">Default</option>
-                <option value="plan">Plan</option>
-                <option value="acceptEdits">Accept Edits</option>
-                <option value="bypassPermissions">Bypass</option>
-              </select>
+              <Select
+                value={editAgent.permission_mode}
+                options={[
+                  { value: 'default', label: 'Default' },
+                  { value: 'plan', label: 'Plan' },
+                  { value: 'acceptEdits', label: 'Accept Edits' },
+                  { value: 'bypassPermissions', label: 'Bypass' },
+                ]}
+                onchange={(v) => { editAgent!.permission_mode = v; }}
+              />
             </label>
           </div>
           <div class="form-row">
@@ -542,11 +610,15 @@
           <div class="form-row">
             <label
               >Memory
-              <select bind:value={editAgent.memory}>
-                <option value={null}>None</option>
-                <option value="user">User</option>
-                <option value="project">Project</option>
-              </select>
+              <Select
+                value={editAgent.memory ?? ''}
+                options={[
+                  { value: '', label: 'None' },
+                  { value: 'user', label: 'User' },
+                  { value: 'project', label: 'Project' },
+                ]}
+                onchange={(v) => { editAgent!.memory = v || null; }}
+              />
             </label>
           </div>
           <div class="form-row">
@@ -583,7 +655,7 @@
             disabled={runPipelineLaunching || !runPipelineTask.trim()}
           >
             <Play size={13} />
-            {runPipelineLaunching ? 'Starting...' : 'Launch Pipeline'}
+            {runPipelineLaunching ? 'Starting...' : isCollabMode ? 'Launch Collaborative' : 'Launch Pipeline'}
           </button>
         </div>
       </div>
@@ -633,6 +705,75 @@
             {/if}
           {/each}
         </div>
+
+        <!-- Owner assignment for collaborative runs -->
+        <div class="form-row">
+          <span class="form-label"><Users size={12} /> Owner Assignment</span>
+        </div>
+        {#if team && teamMembers.length > 0}
+          <div class="owner-grid">
+            {#each selectedPipeline.stages as stage}
+              {#if stage.parallel}
+                {#each stage.parallel as ps}
+                  {@const key = ps.name || ps.agent || ''}
+                  <div class="owner-row">
+                    <span class="owner-stage-name">{key}</span>
+                    <Select
+                      class="owner-select"
+                      value={stageOwners[key] || ''}
+                      options={[
+                        { value: '', label: 'Unassigned' },
+                        ...teamMembers.map((m) => ({
+                          value: m.email,
+                          label: m.displayName || m.email,
+                        })),
+                      ]}
+                      onchange={(v) => {
+                        stageOwners[key] = v;
+                        stageOwners = { ...stageOwners };
+                      }}
+                    />
+                  </div>
+                {/each}
+              {:else}
+                {@const key = stage.name || stage.agent || ''}
+                <div class="owner-row">
+                  <span class="owner-stage-name">{key}</span>
+                  <Select
+                    class="owner-select"
+                    value={stageOwners[key] || ''}
+                    options={[
+                      { value: '', label: 'Unassigned' },
+                      ...teamMembers.map((m) => ({
+                        value: m.email,
+                        label: m.displayName || m.email,
+                      })),
+                    ]}
+                    onchange={(v) => {
+                      stageOwners[key] = v;
+                      stageOwners = { ...stageOwners };
+                    }}
+                  />
+                </div>
+              {/if}
+            {/each}
+          </div>
+          {#if isCollabMode}
+            <div class="collab-notice info">
+              <Users size={12} />
+              This pipeline will run as a collaborative run via relay.
+            </div>
+          {:else}
+            <div class="collab-notice">
+              Assign owners to run collaboratively, or leave all unassigned for solo mode.
+            </div>
+          {/if}
+        {:else}
+          <div class="collab-notice muted">
+            <Users size={12} />
+            Create or join a team in Settings &gt; Team for collaborative pipelines.
+          </div>
+        {/if}
 
         <!-- Missing agents warning in runner -->
         {#if runnerMissing.length > 0}
@@ -1162,6 +1303,67 @@
     border: 1px solid color-mix(in srgb, var(--weplex-error) 20%, transparent);
     color: var(--weplex-error);
     font-size: 12px;
+  }
+
+  /* Owner assignment */
+  .owner-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+
+  .owner-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .owner-stage-name {
+    flex: 1;
+    font-size: 12px;
+    font-family: var(--weplex-font-mono);
+    color: var(--weplex-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .owner-select {
+    width: 180px;
+    padding: 4px 8px;
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-sm);
+    background: var(--weplex-bg);
+    color: var(--weplex-text);
+    font-size: 11px;
+    outline: none;
+  }
+
+  .owner-select:focus {
+    border-color: var(--weplex-accent);
+  }
+
+  .collab-notice {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--weplex-text-muted);
+    margin-bottom: 8px;
+  }
+
+  .collab-notice.info {
+    background: color-mix(in srgb, var(--weplex-info) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--weplex-info) 20%, transparent);
+    color: var(--weplex-info);
+  }
+
+  .collab-notice.muted {
+    background: var(--weplex-surface);
+    border: 1px solid var(--weplex-border);
   }
 
   /* ── Buttons (scoped per component — Svelte pattern, shared with AgentDetail/PipelineFlowEditor) ── */

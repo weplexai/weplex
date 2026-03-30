@@ -73,6 +73,11 @@ export function initApiClient(tokenGetter: TokenGetter, tokenSetter: TokenSetter
   setTokens = tokenSetter;
 }
 
+/** Get the current access token, or null if not authenticated. */
+export function getAccessToken(): string | null {
+  return getTokens()?.accessToken ?? null;
+}
+
 // ── Core request method ────────────────────────────────────────────────────
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {

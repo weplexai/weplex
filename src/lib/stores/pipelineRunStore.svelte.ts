@@ -1,8 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { PipelineRunInfo, StageRunInfo, StageStatus, PipelineRunStatus } from '../types';
 import type { PipelineConfig, PipelineStage } from '../components/overlays/types';
 import { sessionStore } from './sessionStore.svelte';
+import { collabPipelineStore } from './collabPipelineStore.svelte';
 
 // ── Interactive Pipeline Run ────────────────────────────────────────────────
 
@@ -196,6 +197,177 @@ function startStage(run: InteractiveRun, index: number) {
   runs = [...runs]; // trigger reactivity
 }
 
+// ── Collaborative check ────────────────────────────────────────────────────
+
+/** Check if any stage has an owner field — means it's a collaborative pipeline. */
+function hasCollaborativeStages(stages: PipelineStage[]): boolean {
+  for (const s of stages) {
+    if (s.owner) return true;
+    if (s.parallel) {
+      for (const ps of s.parallel) {
+        if (ps.owner) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Convert PipelineStage[] to StageDefinitionPayload[] for the collab API. */
+function toCollabStages(
+  stages: PipelineStage[],
+): { name: string; agent?: string; role?: string; receives: string[]; optional?: boolean; ownerEmail?: string }[] {
+  const result: { name: string; agent?: string; role?: string; receives: string[]; optional?: boolean; ownerEmail?: string }[] = [];
+  for (const s of stages) {
+    if (s.parallel) {
+      for (const ps of s.parallel) {
+        result.push({
+          name: ps.name || ps.agent || 'stage',
+          agent: ps.agent || undefined,
+          role: ps.role || undefined,
+          receives: ps.receives || [],
+          optional: ps.optional || undefined,
+          ownerEmail: ps.owner || undefined,
+        });
+      }
+    } else {
+      result.push({
+        name: s.name || s.agent || 'stage',
+        agent: s.agent || undefined,
+        role: s.role || undefined,
+        receives: s.receives || [],
+        optional: s.optional || undefined,
+        ownerEmail: s.owner || undefined,
+      });
+    }
+  }
+  return result;
+}
+
+// ── Local stage execution for collaborative runs ───────────────────────────
+
+/** Max bytes to capture from PTY output for artifact */
+const MAX_ARTIFACT_BYTES = 512 * 1024;
+
+/**
+ * Execute a single pipeline stage locally as a PTY session.
+ * Creates a session, injects the prompt with artifacts, waits for idle, and
+ * returns captured PTY output as the artifact string.
+ */
+async function executeStageLocally(
+  stage: { name: string; agent: string; role: string; receives: string[] },
+  task: string,
+  cwd: string,
+  artifacts: Record<string, string>,
+): Promise<string> {
+  // Build prompt with artifact context
+  let prompt = `## Collaborative Pipeline Stage: ${stage.name}\n\n`;
+  if (stage.role) {
+    prompt += `**Your role:** ${stage.role}\n\n`;
+  }
+  prompt += `## Task\n\n${task}\n`;
+
+  // Inject artifacts from previous stages
+  if (stage.receives.length > 0) {
+    prompt += '\n## Artifacts from previous stages\n\n';
+    for (const dep of stage.receives) {
+      const art = artifacts[dep];
+      if (art) {
+        prompt += `### ${dep}\n\n${art}\n\n`;
+      }
+    }
+  }
+
+  // Create PTY session for this stage
+  const session = sessionStore.create({
+    command: stage.agent || 'claude',
+    cwd,
+    name: `Collab: ${stage.name}`,
+    spaceId: sessionStore.activeSession?.spaceId || 'default',
+  });
+
+  sessionStore.activate(session.id);
+
+  // Start capturing PTY output via Tauri events
+  let outputBuffer = '';
+  let unlistenOutput: UnlistenFn | null = null;
+
+  const outputReady = listen<string>(`pty-output-${session.id}`, (event) => {
+    // PTY output is base64-encoded; decode to text
+    try {
+      const decoded = atob(event.payload);
+      outputBuffer += decoded;
+      // Trim to last MAX_ARTIFACT_BYTES to avoid unbounded growth
+      if (outputBuffer.length > MAX_ARTIFACT_BYTES) {
+        outputBuffer = outputBuffer.slice(-MAX_ARTIFACT_BYTES);
+      }
+    } catch {
+      // If base64 decode fails, append raw payload
+      outputBuffer += event.payload;
+    }
+  });
+
+  // Await the listener setup
+  unlistenOutput = await outputReady;
+
+  // Wait for the agent to become idle (ready for input), then inject prompt
+  return new Promise<string>((resolve, reject) => {
+    let promptInjected = false;
+    let wasActive = false;
+
+    function cleanup() {
+      clearInterval(checkInterval);
+      unlistenOutput?.();
+    }
+
+    const checkInterval = setInterval(() => {
+      const s = sessionStore.sessions.find((sess) => sess.id === session.id);
+      if (!s) {
+        cleanup();
+        reject(new Error('Session disappeared'));
+        return;
+      }
+
+      // Wait for idle → inject prompt
+      if (s.status === 'idle' && !promptInjected) {
+        promptInjected = true;
+        // Clear buffer before injecting — we only want output from the stage execution
+        outputBuffer = '';
+        invoke('write_pty', { sessionId: session.id, data: prompt + '\r' })
+          .then(() => sessionStore.updateStatus(session.id, 'active'))
+          .catch((e) => {
+            cleanup();
+            reject(new Error(`Failed to inject prompt: ${e}`));
+          });
+        return;
+      }
+
+      // Track activation
+      if (s.status === 'active' && promptInjected && !wasActive) {
+        wasActive = true;
+      }
+
+      // Completed: idle after being active — return captured output
+      if (s.status === 'idle' && wasActive) {
+        cleanup();
+        const artifact = outputBuffer.trim() || `Stage "${stage.name}" completed (no output captured)`;
+        resolve(artifact);
+      }
+
+      // Handle error
+      if (s.status === 'error') {
+        cleanup();
+        reject(new Error(`Stage "${stage.name}" errored`));
+      }
+    }, 2000);
+
+    // Timeout after 30 minutes
+    setTimeout(() => {
+      cleanup();
+      reject(new Error(`Stage "${stage.name}" timed out`));
+    }, 30 * 60 * 1000);
+  });
+}
+
 // ── Exported store ──────────────────────────────────────────────────────────
 
 export const pipelineRunStore = {
@@ -214,6 +386,9 @@ export const pipelineRunStore = {
     // No-op for interactive mode (no Tauri event listeners needed)
   },
 
+  /** Execute a single stage locally for collaborative pipeline delegation. */
+  executeStageLocally: executeStageLocally,
+
   async startRun(
     pipelineFile: string,
     task: string,
@@ -224,6 +399,12 @@ export const pipelineRunStore = {
     const pipelines = await invoke<PipelineConfig[]>('list_pipelines');
     const config = pipelines.find((p) => p.file_path === pipelineFile);
     if (!config) throw new Error('Pipeline not found');
+
+    // If any stage has an owner → delegate to collaborative pipeline store
+    if (hasCollaborativeStages(config.stages)) {
+      const collabStages = toCollabStages(config.stages);
+      return collabPipelineStore.startCollabRun(config.name, task, collabStages);
+    }
 
     const runId = crypto.randomUUID();
     const stages = flattenPipelineStages(config.stages);

@@ -278,3 +278,84 @@ export interface AuthResponse {
 }
 
 export type SyncStatus = 'idle' | 'pulling' | 'pushing' | 'error';
+
+// ── Collaborative Pipeline Types ──────────────────────────────────────────
+
+export type CollaborativeRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type CollaborativeStageStatus =
+  | 'pending'
+  | 'waiting'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'skipped';
+
+export interface CollaborativeRun {
+  id: string;
+  teamId: string;
+  initiatorId: string;
+  pipelineName: string;
+  task: string;
+  status: CollaborativeRunStatus;
+  stages: CollaborativeStageInfo[];
+  artifacts: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CollaborativeStageInfo {
+  name: string;
+  agent: string;
+  role: string;
+  receives: string[];
+  optional: boolean;
+  ownerId: string | null;
+  ownerEmail: string | null;
+  status: CollaborativeStageStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface TeamInfo {
+  id: string;
+  name: string;
+  inviteCode: string;
+  ownerId: string;
+  members: TeamMember[];
+}
+
+export interface TeamMember {
+  id: string;
+  email: string;
+  displayName: string | null;
+  teamRole: 'admin' | 'member';
+}
+
+export interface CreateRunPayload {
+  pipelineName: string;
+  task: string;
+  stages: StageDefinitionPayload[];
+}
+
+export interface StageDefinitionPayload {
+  name: string;
+  agent?: string;
+  role?: string;
+  receives: string[];
+  optional?: boolean;
+  ownerEmail?: string;
+}
+
+export interface CreateRunResponse {
+  run: CollaborativeRun;
+  warnings: string[];
+}
+
+export interface PipelineNotification {
+  type: 'stage-ready' | 'run-completed' | 'run-failed';
+  title: string;
+  body: string;
+  runId: string;
+  stageName?: string;
+}

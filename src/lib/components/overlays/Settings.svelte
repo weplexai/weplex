@@ -1,9 +1,11 @@
 <script lang="ts">
+  import Select from '../Select.svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { settingsStore } from '../../stores/settingsStore';
   import { profileStore } from '../../stores/profileStore';
   import { uiStore } from '../../stores/uiStore';
+  import TeamSettings from './TeamSettings.svelte';
   import {
     checkForUpdates,
     updateState,
@@ -65,6 +67,7 @@
     { id: 'general', label: 'General' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'profiles', label: 'Profiles' },
+    { id: 'team', label: 'Team' },
     { id: 'sessions', label: 'Sessions' },
     { id: 'about', label: 'About' },
   ];
@@ -167,18 +170,15 @@
         <h3 class="section-title">Appearance</h3>
         <div class="setting">
           <label class="setting-label" for="set-theme">Theme</label>
-          <select
+          <Select
             id="set-theme"
-            class="setting-select"
             value={settings.theme}
-            onchange={(e) =>
-              settingsStore.update({
-                theme: (e.target as HTMLSelectElement).value as 'dark' | 'light',
-              })}
-          >
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-          </select>
+            options={[
+              { value: 'dark', label: 'Dark' },
+              { value: 'light', label: 'Light' },
+            ]}
+            onchange={(v) => settingsStore.update({ theme: v as 'dark' | 'light' })}
+          />
         </div>
         <div class="setting">
           <label class="setting-label" for="set-font">Font family</label>
@@ -316,6 +316,8 @@
         {/each}
 
         <button class="btn-add-profile" onclick={createProfile}>+ New Profile</button>
+      {:else if activeTab === 'team'}
+        <TeamSettings />
       {:else if activeTab === 'sessions'}
         <h3 class="section-title">Sessions</h3>
         <div class="setting">

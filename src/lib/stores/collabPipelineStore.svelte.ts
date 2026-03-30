@@ -1,0 +1,243 @@
+import type {
+  CollaborativeRun,
+  StageDefinitionPayload,
+  PipelineNotification,
+} from '../types';
+import { pipelineCollabService } from '../services/pipelineCollabService';
+import { pipelineWsService } from '../services/pipelineWsService';
+import { getAccessToken } from '../services/apiClient';
+import { showNativeNotification } from '../utils/notifications';
+import { authStore } from './authStore.svelte';
+
+// ── State ──────────────────────────────────────────────────────────────────
+
+let runs = $state<CollaborativeRun[]>([]);
+let activeRunId = $state<string | null>(null);
+let loading = $state(false);
+let error = $state<string | null>(null);
+
+// WebSocket unsubscribe handles
+let unsubRunUpdated: (() => void) | null = null;
+let unsubStageReady: (() => void) | null = null;
+let unsubNotification: (() => void) | null = null;
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function updateRunInList(updatedRun: CollaborativeRun): void {
+  const idx = runs.findIndex((r) => r.id === updatedRun.id);
+  if (idx >= 0) {
+    const next = [...runs];
+    next[idx] = updatedRun;
+    runs = next;
+  } else {
+    runs = [...runs, updatedRun];
+  }
+}
+
+function handleRunUpdated(run: CollaborativeRun): void {
+  updateRunInList(run);
+}
+
+function handleStageReady(data: { runId: string; stageName: string; ownerEmail: string }): void {
+  const currentUser = authStore.user;
+  if (!currentUser) return;
+
+  // Check if this stage is assigned to the current user
+  if (data.ownerEmail === currentUser.email) {
+    console.log(
+      `[Weplex] Stage "${data.stageName}" in run ${data.runId} is ready for you`,
+    );
+    // Trigger native notification via Tauri
+    triggerNativeNotification(
+      'Pipeline Stage Ready',
+      `Stage "${data.stageName}" is waiting for you`,
+    );
+  }
+}
+
+function handleNotification(data: PipelineNotification): void {
+  console.log('[Weplex] Pipeline notification:', data.type, data.title);
+  triggerNativeNotification(data.title, data.body);
+}
+
+async function triggerNativeNotification(title: string, body: string): Promise<void> {
+  await showNativeNotification(title, body);
+}
+
+function cleanupWs(): void {
+  unsubRunUpdated?.();
+  unsubStageReady?.();
+  unsubNotification?.();
+  unsubRunUpdated = null;
+  unsubStageReady = null;
+  unsubNotification = null;
+  pipelineWsService.disconnect();
+}
+
+// ── Store ──────────────────────────────────────────────────────────────────
+
+export const collabPipelineStore = {
+  get runs() {
+    return runs;
+  },
+  get activeRunId() {
+    return activeRunId;
+  },
+  get activeRun(): CollaborativeRun | undefined {
+    return runs.find((r) => r.id === activeRunId);
+  },
+  get loading() {
+    return loading;
+  },
+  get error() {
+    return error;
+  },
+
+  /** Fetch active runs and connect WebSocket. Call after auth + team init. */
+  async init(): Promise<void> {
+    loading = true;
+    error = null;
+    try {
+      // Fetch active/pending/running runs
+      const [active, pending] = await Promise.all([
+        pipelineCollabService.getRuns('running').catch(() => [] as CollaborativeRun[]),
+        pipelineCollabService.getRuns('pending').catch(() => [] as CollaborativeRun[]),
+      ]);
+      runs = [...active, ...pending];
+
+      // Connect WebSocket for real-time updates
+      const user = authStore.user;
+      if (user) {
+        // Pass the current access token for WebSocket authentication
+        const token = getAccessToken();
+        if (!token) {
+          console.warn('[Weplex] No access token available for WS connection');
+          return;
+        }
+        pipelineWsService.connect(token);
+
+        unsubRunUpdated = pipelineWsService.onRunUpdated(handleRunUpdated);
+        unsubStageReady = pipelineWsService.onStageReady(handleStageReady);
+        unsubNotification = pipelineWsService.onNotification(handleNotification);
+
+        // Join rooms for all active runs
+        for (const run of runs) {
+          pipelineWsService.joinRun(run.id);
+        }
+      }
+    } catch (e) {
+      console.warn('[Weplex] Collaborative pipeline init failed:', e);
+      error = e instanceof Error ? e.message : 'Failed to load collaborative runs';
+    } finally {
+      loading = false;
+    }
+  },
+
+  /** Create a new collaborative pipeline run. Returns the run ID. */
+  async startCollabRun(
+    pipelineName: string,
+    task: string,
+    stages: StageDefinitionPayload[],
+  ): Promise<string> {
+    loading = true;
+    error = null;
+    try {
+      const response = await pipelineCollabService.createRun({
+        pipelineName,
+        task,
+        stages,
+      });
+      const { run, warnings } = response;
+      if (warnings.length > 0) {
+        console.warn('[Weplex] Create run warnings:', warnings);
+      }
+      runs = [...runs, run];
+      activeRunId = run.id;
+
+      // Join WS room for this run
+      pipelineWsService.joinRun(run.id);
+
+      return run.id;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to create collaborative run';
+      throw e;
+    } finally {
+      loading = false;
+    }
+  },
+
+  /** Mark a stage as running (claimed by current user). */
+  async claimStage(runId: string, stageName: string): Promise<void> {
+    error = null;
+    try {
+      const updatedRun = await pipelineCollabService.startStage(runId, stageName);
+      updateRunInList(updatedRun);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to claim stage';
+      throw e;
+    }
+  },
+
+  /** Report stage completion with artifact. */
+  async reportStageComplete(runId: string, stageName: string, artifact: string): Promise<void> {
+    error = null;
+    try {
+      const updatedRun = await pipelineCollabService.completeStage(runId, stageName, artifact);
+      updateRunInList(updatedRun);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to complete stage';
+      throw e;
+    }
+  },
+
+  /** Report stage failure. */
+  async reportStageFail(runId: string, stageName: string, errorMsg: string): Promise<void> {
+    error = null;
+    try {
+      const updatedRun = await pipelineCollabService.failStage(runId, stageName, errorMsg);
+      updateRunInList(updatedRun);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to report stage failure';
+      throw e;
+    }
+  },
+
+  /** Cancel a collaborative run. */
+  async cancelRun(runId: string): Promise<void> {
+    error = null;
+    try {
+      const updatedRun = await pipelineCollabService.cancelRun(runId);
+      updateRunInList(updatedRun);
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to cancel run';
+      throw e;
+    }
+  },
+
+  /** Fetch artifact for a completed stage. */
+  async getArtifact(runId: string, stageName: string): Promise<string> {
+    return pipelineCollabService.getArtifact(runId, stageName);
+  },
+
+  /** Set the currently viewed run. */
+  setActiveRun(runId: string | null): void {
+    activeRunId = runId;
+  },
+
+  /** Clear all state and disconnect WS. Called on logout. */
+  reset(): void {
+    cleanupWs();
+    runs = [];
+    activeRunId = null;
+    loading = false;
+    error = null;
+  },
+
+  clearError(): void {
+    error = null;
+  },
+
+  get runningCount(): number {
+    return runs.filter((r) => r.status === 'running').length;
+  },
+};
