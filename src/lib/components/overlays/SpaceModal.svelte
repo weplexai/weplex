@@ -3,9 +3,13 @@
   import { invoke } from '@tauri-apps/api/core';
   import { spaceStore } from '../../stores/spaceStore';
   import { profileStore } from '../../stores/profileStore';
+  import { teamStore } from '../../stores/teamStore.svelte';
+  import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
   import { SPACE_COLORS, SPACE_BG_COLORS } from '../../types';
+  import type { SpaceType } from '../../types';
   import { Button, Modal, Input } from '../ui';
+  import { Eye, Users } from 'lucide-svelte';
 
   // If editing, spaceStore sets this before opening modal
   let editingId = $state<string | null>(null);
@@ -15,6 +19,16 @@
   let profileId = $state('default');
   let directory = $state('');
   let showProfileDropdown = $state(false);
+  let spaceType = $state<SpaceType>('personal');
+  let shared = $state(false);
+  let selectedTeamId = $state<string | null>(null);
+  let showTeamDropdown = $state(false);
+
+  // Only show team options if user is authenticated and has teams
+  let hasTeams = $derived(authStore.isAuthenticated && teamStore.teams.length > 0);
+  let selectedTeamName = $derived(
+    teamStore.teams.find((t) => t.id === selectedTeamId)?.name ?? 'Select team',
+  );
 
   // Directory autocomplete
   let dirSuggestions = $state<string[]>([]);
@@ -85,6 +99,9 @@
           bgColor = space.bgColor || null;
           profileId = space.profileId || 'default';
           directory = space.directory || '';
+          spaceType = space.type ?? 'personal';
+          shared = space.shared ?? false;
+          selectedTeamId = space.teamId || teamStore.activeTeamId;
         }
       } else {
         editingId = null;
@@ -93,6 +110,9 @@
         bgColor = null;
         profileId = 'default';
         directory = '';
+        spaceType = 'personal';
+        shared = false;
+        selectedTeamId = teamStore.activeTeamId;
       }
     });
   });
@@ -104,9 +124,10 @@
 
   let currentProfileName = $derived(profileStore.getById(profileId)?.name ?? 'Default');
 
-  function save() {
+  async function save() {
     if (!name.trim()) return;
     const trimmedDir = directory.trim().replace(/\/+$/, '') || undefined;
+
     if (editingId) {
       spaceStore.update(editingId, {
         name: name.trim(),
@@ -114,15 +135,34 @@
         bgColor: bgColor || undefined,
         profileId: profileId === 'default' ? undefined : profileId,
         directory: trimmedDir,
+        type: spaceType,
+        shared,
+        teamId: (shared || spaceType === 'team') ? (selectedTeamId || undefined) : undefined,
       });
+    } else if (spaceType === 'team' && selectedTeamId) {
+      // Create team space on server first
+      try {
+        await spaceStore.createTeamSpace(
+          name.trim(),
+          color,
+          selectedTeamId,
+          authStore.user?.id,
+        );
+      } catch (e) {
+        console.error('[Weplex] Failed to create team space:', e);
+      }
     } else {
-      spaceStore.create(
+      const space = spaceStore.create(
         name.trim(),
         color,
         profileId === 'default' ? undefined : profileId,
         bgColor || undefined,
         trimmedDir,
       );
+      // Update sharing fields if applicable
+      if (shared && selectedTeamId) {
+        spaceStore.update(space.id, { shared, teamId: selectedTeamId });
+      }
     }
     close();
   }
@@ -258,6 +298,73 @@
         </div>
       {/if}
     </div>
+
+    {#if hasTeams}
+      <span class="field-label">Sharing</span>
+      <div class="sharing-section">
+        <div class="sharing-row">
+          <button
+            class="sharing-option"
+            class:active={spaceType === 'personal' && !shared}
+            onclick={() => { spaceType = 'personal'; shared = false; }}
+            title="Private — only you can see this space"
+          >
+            <span class="sharing-icon">🔒</span>
+            <span>Private</span>
+          </button>
+          <button
+            class="sharing-option"
+            class:active={spaceType === 'personal' && shared}
+            onclick={() => { spaceType = 'personal'; shared = true; }}
+            title="Shared — team members can see your sessions"
+          >
+            <Eye size={14} />
+            <span>Shared</span>
+          </button>
+          <button
+            class="sharing-option"
+            class:active={spaceType === 'team'}
+            onclick={() => { spaceType = 'team'; shared = true; }}
+            title="Team — collaborative space for the whole team"
+          >
+            <Users size={14} />
+            <span>Team</span>
+          </button>
+        </div>
+
+        {#if shared || spaceType === 'team'}
+          <!-- Team selector -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="custom-select team-select"
+            onfocusout={(e) => {
+              if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node))
+                showTeamDropdown = false;
+            }}
+          >
+            <button class="select-trigger" onclick={() => (showTeamDropdown = !showTeamDropdown)}>
+              <Users size={12} />
+              <span>{selectedTeamName}</span>
+              <span class="select-chevron">{showTeamDropdown ? '\u25B4' : '\u25BE'}</span>
+            </button>
+            {#if showTeamDropdown}
+              <div class="select-dropdown">
+                {#each teamStore.teams as team (team.id)}
+                  <button
+                    class="select-option"
+                    class:active={selectedTeamId === team.id}
+                    onclick={() => {
+                      selectedTeamId = team.id;
+                      showTeamDropdown = false;
+                    }}>{team.name}</button
+                  >
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <div class="dialog-actions">
       {#if editingId && editingId !== 'default'}
@@ -436,6 +543,51 @@
 
   .select-option.active {
     color: var(--weplex-accent);
+  }
+
+  .sharing-section {
+    margin-top: 4px;
+  }
+
+  .sharing-row {
+    display: flex;
+    gap: 4px;
+  }
+
+  .sharing-option {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-md);
+    background: transparent;
+    color: var(--weplex-text-secondary);
+    font-size: var(--weplex-text-sm);
+    cursor: pointer;
+    transition: all var(--weplex-duration-fast) var(--weplex-easing);
+  }
+
+  .sharing-option:hover {
+    border-color: var(--weplex-accent);
+    color: var(--weplex-text);
+  }
+
+  .sharing-option.active {
+    border-color: var(--weplex-accent);
+    background: color-mix(in srgb, var(--weplex-accent) 10%, transparent);
+    color: var(--weplex-accent);
+  }
+
+  .sharing-icon {
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .team-select {
+    margin-top: 8px;
   }
 
   .dialog-actions {

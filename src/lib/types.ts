@@ -93,6 +93,8 @@ export interface Folder {
   collapsed: boolean;
 }
 
+export type SpaceType = 'personal' | 'team';
+
 export interface Space {
   id: string;
   name: string;
@@ -101,6 +103,11 @@ export interface Space {
   profileId?: string; // references Profile.id, undefined = default profile
   bgColor?: string; // background tint color for the space chrome
   directory?: string; // default working directory for new sessions in this space
+  type: SpaceType; // default: 'personal'
+  shared: boolean; // default: false — visible to team members
+  teamId?: string; // set for shared/team spaces
+  serverId?: string; // server UUID (null for private local spaces)
+  createdBy?: string; // userId who created
 }
 
 export interface Profile {
@@ -357,6 +364,38 @@ export interface StageDefinitionPayload {
 export interface CreateRunResponse {
   run: CollaborativeRun;
   warnings: string[];
+}
+
+// ── Space Sharing / Presence types ────────────────────────────────────────
+
+export interface SessionMeta {
+  id: string;
+  name: string;
+  status: 'active' | 'idle' | 'closed';
+  agentType?: string;
+  cwd?: string;
+  gitBranch?: string;
+  shared: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemberPresence {
+  userId: string;
+  displayName: string;
+  sessions: SessionMeta[];
+}
+
+export interface ServerSpace {
+  id: string;
+  teamId: string;
+  name: string;
+  color: string;
+  type: SpaceType;
+  shared: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PipelineNotification {

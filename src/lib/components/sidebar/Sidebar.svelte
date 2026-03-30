@@ -10,6 +10,7 @@
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
   import { Plus, X, User, Settings, Download, RotateCw } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
+  import { pipelineWsService } from '../../services/pipelineWsService';
   import { updateState, installUpdate, restartToUpdate } from '../../utils/updater';
 
   let updateDismissed = $state(false);
@@ -17,6 +18,32 @@
   // Hide/show native traffic lights when sidebar toggles
   $effect(() => {
     invoke('set_traffic_lights_visible', { visible: uiStore.sidebarVisible }).catch(() => {});
+  });
+
+  // Track previous space for presence join/leave
+  let prevPresenceSpaceId: string | null = null;
+
+  // Join/leave space presence rooms on space switch
+  $effect(() => {
+    const activeSpace = spaceStore.activeSpace;
+    const serverId = activeSpace?.serverId;
+    const isShared = activeSpace && (activeSpace.shared || activeSpace.type === 'team');
+
+    // Leave previous space
+    if (prevPresenceSpaceId) {
+      pipelineWsService.leaveSpace(prevPresenceSpaceId);
+      presenceStore.stopSyncing();
+    }
+
+    // Join new space if shared/team
+    if (isShared && serverId) {
+      const displayName = authStore.user?.displayName || authStore.user?.email || undefined;
+      pipelineWsService.joinSpace(serverId, displayName);
+      presenceStore.startSyncing();
+      prevPresenceSpaceId = serverId;
+    } else {
+      prevPresenceSpaceId = null;
+    }
   });
 
   // Re-show after 1 hour if dismissed
@@ -35,6 +62,8 @@
   import HyperspaceView from './HyperspaceView.svelte';
   import PipelineGroup from './PipelineGroup.svelte';
   import CollabPipelineList from './CollabPipelineList.svelte';
+  import TeamPresence from './TeamPresence.svelte';
+  import { presenceStore } from '../../stores/presenceStore.svelte';
   import { splitStore } from '../../stores/splitStore';
   import { findNode } from '../../utils/splitTree';
   import type { DropTargetType } from '../../stores/dragStore';
@@ -549,6 +578,11 @@
 
             <!-- Collaborative pipeline runs -->
             <CollabPipelineList />
+
+            <!-- Team presence for shared/team spaces -->
+            {#if (space.shared || space.type === 'team') && space.serverId}
+              <TeamPresence serverId={space.serverId} />
+            {/if}
 
             <!-- Pinned zone -->
             <div

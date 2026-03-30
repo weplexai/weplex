@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Layers } from 'lucide-svelte';
+  import { Layers, Eye, Users } from 'lucide-svelte';
   import { HYPERSPACE_ID } from '../../types';
   import { spaceStore } from '../../stores/spaceStore';
   import { sessionStore } from '../../stores/sessionStore';
@@ -147,7 +147,12 @@
       onpointercancel={handlePillPointerUp}
       title={space.name}
     >
-      {space.name[0].toUpperCase()}
+      <span class="pill-letter">{space.name[0].toUpperCase()}</span>
+      {#if space.type === 'team'}
+        <span class="pill-badge"><Users size={8} /></span>
+      {:else if space.shared}
+        <span class="pill-badge"><Eye size={8} /></span>
+      {/if}
     </button>
   {/each}
   {#if isDragging && dropIndex === spaceStore.spaces.length}
@@ -212,6 +217,29 @@
   .space-pill.active {
     border-color: var(--space-color);
     background: color-mix(in srgb, var(--space-color) 25%, transparent);
+  }
+
+  .space-pill {
+    position: relative;
+  }
+
+  .pill-letter {
+    line-height: 1;
+  }
+
+  .pill-badge {
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--weplex-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--space-color);
+    pointer-events: none;
   }
 
   .space-pill.drag-source {

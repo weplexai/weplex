@@ -1,18 +1,35 @@
-import type { Space } from '../types';
+import type { Space, ServerSpace } from '../types';
 import { SPACE_COLORS, HYPERSPACE_ID } from '../types';
 import { durableSave } from '../utils/durablePersist';
+import { spaceService } from '../services/spaceService';
 
 const STORAGE_KEY = 'weplex_spaces';
 const ACTIVE_KEY = 'weplex_active_space';
 const SPACE_SESSIONS_KEY = 'weplex_space_sessions';
 
-const DEFAULT_SPACE: Space = { id: 'default', name: 'Default', color: SPACE_COLORS[0], order: 0 };
+const DEFAULT_SPACE: Space = {
+  id: 'default',
+  name: 'Default',
+  color: SPACE_COLORS[0],
+  order: 0,
+  type: 'personal',
+  shared: false,
+};
+
+/** Migrate legacy spaces that lack type/shared fields. */
+function migrateSpace(s: Space): Space {
+  return {
+    ...s,
+    type: s.type ?? 'personal',
+    shared: s.shared ?? false,
+  };
+}
 
 function loadSpaces(): { spaces: Space[]; activeId: string } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { spaces: [DEFAULT_SPACE], activeId: 'default' };
-    const saved: Space[] = JSON.parse(raw);
+    const saved: Space[] = JSON.parse(raw).map(migrateSpace);
     if (!saved.some((s) => s.id === 'default')) {
       saved.unshift(DEFAULT_SPACE);
     }
@@ -70,7 +87,7 @@ export const spaceStore = {
   },
   get activeSpace(): Space {
     if (activeSpaceId === HYPERSPACE_ID) {
-      return { id: HYPERSPACE_ID, name: 'All Spaces', color: '#9898A8', order: -1 };
+      return { id: HYPERSPACE_ID, name: 'All Spaces', color: '#9898A8', order: -1, type: 'personal', shared: false };
     }
     return spaces.find((s) => s.id === activeSpaceId) || spaces[0];
   },
@@ -114,10 +131,98 @@ export const spaceStore = {
       profileId,
       bgColor,
       directory,
+      type: 'personal',
+      shared: false,
     };
     spaces.push(space);
     persist();
     return space;
+  },
+
+  /** Toggle shared flag for a space. Syncs to server if it has a teamId. */
+  async toggleShared(spaceId: string): Promise<void> {
+    const idx = spaces.findIndex((s) => s.id === spaceId);
+    if (idx === -1) return;
+
+    const space = spaces[idx];
+    const newShared = !space.shared;
+    spaces[idx] = { ...space, shared: newShared };
+    persist();
+
+    // Sync to server if this space is linked to a team
+    if (space.serverId) {
+      try {
+        await spaceService.updateSpace(space.serverId, { shared: newShared });
+      } catch (e) {
+        console.warn('[Weplex] Failed to sync shared toggle to server:', e);
+      }
+    }
+  },
+
+  /** Create a team space: creates on server first, then adds locally. */
+  async createTeamSpace(
+    name: string,
+    color: string,
+    teamId: string,
+    createdBy?: string,
+  ): Promise<Space> {
+    const serverSpace = await spaceService.createSpace(teamId, name, color, 'team', true);
+
+    const id = `space-${Date.now()}`;
+    const space: Space = {
+      id,
+      name: serverSpace.name,
+      color: serverSpace.color,
+      order: spaces.length,
+      type: 'team',
+      shared: true,
+      teamId,
+      serverId: serverSpace.id,
+      createdBy: createdBy || serverSpace.createdBy,
+    };
+    spaces.push(space);
+    persist();
+    return space;
+  },
+
+  /** Fetch shared/team spaces from server for a team and merge with local state. */
+  async syncSharedSpaces(teamId: string): Promise<void> {
+    try {
+      const serverSpaces = await spaceService.listSpaces(teamId);
+
+      for (const ss of serverSpaces) {
+        // Check if already exists locally by serverId
+        const existing = spaces.find((s) => s.serverId === ss.id);
+        if (existing) {
+          // Update name/color/shared from server
+          const idx = spaces.indexOf(existing);
+          spaces[idx] = {
+            ...existing,
+            name: ss.name,
+            color: ss.color,
+            shared: ss.shared,
+          };
+        } else {
+          // Add new server space locally
+          const id = `space-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          spaces.push({
+            id,
+            name: ss.name,
+            color: ss.color,
+            order: spaces.length,
+            type: ss.type,
+            shared: ss.shared,
+            teamId: ss.teamId,
+            serverId: ss.id,
+            createdBy: ss.createdBy,
+          });
+        }
+      }
+
+      persist();
+    } catch (e) {
+      console.warn('[Weplex] Failed to sync shared spaces:', e);
+    }
   },
 
   update(id: string, patch: Partial<Omit<Space, 'id'>>) {
