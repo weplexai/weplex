@@ -10,6 +10,22 @@ import { pipelineWsService } from '../services/pipelineWsService';
 
 const KEYCHAIN_KEY = 'auth_tokens';
 const FILE_BACKUP_KEY = 'weplex_auth_tokens';
+const LAST_USER_KEY = 'weplex_last_user_email';
+
+/** Extract email from JWT access token without verification (client-side check only). */
+function extractEmailFromJwt(token: string): string | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.email || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Save last authenticated user email for cross-account protection. */
+function saveLastUserEmail(email: string): void {
+  localStorage.setItem(LAST_USER_KEY, email);
+}
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -119,16 +135,30 @@ export const authStore = {
     if (!saved) {
       saved = await fileLoadTokens();
       if (saved) {
-        // Restore to keychain for next time
         await keychainSaveTokens(saved).catch(() => {});
         console.log('[auth] Restored tokens from file backup');
       }
     }
     if (!saved) return;
 
+    // SECURITY: Verify loaded tokens belong to the last logged-in user.
+    // Prevents cross-account contamination if tokens from another account
+    // somehow ended up in keychain or encrypted file backup.
+    const lastEmail = localStorage.getItem('weplex_last_user_email');
+    if (lastEmail) {
+      const tokenEmail = extractEmailFromJwt(saved.accessToken);
+      if (tokenEmail && tokenEmail !== lastEmail) {
+        console.warn(`[auth] Token mismatch: expected ${lastEmail}, got ${tokenEmail}. Discarding foreign tokens.`);
+        await keychainDeleteTokens().catch(() => {});
+        await fileDeleteTokens();
+        return;
+      }
+    }
+
     tokens = saved;
     try {
       user = await authService.getProfile();
+      if (user?.email) saveLastUserEmail(user.email);
       // Pull remote settings silently after login
       syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after init:', e));
       // Initialize team and collaborative pipelines after auth
@@ -169,6 +199,7 @@ export const authStore = {
       if (!tokens || user) return; // already resolved
       try {
         user = await authService.getProfile();
+        if (user?.email) saveLastUserEmail(user.email);
         // Success — init dependent stores
         syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after retry:', e));
         teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
@@ -216,6 +247,7 @@ export const authStore = {
       const res = await authService.login(email, password);
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
+      if (user?.email) saveLastUserEmail(user.email);
       await keychainSaveTokens(tokens);
       await fileSaveTokens(tokens);
       syncService
@@ -240,6 +272,7 @@ export const authStore = {
       const res = await authService.register(email, password);
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
+      if (user?.email) saveLastUserEmail(user.email);
       await keychainSaveTokens(tokens);
       await fileSaveTokens(tokens);
     } catch (e) {
@@ -282,6 +315,7 @@ export const authStore = {
       const res = await authService.exchange(code, provider);
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
+      if (user?.email) saveLastUserEmail(user.email);
       await keychainSaveTokens(tokens);
       await fileSaveTokens(tokens);
       syncService
