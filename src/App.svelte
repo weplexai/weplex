@@ -114,7 +114,7 @@
       </button>
     {/if}
 
-    <div class="main" class:with-detail={uiStore.detailPanelOpen}>
+    <div class="main" class:with-detail={uiStore.detailPanelOpen} class:no-sidebar={uiStore.sidebarHidden}>
       <div class="terminal-area">
         {#if splitLayout}
           <SplitContainer node={splitLayout} spaceId={activeSpaceId} />
@@ -269,14 +269,18 @@
     min-width: 0;
     position: relative;
     z-index: 0;
-    margin: 6px 6px 6px 0;
+    margin: 9px 9px 9px 0;
     border-radius: 10px;
     box-shadow:
       0 0 0 1px rgba(0, 0, 0, 0.4),
       0 2px 8px rgba(0, 0, 0, 0.3);
     background: var(--weplex-bg);
     overflow: hidden;
-    transition: background 0.3s ease;
+    transition: background 0.3s ease, margin 0.2s ease;
+  }
+
+  .main.no-sidebar {
+    margin-left: 9px;
   }
 
   .terminal-area {
