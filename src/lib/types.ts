@@ -325,6 +325,7 @@ export interface TeamInfo {
   id: string;
   name: string;
   inviteCode: string;
+  inviteCodeExpiresAt?: string;
   ownerId: string;
   members: TeamMember[];
 }

@@ -153,6 +153,22 @@
     return member.displayName || member.email;
   }
 
+  function formatExpiresAt(isoDate: string): string {
+    const now = Date.now();
+    const expires = new Date(isoDate).getTime();
+    const diffMs = expires - now;
+
+    if (diffMs <= 0) return 'Expired';
+
+    const minutes = Math.floor(diffMs / 60_000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) return `Expires in ${days}d ${hours % 24}h`;
+    if (hours > 0) return `Expires in ${hours}h ${minutes % 60}m`;
+    return `Expires in ${minutes}m`;
+  }
+
   function handleCreateKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') handleCreate();
   }
@@ -279,6 +295,9 @@
                     </button>
                   {/if}
                 </div>
+                {#if team.inviteCodeExpiresAt}
+                  <span class="expires-text">{formatExpiresAt(team.inviteCodeExpiresAt)}</span>
+                {/if}
               </div>
 
               <!-- Members list -->
@@ -546,15 +565,25 @@
     gap: 6px;
   }
 
+  .expires-text {
+    display: block;
+    font-size: var(--weplex-text-xs);
+    color: var(--weplex-text-muted);
+    margin-top: 4px;
+  }
+
   .invite-code {
     font-family: var(--weplex-font-mono);
-    font-size: var(--weplex-text-sm);
+    font-size: 10px;
     padding: 4px 8px;
     background: var(--weplex-bg);
     border: 1px solid var(--weplex-border);
     border-radius: var(--weplex-radius-sm);
     color: var(--weplex-accent);
     user-select: all;
+    word-break: break-all;
+    max-width: 200px;
+    line-height: 1.3;
   }
 
   .btn-icon {
