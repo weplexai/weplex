@@ -1249,7 +1249,8 @@ fn register_mcp_in_claude(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// Find the weplex-mcp binary path based on build mode and platform.
-fn find_mcp_binary(app: &tauri::AppHandle) -> Result<String, String> {
+/// In production, Tauri externalBin places it next to the main executable.
+fn find_mcp_binary(_app: &tauri::AppHandle) -> Result<String, String> {
     // Dev mode: check mcp-server build directory
     if cfg!(debug_assertions) {
         let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1257,7 +1258,6 @@ fn find_mcp_binary(app: &tauri::AppHandle) -> Result<String, String> {
         if dev_path.exists() {
             return Ok(dev_path.to_string_lossy().to_string());
         }
-        // Also check release dir in dev mode
         let dev_release = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("mcp-server/target/release/weplex-mcp");
         if dev_release.exists() {
@@ -1266,25 +1266,12 @@ fn find_mcp_binary(app: &tauri::AppHandle) -> Result<String, String> {
         return Err("weplex-mcp binary not found. Run: cd src-tauri/mcp-server && cargo build".to_string());
     }
 
-    // Production: next to the main binary
-    let exe_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?;
-    let prod_path = exe_dir.join("weplex-mcp");
-    if prod_path.exists() {
-        return Ok(prod_path.to_string_lossy().to_string());
-    }
-
-    // macOS: Contents/MacOS/weplex-mcp
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let macos_path = dir.join("weplex-mcp");
-                if macos_path.exists() {
-                    return Ok(macos_path.to_string_lossy().to_string());
-                }
+    // Production: Tauri externalBin places sidecar next to main executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sidecar_path = dir.join("weplex-mcp");
+            if sidecar_path.exists() {
+                return Ok(sidecar_path.to_string_lossy().to_string());
             }
         }
     }
