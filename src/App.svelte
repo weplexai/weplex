@@ -13,6 +13,7 @@
   import Settings from './lib/components/overlays/Settings.svelte';
   import AuthOverlay from './lib/components/overlays/AuthOverlay.svelte';
   import AgentsPipelines from './lib/components/overlays/AgentsPipelines.svelte';
+  import UIKit from './lib/components/overlays/UIKit.svelte';
   import { sessionStore } from './lib/stores/sessionStore';
   import { spaceStore } from './lib/stores/spaceStore';
   import { uiStore } from './lib/stores/uiStore';
@@ -237,6 +238,8 @@
   <Settings />
 {:else if uiStore.activeOverlay === 'auth'}
   <AuthOverlay />
+{:else if uiStore.activeOverlay === 'uikit'}
+  <UIKit />
 {/if}
 
 <style>

@@ -2,6 +2,7 @@
   import { ChevronRight, ExternalLink, Trash2 } from 'lucide-svelte';
   import { modelShort, modelClass, initial, shortenPath } from './helpers';
   import type { AgentConfig } from './types';
+  import { Button } from '../ui';
 
   let {
     agent,
@@ -83,8 +84,8 @@
 
   <div class="d-footer-actions">
     {#if agent.source === 'user'}
-      <button class="btn-secondary" onclick={onEdit}>Edit</button>
-      <button class="btn-danger" onclick={onDelete}><Trash2 size={12} /> Delete</button>
+      <Button variant="secondary" onclick={onEdit}>Edit</Button>
+      <Button variant="danger" onclick={onDelete}><Trash2 size={12} /> Delete</Button>
     {/if}
   </div>
 
@@ -284,41 +285,4 @@
     margin-top: 20px;
   }
 
-  /* ── Buttons (scoped per component — Svelte pattern, shared with PipelineFlowEditor/AgentsPipelines) ── */
-  .btn-secondary {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid var(--weplex-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--weplex-text-muted);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--weplex-duration-fast);
-  }
-  .btn-secondary:hover {
-    border-color: var(--weplex-text-muted);
-    color: var(--weplex-text);
-  }
-  .btn-danger {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid color-mix(in srgb, var(--weplex-error) 30%, transparent);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--weplex-error);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--weplex-duration-fast);
-  }
-  .btn-danger:hover {
-    background: color-mix(in srgb, var(--weplex-error) 10%, transparent);
-    border-color: var(--weplex-error);
-  }
 </style>

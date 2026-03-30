@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import Select from '../Select.svelte';
+  import { Select, Button, Modal } from '../ui';
   import { uiStore } from '../../stores/uiStore.svelte';
   import { sessionStore } from '../../stores/sessionStore.svelte';
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
@@ -516,17 +516,14 @@
         <div class="editor-header">
           <h2>{editMode === 'new-agent' ? 'New Agent' : `Edit: ${editAgent.name}`}</h2>
           <div class="editor-actions">
-            <button
-              class="btn-secondary"
-              onclick={() => {
+            <Button variant="secondary" onclick={() => {
                 editMode = 'view';
                 editError = null;
-              }}>Cancel</button
-            >
-            <button class="btn-primary" onclick={saveAgentForm}>
+              }}>Cancel</Button>
+            <Button variant="primary" onclick={saveAgentForm}>
               <Save size={13} />
               Save
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -642,21 +639,18 @@
       <div class="editor-header">
         <h2><Play size={15} /> Run: {selectedPipeline.name}</h2>
         <div class="editor-actions">
-          <button
-            class="btn-secondary"
-            onclick={() => {
+          <Button variant="secondary" onclick={() => {
               editMode = 'view';
               editError = null;
-            }}>Cancel</button
-          >
-          <button
-            class="btn-primary"
+            }}>Cancel</Button>
+          <Button
+            variant="primary"
             onclick={launchPipelineEngine}
             disabled={runPipelineLaunching || !runPipelineTask.trim()}
           >
             <Play size={13} />
             {runPipelineLaunching ? 'Starting...' : isCollabMode ? 'Launch Collaborative' : 'Launch Pipeline'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -834,18 +828,14 @@
 
 <!-- Delete confirmation dialog -->
 {#if confirmDelete}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="confirm-overlay" onclick={() => (confirmDelete = null)}>
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="confirm-dialog" onclick={(e) => e.stopPropagation()}>
-      <p>Delete {confirmDelete.type} <strong>{confirmDelete.name}</strong>?</p>
+  <Modal onclose={() => (confirmDelete = null)} position="center" label="Confirm deletion" class="confirm-dialog">
+      <p class="confirm-text">Delete {confirmDelete.type} <strong>{confirmDelete.name}</strong>?</p>
       <p class="confirm-hint">This cannot be undone.</p>
       <div class="confirm-actions">
-        <button class="btn-secondary" onclick={() => (confirmDelete = null)}>Cancel</button>
-        <button class="btn-danger" onclick={confirmDeleteAction}>Delete</button>
+        <Button variant="secondary" onclick={() => (confirmDelete = null)}>Cancel</Button>
+        <Button variant="danger" onclick={confirmDeleteAction}>Delete</Button>
       </div>
-    </div>
-  </div>
+  </Modal>
 {/if}
 
 <style>
@@ -1366,72 +1356,8 @@
     border: 1px solid var(--weplex-border);
   }
 
-  /* ── Buttons (scoped per component — Svelte pattern, shared with AgentDetail/PipelineFlowEditor) ── */
-  .btn-primary {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 14px;
-    border: none;
-    border-radius: 6px;
-    background: var(--weplex-accent);
-    color: white;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity var(--weplex-duration-fast);
-  }
-  .btn-primary:hover {
-    opacity: 0.85;
-  }
-  .btn-secondary {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid var(--weplex-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--weplex-text-muted);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--weplex-duration-fast);
-  }
-  .btn-secondary:hover {
-    border-color: var(--weplex-text-muted);
-    color: var(--weplex-text);
-  }
-  .btn-danger {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid color-mix(in srgb, var(--weplex-error) 30%, transparent);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--weplex-error);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--weplex-duration-fast);
-  }
-  .btn-danger:hover {
-    background: color-mix(in srgb, var(--weplex-error) 10%, transparent);
-    border-color: var(--weplex-error);
-  }
-
   /* ── Confirm dialog ──────────────────────────────────────────────── */
-  .confirm-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 200;
-  }
-  .confirm-dialog {
+  :global(.confirm-dialog) {
     background: var(--weplex-surface);
     border: 1px solid var(--weplex-border);
     border-radius: var(--weplex-radius-xl);
@@ -1440,7 +1366,7 @@
     max-width: 360px;
     width: 100%;
   }
-  .confirm-dialog p {
+  .confirm-text {
     margin: 0 0 4px;
     font-size: 13px;
     color: var(--weplex-text);

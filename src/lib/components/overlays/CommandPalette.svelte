@@ -2,6 +2,7 @@
   import { sessionStore } from '../../stores/sessionStore';
   import { uiStore } from '../../stores/uiStore';
   import { shortcuts, getShortcutHint } from '../../utils/shortcuts';
+  import { Modal } from '../ui';
 
   let { mode = 'full' }: { mode?: 'full' | 'sessions' } = $props();
 
@@ -111,6 +112,28 @@
           },
         });
       }
+
+      // UI Kit (dev only)
+      if (import.meta.env.DEV) {
+        if (
+          !q ||
+          'ui kit'.includes(q) ||
+          'uikit'.includes(q) ||
+          'design system'.includes(q) ||
+          'components'.includes(q)
+        ) {
+          result.push({
+            id: 'uikit',
+            label: 'UI Kit',
+            hint: '',
+            category: 'Dev',
+            action: () => {
+              uiStore.closeOverlay();
+              uiStore.openOverlay('uikit');
+            },
+          });
+        }
+      }
     }
 
     return result;
@@ -126,9 +149,6 @@
     } else if (e.key === 'Enter' && items[selectedIndex]) {
       e.preventDefault();
       items[selectedIndex].action();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      uiStore.closeOverlay();
     }
   }
 
@@ -143,16 +163,7 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
-<div class="overlay-backdrop" role="presentation" onclick={() => uiStore.closeOverlay()}>
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
-  <div
-    class="palette"
-    role="dialog"
-    tabindex="-1"
-    aria-label="Command Palette"
-    onclick={(e) => e.stopPropagation()}
-  >
+<Modal onclose={() => uiStore.closeOverlay()} position="top" label="Command Palette" class="palette">
     <input
       bind:this={inputEl}
       class="palette-input"
@@ -184,21 +195,10 @@
         <div class="no-results">No results found</div>
       {/if}
     </div>
-  </div>
-</div>
+</Modal>
 
 <style>
-  .overlay-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    display: flex;
-    justify-content: center;
-    padding-top: 15vh;
-    z-index: 100;
-  }
-
-  .palette {
+  :global(.palette) {
     width: 520px;
     max-height: 400px;
     background: var(--weplex-surface);

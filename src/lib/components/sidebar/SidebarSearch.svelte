@@ -91,6 +91,19 @@
       },
     ];
 
+    if (import.meta.env.DEV) {
+      actions.push({
+        id: 'uikit',
+        label: 'UI Kit',
+        hint: '',
+        category: 'Dev',
+        action: () => {
+          blur();
+          uiStore.openOverlay('uikit');
+        },
+      });
+    }
+
     for (const a of actions) {
       if (q && !a.label.toLowerCase().includes(q)) continue;
       result.push(a);

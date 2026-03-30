@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import Select from '../Select.svelte';
+  import { Select, Button } from '../ui';
   import { modelClass, initial, shortenPath, getMissingAgents } from './helpers';
   import {
     ChevronDown,
@@ -816,8 +816,8 @@
 
     <div class="d-footer-actions">
       {#if pipeline}
-        <button class="btn-primary" onclick={onRunPipeline}><Play size={13} /> Run Pipeline</button>
-        <button class="btn-danger" onclick={onDeletePipeline}><Trash2 size={12} /> Delete</button>
+        <Button variant="primary" onclick={onRunPipeline}><Play size={13} /> Run Pipeline</Button>
+        <Button variant="danger" onclick={onDeletePipeline}><Trash2 size={12} /> Delete</Button>
       {/if}
     </div>
 
@@ -1423,40 +1423,4 @@
     font-size: 12px;
   }
 
-  /* ── Buttons ───────────────────────────────────────────────── */
-  .btn-primary {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 14px;
-    border: none;
-    border-radius: 6px;
-    background: var(--weplex-accent);
-    color: white;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity var(--weplex-duration-fast);
-  }
-  .btn-primary:hover {
-    opacity: 0.85;
-  }
-  .btn-danger {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid color-mix(in srgb, var(--weplex-error) 30%, transparent);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--weplex-error);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--weplex-duration-fast);
-  }
-  .btn-danger:hover {
-    background: color-mix(in srgb, var(--weplex-error) 10%, transparent);
-    border-color: var(--weplex-error);
-  }
 </style>

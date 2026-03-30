@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Select from '../Select.svelte';
+  import { Select, Modal, Input, Tabs } from '../ui';
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { settingsStore } from '../../stores/settingsStore';
@@ -118,38 +118,12 @@
     profileStore.update(profileId, { envVars: rest });
   }
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') uiStore.closeOverlay();
-  }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
-<div
-  class="overlay-backdrop"
-  role="presentation"
-  onclick={() => uiStore.closeOverlay()}
-  onkeydown={handleKeydown}
->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
-  <div
-    class="settings"
-    role="dialog"
-    tabindex="-1"
-    aria-label="Settings"
-    onclick={(e) => e.stopPropagation()}
-  >
+<Modal onclose={() => uiStore.closeOverlay()} position="center" label="Settings" class="settings">
     <div class="settings-sidebar">
       <h2 class="settings-title">Settings</h2>
-      {#each tabs as tab (tab.id)}
-        <button
-          class="tab-btn"
-          class:active={activeTab === tab.id}
-          data-tab={tab.id}
-          onclick={() => (activeTab = tab.id)}
-        >
-          {tab.label}
-        </button>
-      {/each}
+      <Tabs tabs={tabs} active={activeTab} onchange={(id) => (activeTab = id)} orientation="vertical" />
     </div>
 
     <div class="settings-content">
@@ -157,7 +131,7 @@
         <h3 class="section-title">General</h3>
         <div class="setting">
           <label class="setting-label" for="set-dir">Default directory</label>
-          <input
+          <Input
             id="set-dir"
             class="setting-input"
             type="text"
@@ -182,10 +156,11 @@
         </div>
         <div class="setting">
           <label class="setting-label" for="set-font">Font family</label>
-          <input
+          <Input
             id="set-font"
-            class="setting-input mono"
+            class="setting-input"
             type="text"
+            mono
             value={settings.fontFamily}
             onchange={(e) =>
               settingsStore.update({ fontFamily: (e.target as HTMLInputElement).value })}
@@ -244,13 +219,14 @@
             {#if editingProfileId === profile.id}
               <div class="profile-edit">
                 <label class="setting-label" for="pf-name">Name</label>
-                <input id="pf-name" class="setting-input" type="text" bind:value={profileName} />
+                <Input id="pf-name" class="setting-input" type="text" bind:value={profileName} />
 
                 <label class="setting-label" for="pf-dir">Config directory</label>
-                <input
+                <Input
                   id="pf-dir"
-                  class="setting-input mono"
+                  class="setting-input"
                   type="text"
+                  mono
                   bind:value={profileConfigDir}
                   placeholder="Leave empty for system default"
                 />
@@ -372,21 +348,10 @@
         </footer>
       {/if}
     </div>
-  </div>
-</div>
+</Modal>
 
 <style>
-  .overlay-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 100;
-  }
-
-  .settings {
+  :global(.settings) {
     width: 600px;
     height: 420px;
     background: var(--weplex-surface);
@@ -408,28 +373,6 @@
     font-size: var(--weplex-text-md);
     font-weight: 600;
     padding: 0 8px 12px;
-  }
-
-  .tab-btn {
-    display: block;
-    width: 100%;
-    padding: 7px 8px;
-    border: none;
-    border-radius: var(--weplex-radius-md);
-    background: transparent;
-    color: var(--weplex-text-secondary);
-    font-size: var(--weplex-text-sm);
-    text-align: left;
-    transition: all var(--weplex-duration-fast) var(--weplex-easing);
-  }
-
-  .tab-btn:hover {
-    background: var(--weplex-surface);
-  }
-
-  .tab-btn.active {
-    background: var(--weplex-surface-hover);
-    color: var(--weplex-text);
   }
 
   .settings-content {
@@ -457,34 +400,8 @@
     color: var(--weplex-text-secondary);
   }
 
-  .setting-input {
-    padding: 5px 8px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: var(--weplex-bg);
-    color: var(--weplex-text);
-    font-size: var(--weplex-text-sm);
+  :global(.setting-input) {
     width: 200px;
-    outline: none;
-  }
-
-  .setting-input.mono {
-    font-family: var(--weplex-font-mono);
-    font-size: var(--weplex-text-xs);
-  }
-
-  .setting-input:focus {
-    border-color: var(--weplex-accent);
-  }
-
-  .setting-select {
-    padding: 5px 8px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: var(--weplex-bg);
-    color: var(--weplex-text);
-    font-size: var(--weplex-text-sm);
-    outline: none;
   }
 
   .size-control {

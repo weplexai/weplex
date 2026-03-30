@@ -1,6 +1,7 @@
 <script lang="ts">
   import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
+  import { Button, Modal, Input } from '../ui';
 
   type AuthScreen =
     | 'sign-in'
@@ -205,12 +206,6 @@
     switchScreen('sign-in');
   }
 
-  // ── Keyboard ─────────────────────────────────────────────────────────────
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') uiStore.closeOverlay();
-  }
-
   // Sync screen with auth state changes
   $effect(() => {
     if (authStore.isAuthenticated && screen === 'sign-in') {
@@ -222,21 +217,7 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
-<div
-  class="overlay-backdrop"
-  role="presentation"
-  onclick={() => uiStore.closeOverlay()}
-  onkeydown={handleKeydown}
->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
-  <div
-    class="auth-card"
-    role="dialog"
-    tabindex="-1"
-    aria-label="Authentication"
-    onclick={(e) => e.stopPropagation()}
-  >
+<Modal onclose={() => uiStore.closeOverlay()} position="center" label="Authentication" class="auth-card">
     {#if screen === 'sign-in'}
       <!-- ════════ Sign In ════════ -->
       <h2 class="auth-title">Sign In to Weplex</h2>
@@ -252,57 +233,60 @@
       {/if}
 
       <div class="auth-form">
-        <input
+        <Input
           class="auth-input"
           type="email"
           placeholder="Email"
           bind:value={email}
           onkeydown={(e) => e.key === 'Enter' && handleSignIn()}
         />
-        <input
+        <Input
           class="auth-input"
           type="password"
           placeholder="Password"
           bind:value={password}
           onkeydown={(e) => e.key === 'Enter' && handleSignIn()}
         />
-        <button
-          class="btn-primary"
+        <Button
+          variant="primary"
+          class="auth-btn-full"
           disabled={authStore.loading || !email || !password}
           onclick={handleSignIn}
         >
           {authStore.loading ? 'Loading...' : 'Sign In'}
-        </button>
+        </Button>
       </div>
 
-      <button class="link-btn forgot" onclick={() => switchScreen('forgot-password')}>
+      <Button variant="ghost" class="link-btn forgot" onclick={() => switchScreen('forgot-password')}>
         Forgot password?
-      </button>
+      </Button>
 
       <div class="oauth-divider">
         <span class="oauth-divider-text">or</span>
       </div>
 
       <div class="oauth-buttons">
-        <button
+        <Button
+          variant="secondary"
           class="btn-oauth"
           disabled={authStore.loading}
           onclick={() => handleOAuth('github')}
         >
           GitHub
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="secondary"
           class="btn-oauth"
           disabled={authStore.loading}
           onclick={() => handleOAuth('google')}
         >
           Google
-        </button>
+        </Button>
       </div>
 
       <p class="auth-footer-text">
         Don't have an account?
-        <button class="link-btn" onclick={() => switchScreen('register')}>Register</button>
+        <Button variant="ghost" class="link-btn" onclick={() => switchScreen('register')}>Register</Button>
       </p>
     {:else if screen === 'register'}
       <!-- ════════ Register ════════ -->
@@ -316,38 +300,39 @@
       {/if}
 
       <div class="auth-form">
-        <input
+        <Input
           class="auth-input"
           type="text"
           placeholder="Display name (optional)"
           bind:value={displayName}
         />
-        <input
+        <Input
           class="auth-input"
           type="email"
           placeholder="Email"
           bind:value={email}
           onkeydown={(e) => e.key === 'Enter' && handleRegister()}
         />
-        <input
+        <Input
           class="auth-input"
           type="password"
           placeholder="Password (min 8 characters)"
           bind:value={password}
           onkeydown={(e) => e.key === 'Enter' && handleRegister()}
         />
-        <button
-          class="btn-primary"
+        <Button
+          variant="primary"
+          class="auth-btn-full"
           disabled={authStore.loading || !email || !password}
           onclick={handleRegister}
         >
           {authStore.loading ? 'Loading...' : 'Create Account'}
-        </button>
+        </Button>
       </div>
 
       <p class="auth-footer-text">
         Already have an account?
-        <button class="link-btn" onclick={() => switchScreen('sign-in')}>Sign In</button>
+        <Button variant="ghost" class="link-btn" onclick={() => switchScreen('sign-in')}>Sign In</Button>
       </p>
     {:else if screen === 'verify-email'}
       <!-- ════════ Verify Email ════════ -->
@@ -375,24 +360,26 @@
           bind:value={code}
           onkeydown={(e) => e.key === 'Enter' && handleVerifyEmail()}
         />
-        <button
-          class="btn-primary"
+        <Button
+          variant="primary"
+          class="auth-btn-full"
           disabled={authStore.loading || code.length !== 6}
           onclick={handleVerifyEmail}
         >
           {authStore.loading ? 'Loading...' : 'Verify'}
-        </button>
+        </Button>
       </div>
 
       <div class="verify-actions">
-        <button
+        <Button
+          variant="ghost"
           class="link-btn"
           disabled={resendCooldown > 0 || authStore.loading}
           onclick={handleResendCode}
         >
           {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : "Didn't receive? Resend"}
-        </button>
-        <button class="link-btn" onclick={() => uiStore.closeOverlay()}> Skip for now </button>
+        </Button>
+        <Button variant="ghost" class="link-btn" onclick={() => uiStore.closeOverlay()}>Skip for now</Button>
       </div>
     {:else if screen === 'forgot-password'}
       <!-- ════════ Forgot Password ════════ -->
@@ -407,24 +394,25 @@
       {/if}
 
       <div class="auth-form">
-        <input
+        <Input
           class="auth-input"
           type="email"
           placeholder="Email"
           bind:value={forgotEmail}
           onkeydown={(e) => e.key === 'Enter' && handleForgotPassword()}
         />
-        <button
-          class="btn-primary"
+        <Button
+          variant="primary"
+          class="auth-btn-full"
           disabled={authStore.loading || !forgotEmail}
           onclick={handleForgotPassword}
         >
           {authStore.loading ? 'Loading...' : 'Send Reset Code'}
-        </button>
+        </Button>
       </div>
 
       <p class="auth-footer-text">
-        <button class="link-btn" onclick={() => switchScreen('sign-in')}>Back to Sign In</button>
+        <Button variant="ghost" class="link-btn" onclick={() => switchScreen('sign-in')}>Back to Sign In</Button>
       </p>
     {:else if screen === 'reset-password'}
       <!-- ════════ Reset Password ════════ -->
@@ -448,24 +436,25 @@
           maxlength={6}
           bind:value={code}
         />
-        <input
+        <Input
           class="auth-input"
           type="password"
           placeholder="New password (min 8 characters)"
           bind:value={newPassword}
           onkeydown={(e) => e.key === 'Enter' && handleResetPassword()}
         />
-        <button
-          class="btn-primary"
+        <Button
+          variant="primary"
+          class="auth-btn-full"
           disabled={authStore.loading || code.length !== 6 || !newPassword}
           onclick={handleResetPassword}
         >
           {authStore.loading ? 'Loading...' : 'Reset Password'}
-        </button>
+        </Button>
       </div>
 
       <p class="auth-footer-text">
-        <button class="link-btn" onclick={() => switchScreen('sign-in')}>Back to Sign In</button>
+        <Button variant="ghost" class="link-btn" onclick={() => switchScreen('sign-in')}>Back to Sign In</Button>
       </p>
     {:else if screen === 'profile'}
       <!-- ════════ Profile ════════ -->
@@ -481,15 +470,16 @@
         <div class="profile-row">
           {#if editingName}
             <div class="inline-edit">
-              <input
+              <Input
                 class="auth-input"
                 type="text"
                 bind:value={editDisplayName}
                 placeholder="Display name"
+                size="sm"
                 onkeydown={(e) => e.key === 'Enter' && saveDisplayName()}
               />
-              <button class="btn-sm save" onclick={saveDisplayName}>Save</button>
-              <button class="btn-sm" onclick={() => (editingName = false)}>Cancel</button>
+              <Button variant="primary" size="sm" onclick={saveDisplayName}>Save</Button>
+              <Button variant="secondary" size="sm" onclick={() => (editingName = false)}>Cancel</Button>
             </div>
           {:else}
             <span class="profile-name" onclick={startEditName}>
@@ -505,7 +495,7 @@
               <span class="badge badge-green">Verified</span>
             {:else}
               <span class="badge badge-yellow">Not verified</span>
-              <button class="link-btn" onclick={() => { screen = 'verify-email'; authStore.sendVerificationCode(); }}>Verify now</button>
+              <Button variant="ghost" class="link-btn" onclick={() => { screen = 'verify-email'; authStore.sendVerificationCode(); }}>Verify now</Button>
             {/if}
           </span>
         </div>
@@ -526,24 +516,13 @@
       </div>
 
       <div class="profile-actions">
-        <button class="btn-signout" onclick={handleSignOut}>Sign Out</button>
+        <Button variant="danger" onclick={handleSignOut}>Sign Out</Button>
       </div>
     {/if}
-  </div>
-</div>
+</Modal>
 
 <style>
-  .overlay-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 100;
-  }
-
-  .auth-card {
+  :global(.auth-card) {
     width: 380px;
     max-height: 90vh;
     overflow-y: auto;
@@ -574,20 +553,10 @@
     margin-top: 16px;
   }
 
-  .auth-input {
+  :global(.auth-input) {
     width: 100%;
     box-sizing: border-box;
-    padding: 8px 10px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
     background: var(--weplex-bg);
-    color: var(--weplex-text);
-    font-size: var(--weplex-text-sm);
-    outline: none;
-  }
-
-  .auth-input:focus {
-    border-color: var(--weplex-accent);
   }
 
   .auth-input.code-input {
@@ -598,29 +567,11 @@
     padding: 10px;
   }
 
-  .btn-primary {
+  :global(.auth-btn-full) {
     width: 100%;
-    padding: 8px 16px;
-    border: none;
-    border-radius: var(--weplex-radius-md);
-    background: var(--weplex-accent);
-    color: white;
-    font-size: var(--weplex-text-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: opacity var(--weplex-duration-fast) var(--weplex-easing);
   }
 
-  .btn-primary:hover {
-    opacity: 0.9;
-  }
-
-  .btn-primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .link-btn {
+  :global(.link-btn) {
     background: none;
     border: none;
     color: var(--weplex-accent);
@@ -630,17 +581,17 @@
     text-decoration: none;
   }
 
-  .link-btn:hover {
+  :global(.link-btn:hover) {
     text-decoration: underline;
   }
 
-  .link-btn:disabled {
+  :global(.link-btn:disabled) {
     color: var(--weplex-text-muted);
     cursor: not-allowed;
     text-decoration: none;
   }
 
-  .link-btn.forgot {
+  :global(.link-btn.forgot) {
     display: block;
     margin-top: 10px;
     text-align: right;
@@ -648,7 +599,7 @@
     color: var(--weplex-text-muted);
   }
 
-  .link-btn.forgot:hover {
+  :global(.link-btn.forgot:hover) {
     color: var(--weplex-accent);
   }
 
@@ -679,26 +630,8 @@
     gap: 8px;
   }
 
-  .btn-oauth {
+  :global(.btn-oauth) {
     flex: 1;
-    padding: 7px 12px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: transparent;
-    color: var(--weplex-text-secondary);
-    font-size: var(--weplex-text-sm);
-    cursor: pointer;
-    text-align: center;
-    transition: all var(--weplex-duration-fast) var(--weplex-easing);
-  }
-
-  .btn-oauth:hover {
-    background: var(--weplex-surface-hover);
-  }
-
-  .btn-oauth:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 
   .auth-footer-text {
@@ -771,7 +704,7 @@
     width: 100%;
   }
 
-  .inline-edit .auth-input {
+  .inline-edit :global(.auth-input) {
     flex: 1;
   }
 
@@ -804,18 +737,13 @@
     color: #f59e0b;
   }
 
-  .link-btn {
-    background: none;
-    border: none;
-    color: var(--weplex-accent);
+  :global(.profile-detail .link-btn) {
     font-size: var(--weplex-text-xs);
-    cursor: pointer;
-    padding: 0;
     margin-left: 8px;
     text-decoration: underline;
   }
 
-  .link-btn:hover {
+  :global(.profile-detail .link-btn:hover) {
     opacity: 0.8;
   }
 
@@ -830,46 +758,7 @@
     color: var(--weplex-error);
   }
 
-  .btn-sm {
-    padding: 4px 10px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-sm);
-    background: transparent;
-    color: var(--weplex-text-secondary);
-    font-size: var(--weplex-text-xs);
-    cursor: pointer;
-  }
-
-  .btn-sm:hover {
-    background: var(--weplex-surface-hover);
-  }
-
-  .btn-sm.save {
-    background: var(--weplex-accent);
-    border-color: var(--weplex-accent);
-    color: white;
-  }
-
-  .btn-sm.save:hover {
-    opacity: 0.9;
-  }
-
   .profile-actions {
     margin-top: 20px;
-  }
-
-  .btn-signout {
-    padding: 6px 14px;
-    border: 1px solid var(--weplex-error);
-    border-radius: var(--weplex-radius-sm);
-    background: transparent;
-    color: var(--weplex-error);
-    font-size: var(--weplex-text-sm);
-    cursor: pointer;
-    transition: background var(--weplex-duration-fast) var(--weplex-easing);
-  }
-
-  .btn-signout:hover {
-    background: rgba(239, 68, 68, 0.1);
   }
 </style>

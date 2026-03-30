@@ -10,6 +10,7 @@
   import type { PipelineConfig } from './types';
   import SessionIcon from '../SessionIcon.svelte';
   import { Workflow } from 'lucide-svelte';
+  import { Button, Modal, Input } from '../ui';
 
   // Resolve default directory: Space.directory > AppSettings.defaultDirectory > '~'
   function getDefaultDirectory(): string {
@@ -230,9 +231,6 @@
       if (mode === 'pipeline') launchPipeline();
       else create();
     }
-    if (e.key === 'Escape') {
-      uiStore.closeOverlay();
-    }
   }
 
   $effect(() => {
@@ -240,17 +238,9 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
-<div class="overlay-backdrop" role="presentation" onclick={() => uiStore.closeOverlay()}>
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
-  <div
-    class="dialog"
-    role="dialog"
-    tabindex="-1"
-    aria-label="New Session"
-    onclick={(e) => e.stopPropagation()}
-    onkeydown={handleKeydown}
-  >
+<Modal onclose={() => uiStore.closeOverlay()} position="top" label="New Session" class="dialog">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div onkeydown={handleKeydown}>
     <h2 class="dialog-title">New Session</h2>
 
     <!-- Mode switcher -->
@@ -303,10 +293,9 @@
       </div>
 
       <label class="field-label" for="ns-cmd">Command</label>
-      <input
+      <Input
         id="ns-cmd"
-        class="field-input"
-        type="text"
+        mono
         bind:value={command}
         placeholder="Leave empty for default shell"
       />
@@ -464,8 +453,8 @@
       </div>
 
       <div class="dialog-actions">
-        <button class="btn-cancel" onclick={() => uiStore.closeOverlay()}>Cancel</button>
-        <button class="btn-create" onclick={create}>Create</button>
+        <Button variant="secondary" onclick={() => uiStore.closeOverlay()}>Cancel</Button>
+        <Button variant="primary" onclick={create}>Create</Button>
       </div>
     {:else}
       <!-- ═══ Pipeline form ═══ -->
@@ -584,32 +573,22 @@
       {/if}
 
       <div class="dialog-actions">
-        <button class="btn-cancel" onclick={() => uiStore.closeOverlay()}>Cancel</button>
-        <button
-          class="btn-create btn-launch"
+        <Button variant="secondary" onclick={() => uiStore.closeOverlay()}>Cancel</Button>
+        <Button
+          variant="primary"
           onclick={launchPipeline}
           disabled={launching || !selectedPipeline || !taskDescription.trim()}
         >
           <Workflow size={13} />
           {launching ? 'Starting...' : 'Launch'}
-        </button>
+        </Button>
       </div>
     {/if}
   </div>
-</div>
+</Modal>
 
 <style>
-  .overlay-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    display: flex;
-    justify-content: center;
-    padding-top: 12vh;
-    z-index: 100;
-  }
-
-  .dialog {
+  :global(.dialog) {
     width: 460px;
     max-height: 80vh;
     overflow-y: auto;
@@ -917,44 +896,6 @@
     justify-content: flex-end;
     gap: 8px;
     margin-top: 20px;
-  }
-
-  .btn-cancel {
-    padding: 7px 14px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: transparent;
-    color: var(--weplex-text-secondary);
-    font-size: var(--weplex-text-sm);
-  }
-
-  .btn-cancel:hover {
-    background: var(--weplex-surface-hover);
-  }
-
-  .btn-create {
-    padding: 7px 18px;
-    border: none;
-    border-radius: var(--weplex-radius-md);
-    background: var(--weplex-accent);
-    color: white;
-    font-size: var(--weplex-text-sm);
-    font-weight: 500;
-  }
-
-  .btn-create:hover {
-    background: var(--weplex-accent-hover);
-  }
-
-  .btn-create:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .btn-launch {
-    display: flex;
-    align-items: center;
-    gap: 5px;
   }
 
   /* ── Mode switcher ─────────────────────────────── */

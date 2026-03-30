@@ -5,6 +5,7 @@
   import { profileStore } from '../../stores/profileStore';
   import { uiStore } from '../../stores/uiStore';
   import { SPACE_COLORS, SPACE_BG_COLORS } from '../../types';
+  import { Button, Modal, Input } from '../ui';
 
   // If editing, spaceStore sets this before opening modal
   let editingId = $state<string | null>(null);
@@ -13,7 +14,6 @@
   let bgColor = $state<string | null>(null);
   let profileId = $state('default');
   let directory = $state('');
-  let nameInputEl = $state<HTMLInputElement>();
   let showProfileDropdown = $state(false);
 
   // Directory autocomplete
@@ -98,7 +98,8 @@
   });
 
   $effect(() => {
-    nameInputEl?.focus();
+    const el = document.getElementById('space-name') as HTMLInputElement | null;
+    el?.focus();
   });
 
   let currentProfileName = $derived(profileStore.getById(profileId)?.name ?? 'Default');
@@ -140,48 +141,36 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save();
-    if (e.key === 'Escape') close();
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
-<div class="overlay-backdrop" role="presentation" onclick={close}>
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
-  <div
-    class="dialog"
-    role="dialog"
-    tabindex="-1"
-    aria-label={editingId ? 'Edit Space' : 'New Space'}
-    onclick={(e) => e.stopPropagation()}
-    onkeydown={handleKeydown}
-  >
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<Modal onclose={close} position="top" label={editingId ? 'Edit Space' : 'New Space'} class="dialog">
+  <div onkeydown={handleKeydown}>
     <h2 class="dialog-title">{editingId ? 'Edit Space' : 'New Space'}</h2>
 
     <label class="field-label" for="space-name">Name</label>
-    <input
+    <Input
       id="space-name"
-      bind:this={nameInputEl}
-      class="field-input"
-      type="text"
       bind:value={name}
       placeholder="Work, Personal, Hackathons..."
     />
 
     <label class="field-label" for="space-dir">Directory</label>
-    <div class="dir-autocomplete">
-      <input
+    <div
+      class="dir-autocomplete"
+      onfocusout={() => {
+        dirSuggestions = [];
+        selectedDirSuggestion = -1;
+      }}
+    >
+      <Input
         id="space-dir"
-        class="field-input field-input-mono"
-        type="text"
+        mono
         bind:value={directory}
         placeholder="~/projects/my-app (optional)"
-        autocomplete="off"
         oninput={onDirInput}
         onkeydown={onDirKeydown}
-        onblur={() => {
-          dirSuggestions = [];
-          selectedDirSuggestion = -1;
-        }}
       />
       {#if dirSuggestions.length > 0}
         <div class="suggestions-dropdown">
@@ -272,30 +261,20 @@
 
     <div class="dialog-actions">
       {#if editingId && editingId !== 'default'}
-        <button class="btn-delete" onclick={remove}>Delete</button>
+        <Button variant="danger" onclick={remove}>Delete</Button>
       {/if}
       <div class="actions-right">
-        <button class="btn-cancel" onclick={close}>Cancel</button>
-        <button class="btn-create" onclick={save} disabled={!name.trim()}>
+        <Button variant="secondary" onclick={close}>Cancel</Button>
+        <Button variant="primary" onclick={save} disabled={!name.trim()}>
           {editingId ? 'Save' : 'Create'}
-        </button>
+        </Button>
       </div>
     </div>
   </div>
-</div>
+</Modal>
 
 <style>
-  .overlay-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    display: flex;
-    justify-content: center;
-    padding-top: 15vh;
-    z-index: 100;
-  }
-
-  .dialog {
+  :global(.dialog) {
     width: 380px;
     max-height: fit-content;
     background: var(--weplex-surface);
@@ -321,22 +300,6 @@
 
   .dialog-title + .field-label {
     margin-top: 0;
-  }
-
-  .field-input {
-    width: 100%;
-    padding: 8px 10px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: var(--weplex-bg);
-    color: var(--weplex-text);
-    font-size: var(--weplex-text-base);
-    outline: none;
-    transition: border-color var(--weplex-duration-fast) var(--weplex-easing);
-  }
-
-  .field-input:focus {
-    border-color: var(--weplex-accent);
   }
 
   .color-picker {
@@ -485,55 +448,6 @@
     display: flex;
     gap: 8px;
     margin-left: auto;
-  }
-
-  .btn-cancel {
-    padding: 7px 14px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: transparent;
-    color: var(--weplex-text-secondary);
-    font-size: var(--weplex-text-sm);
-  }
-
-  .btn-cancel:hover {
-    background: var(--weplex-surface-hover);
-  }
-
-  .btn-create {
-    padding: 7px 18px;
-    border: none;
-    border-radius: var(--weplex-radius-md);
-    background: var(--weplex-accent);
-    color: white;
-    font-size: var(--weplex-text-sm);
-    font-weight: 500;
-  }
-
-  .btn-create:hover {
-    background: var(--weplex-accent-hover);
-  }
-
-  .btn-create:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .btn-delete {
-    padding: 7px 14px;
-    border: 1px solid var(--weplex-error);
-    border-radius: var(--weplex-radius-md);
-    background: transparent;
-    color: var(--weplex-error);
-    font-size: var(--weplex-text-sm);
-  }
-
-  .btn-delete:hover {
-    background: rgba(239, 68, 68, 0.1);
-  }
-
-  .field-input-mono {
-    font-family: var(--weplex-font-mono);
   }
 
   .dir-autocomplete {

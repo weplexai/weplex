@@ -10,7 +10,8 @@ export type OverlayType =
   | 'settings'
   | 'space-modal'
   | 'agents'
-  | 'auth';
+  | 'auth'
+  | 'uikit';
 export type SplitDirection = 'horizontal' | 'vertical';
 
 export interface Session {

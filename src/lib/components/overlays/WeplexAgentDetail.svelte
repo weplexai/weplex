@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { ChevronRight, ExternalLink, Trash2, Save, Terminal } from 'lucide-svelte';
-  import Select from '../Select.svelte';
+  import { Select, Button } from '../ui';
   import { modelClass, initial, shortenPath } from './helpers';
 
   interface WeplexAgentData {
@@ -179,14 +179,13 @@
     </div>
 
     <div class="d-footer-actions">
-      <button
-        class="btn-secondary"
+      <Button
+        variant="secondary"
         onclick={() => {
           editing = false;
           saveError = null;
-        }}>Cancel</button
-      >
-      <button class="btn-primary" onclick={save}><Save size={13} /> Save</button>
+        }}>Cancel</Button>
+      <Button variant="primary" onclick={save}><Save size={13} /> Save</Button>
     </div>
   </div>
 {:else if agent}
@@ -217,8 +216,8 @@
     {/if}
 
     <div class="d-footer-actions">
-      <button class="btn-secondary" onclick={startEdit}>Edit</button>
-      <button class="btn-danger" onclick={remove}><Trash2 size={12} /> Delete</button>
+      <Button variant="secondary" onclick={startEdit}>Edit</Button>
+      <Button variant="danger" onclick={remove}><Trash2 size={12} /> Delete</Button>
     </div>
 
     <span class="d-filepath">
@@ -432,55 +431,6 @@
     font-size: 12px;
   }
 
-  .btn-primary {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 14px;
-    border: none;
-    border-radius: 6px;
-    background: var(--weplex-accent);
-    color: white;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .btn-primary:hover {
-    opacity: 0.85;
-  }
-  .btn-secondary {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid var(--weplex-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--weplex-text-muted);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .btn-secondary:hover {
-    border-color: var(--weplex-text-muted);
-    color: var(--weplex-text);
-  }
-  .btn-danger {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: 1px solid color-mix(in srgb, var(--weplex-error) 30%, transparent);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--weplex-error);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .btn-danger:hover {
-    background: color-mix(in srgb, var(--weplex-error) 10%, transparent);
-  }
   .ap-center-msg {
     flex: 1;
     display: flex;
