@@ -74,9 +74,12 @@ export const teamStore = {
         activeTeamId = null;
       }
 
-      // Join WS rooms for all teams
+      // Join WS rooms for all teams + sync shared spaces
       for (const team of teams) {
         pipelineWsService.joinTeamRoom(team.id);
+        spaceStore.syncSharedSpaces(team.id).catch((e) =>
+          console.warn('[Weplex] Space sync failed for team', team.id, e),
+        );
       }
 
       // Subscribe to real-time team events
@@ -151,8 +154,9 @@ export const teamStore = {
       const joined = await teamService.joinTeam(inviteCode);
       teams = [...teams, joined];
       activeTeamId = joined.id;
-      // Join WS room for the new team
+      // Join WS room + sync shared spaces for the new team
       pipelineWsService.joinTeamRoom(joined.id);
+      spaceStore.syncSharedSpaces(joined.id).catch(() => {});
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to join team';
       throw e;
