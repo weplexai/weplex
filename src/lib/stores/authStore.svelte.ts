@@ -329,6 +329,19 @@ export const authStore = {
       console.error('[Weplex] Failed to clear keychain on logout:', e),
     );
     await fileDeleteTokens();
+
+    // CRITICAL: Clear ALL app state to prevent cross-account data leakage.
+    // Without this, the next user on the same machine would see previous user's
+    // sessions, spaces, notes, folders via recoverStores().
+    const { STORE_KEYS } = await import('../utils/durablePersist');
+    for (const key of STORE_KEYS) {
+      localStorage.removeItem(key);
+      // Also clear file backups
+      invoke('persist_store', { key, value: '' }).catch(() => {});
+    }
+    // Clear additional UI state
+    localStorage.removeItem('weplex_sidebar_collapsed');
+    localStorage.removeItem('weplex_detail_visible');
   },
 
   async updateProfile(patch: { displayName?: string }): Promise<void> {
