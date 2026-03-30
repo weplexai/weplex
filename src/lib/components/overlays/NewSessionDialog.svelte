@@ -10,7 +10,7 @@
   import type { PipelineConfig } from './types';
   import SessionIcon from '../SessionIcon.svelte';
   import { Workflow } from 'lucide-svelte';
-  import { Button, Modal, Input } from '../ui';
+  import { Button, Modal, Input, Select } from '../ui';
 
   // Resolve default directory: Space.directory > AppSettings.defaultDirectory > '~'
   function getDefaultDirectory(): string {
@@ -358,84 +358,34 @@
       <div class="options">
         <div class="option">
           <span class="field-label">Space</span>
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="custom-select"
-            onfocusout={(e) => {
-              if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node))
-                showSpaceDropdown = false;
+          <Select
+            value={selectedSpace}
+            options={spaceStore.spaces.map((s) => ({ value: s.id, label: s.name }))}
+            onchange={(v) => {
+              selectedSpace = v;
+              const space = spaceStore.spaces.find((s) => s.id === v);
+              const spaceDir = space?.directory;
+              if (spaceDir) {
+                directory = spaceDir;
+              } else {
+                const settingsDir = settingsStore.settings.defaultDirectory;
+                directory = settingsDir && settingsDir !== '~' ? settingsDir : '~';
+              }
             }}
-          >
-            <button class="select-trigger" onclick={() => (showSpaceDropdown = !showSpaceDropdown)}>
-              <span>{currentSpaceName}</span>
-              <span class="select-chevron">{showSpaceDropdown ? '\u25B4' : '\u25BE'}</span>
-            </button>
-            {#if showSpaceDropdown}
-              <div class="select-dropdown">
-                {#each spaceStore.spaces as space (space.id)}
-                  <button
-                    class="select-option"
-                    class:active={selectedSpace === space.id}
-                    onclick={() => {
-                      selectedSpace = space.id;
-                      showSpaceDropdown = false;
-                      // Update directory to match new space's default
-                      const spaceDir = space.directory;
-                      if (spaceDir) {
-                        directory = spaceDir;
-                      } else {
-                        const settingsDir = settingsStore.settings.defaultDirectory;
-                        directory = settingsDir && settingsDir !== '~' ? settingsDir : '~';
-                      }
-                    }}>{space.name}</button
-                  >
-                {/each}
-              </div>
-            {/if}
-          </div>
+          />
         </div>
 
         {#if profileStore.profiles.length > 1}
           <div class="option">
             <span class="field-label">Profile</span>
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="custom-select"
-              onfocusout={(e) => {
-                if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node))
-                  showProfileDropdown = false;
-              }}
-            >
-              <button
-                class="select-trigger"
-                onclick={() => (showProfileDropdown = !showProfileDropdown)}
-              >
-                <span>{currentProfileName}</span>
-                <span class="select-chevron">{showProfileDropdown ? '\u25B4' : '\u25BE'}</span>
-              </button>
-              {#if showProfileDropdown}
-                <div class="select-dropdown">
-                  <button
-                    class="select-option"
-                    class:active={selectedProfile === undefined}
-                    onclick={() => {
-                      selectedProfile = undefined;
-                      showProfileDropdown = false;
-                    }}>Inherit from Space</button
-                  >
-                  {#each profileStore.profiles as profile (profile.id)}
-                    <button
-                      class="select-option"
-                      class:active={selectedProfile === profile.id}
-                      onclick={() => {
-                        selectedProfile = profile.id;
-                        showProfileDropdown = false;
-                      }}>{profile.name}</button
-                    >
-                  {/each}
-                </div>
-              {/if}
-            </div>
+            <Select
+              value={selectedProfile ?? ''}
+              options={[
+                { value: '', label: 'Inherit from Space' },
+                ...profileStore.profiles.map((p) => ({ value: p.id, label: p.name })),
+              ]}
+              onchange={(v) => { selectedProfile = v || undefined; }}
+            />
           </div>
         {/if}
 
@@ -526,44 +476,14 @@
         <div class="options">
           <div class="option">
             <span class="field-label">Profile</span>
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="custom-select"
-              onfocusout={(e) => {
-                if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node))
-                  showProfileDropdown = false;
-              }}
-            >
-              <button
-                class="select-trigger"
-                onclick={() => (showProfileDropdown = !showProfileDropdown)}
-              >
-                <span>{currentProfileName}</span>
-                <span class="select-chevron">{showProfileDropdown ? '\u25B4' : '\u25BE'}</span>
-              </button>
-              {#if showProfileDropdown}
-                <div class="select-dropdown">
-                  <button
-                    class="select-option"
-                    class:active={selectedProfile === undefined}
-                    onclick={() => {
-                      selectedProfile = undefined;
-                      showProfileDropdown = false;
-                    }}>Inherit from Space</button
-                  >
-                  {#each profileStore.profiles as profile (profile.id)}
-                    <button
-                      class="select-option"
-                      class:active={selectedProfile === profile.id}
-                      onclick={() => {
-                        selectedProfile = profile.id;
-                        showProfileDropdown = false;
-                      }}>{profile.name}</button
-                    >
-                  {/each}
-                </div>
-              {/if}
-            </div>
+            <Select
+              value={selectedProfile ?? ''}
+              options={[
+                { value: '', label: 'Inherit from Space' },
+                ...profileStore.profiles.map((p) => ({ value: p.id, label: p.name })),
+              ]}
+              onchange={(v) => { selectedProfile = v || undefined; }}
+            />
           </div>
         </div>
       {/if}
@@ -668,70 +588,6 @@
     background: var(--weplex-surface-hover);
   }
 
-  .custom-select {
-    position: relative;
-  }
-
-  .select-trigger {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: var(--weplex-bg);
-    color: var(--weplex-text);
-    font-size: var(--weplex-text-sm);
-    font-family: var(--weplex-font-mono);
-    cursor: pointer;
-    transition: border-color var(--weplex-duration-fast) var(--weplex-easing);
-    min-width: 100px;
-  }
-
-  .select-trigger:hover {
-    border-color: var(--weplex-accent);
-  }
-
-  .select-chevron {
-    margin-left: auto;
-    font-size: 10px;
-    color: var(--weplex-text-muted);
-  }
-
-  .select-dropdown {
-    position: absolute;
-    top: calc(100% + 2px);
-    left: 0;
-    right: 0;
-    background: var(--weplex-bg);
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    box-shadow: var(--weplex-shadow-md);
-    z-index: 10;
-    padding: 4px;
-  }
-
-  .select-option {
-    display: block;
-    width: 100%;
-    padding: 5px 8px;
-    border: none;
-    border-radius: var(--weplex-radius-sm);
-    background: transparent;
-    color: var(--weplex-text);
-    font-size: var(--weplex-text-sm);
-    font-family: var(--weplex-font-mono);
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .select-option:hover {
-    background: var(--weplex-surface-hover);
-  }
-
-  .select-option.active {
-    color: var(--weplex-accent);
-  }
 
   .presets {
     display: flex;
@@ -811,7 +667,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 2px;
-    max-height: 200px;
+    max-height: 114px;
     overflow-y: auto;
   }
 

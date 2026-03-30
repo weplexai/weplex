@@ -752,7 +752,7 @@
   }
 
   .header-icon-btn.signed-in {
-    color: var(--weplex-accent);
+    color: rgba(255, 255, 255, 0.5);
   }
 
   .avatar-initial {
