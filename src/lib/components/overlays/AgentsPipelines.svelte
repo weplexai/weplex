@@ -68,7 +68,7 @@
 
   // Owner assignment for collaborative runs
   let stageOwners = $state<Record<string, string>>({});
-  let team = $derived(teamStore.team);
+  let team = $derived(teamStore.activeTeam ?? null);
   let teamMembers = $derived(team?.members ?? []);
   let hasAnyOwner = $derived(Object.values(stageOwners).some((v) => v !== ''));
   let isCollabMode = $derived(hasAnyOwner && team !== null);

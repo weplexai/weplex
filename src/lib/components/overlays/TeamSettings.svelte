@@ -9,32 +9,52 @@
     Users,
     Plus,
     Shield,
+    Trash2,
+    Check,
+    Crown,
   } from 'lucide-svelte';
-  import type { TeamMember } from '../../types';
+  import type { TeamMember, TeamInfo } from '../../types';
 
   // Create team form
   let createName = $state('');
   let createLoading = $state(false);
   let createError = $state<string | null>(null);
+  let showCreateForm = $state(false);
 
   // Join team form
   let joinCode = $state('');
   let joinLoading = $state(false);
   let joinError = $state<string | null>(null);
+  let showJoinForm = $state(false);
 
   // General
-  let copyFeedback = $state(false);
-  let regenLoading = $state(false);
+  let copyFeedback = $state<string | null>(null); // teamId that just copied
+  let regenLoading = $state<string | null>(null); // teamId being regenerated
   let removingMemberId = $state<string | null>(null);
-  let leaveLoading = $state(false);
+  let leaveLoading = $state<string | null>(null); // teamId being left
+  let deleteLoading = $state<string | null>(null); // teamId being deleted
 
-  let team = $derived(teamStore.team);
+  // Expanded team detail
+  let expandedTeamId = $state<string | null>(null);
+
+  let teams = $derived(teamStore.teams);
+  let activeTeamId = $derived(teamStore.activeTeamId);
   let currentUserId = $derived(authStore.user?.id ?? null);
-  let isAdmin = $derived(
-    team ? team.ownerId === currentUserId || team.members.some(
-      (m) => m.id === currentUserId && m.teamRole === 'admin',
-    ) : false,
-  );
+  let hasTeams = $derived(teams.length > 0);
+
+  // Determine if current user is owner of a specific team
+  function isOwner(team: TeamInfo): boolean {
+    return team.ownerId === currentUserId;
+  }
+
+  // Find current user's membership in a team
+  function currentMember(team: TeamInfo): TeamMember | undefined {
+    return team.members.find((m) => m.userId === currentUserId);
+  }
+
+  function toggleExpand(teamId: string) {
+    expandedTeamId = expandedTeamId === teamId ? null : teamId;
+  }
 
   async function handleCreate() {
     if (!createName.trim()) return;
@@ -43,6 +63,7 @@
     try {
       await teamStore.createTeam(createName.trim());
       createName = '';
+      showCreateForm = false;
     } catch (e: unknown) {
       createError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -57,6 +78,7 @@
     try {
       await teamStore.joinTeam(joinCode.trim());
       joinCode = '';
+      showJoinForm = false;
     } catch (e: unknown) {
       joinError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -64,30 +86,29 @@
     }
   }
 
-  async function copyInviteCode() {
-    if (!team) return;
+  async function copyInviteCode(team: TeamInfo) {
     try {
       await navigator.clipboard.writeText(team.inviteCode);
-      copyFeedback = true;
-      setTimeout(() => (copyFeedback = false), 1500);
+      copyFeedback = team.id;
+      setTimeout(() => (copyFeedback = null), 1500);
     } catch {}
   }
 
-  async function handleRegenCode() {
-    regenLoading = true;
+  async function handleRegenCode(teamId: string) {
+    regenLoading = teamId;
     try {
-      await teamStore.regenerateCode();
+      await teamStore.regenerateCode(teamId);
     } catch (e: unknown) {
       console.error('Regenerate failed:', e);
     } finally {
-      regenLoading = false;
+      regenLoading = null;
     }
   }
 
-  async function handleRemoveMember(memberId: string) {
+  async function handleRemoveMember(teamId: string, memberId: string) {
     removingMemberId = memberId;
     try {
-      await teamStore.removeMember(memberId);
+      await teamStore.removeMember(teamId, memberId);
     } catch (e: unknown) {
       console.error('Remove failed:', e);
     } finally {
@@ -95,15 +116,32 @@
     }
   }
 
-  async function handleLeave() {
-    leaveLoading = true;
+  async function handleLeave(teamId: string) {
+    leaveLoading = teamId;
     try {
-      await teamStore.leaveTeam();
+      await teamStore.leaveTeam(teamId);
+      if (expandedTeamId === teamId) expandedTeamId = null;
     } catch (e: unknown) {
       console.error('Leave failed:', e);
     } finally {
-      leaveLoading = false;
+      leaveLoading = null;
     }
+  }
+
+  async function handleDelete(teamId: string) {
+    deleteLoading = teamId;
+    try {
+      await teamStore.deleteTeam(teamId);
+      if (expandedTeamId === teamId) expandedTeamId = null;
+    } catch (e: unknown) {
+      console.error('Delete failed:', e);
+    } finally {
+      deleteLoading = null;
+    }
+  }
+
+  function handleSetActive(teamId: string) {
+    teamStore.setActiveTeam(teamId);
   }
 
   function memberInitial(member: TeamMember): string {
@@ -125,127 +163,189 @@
 </script>
 
 {#if !authStore.isAuthenticated}
-  <h3 class="section-title">Team</h3>
-  <p class="section-desc">Sign in to create or join a team for collaborative pipelines.</p>
-
-{:else if !team}
-  <!-- No team: Create / Join -->
-  <h3 class="section-title">Team</h3>
-  <p class="section-desc">Create a team or join an existing one to run collaborative pipelines.</p>
-
-  <div class="team-form-group">
-    <span class="form-label">Create Team</span>
-    <div class="team-form-row">
-      <input
-        class="setting-input"
-        type="text"
-        placeholder="Team name"
-        bind:value={createName}
-        onkeydown={handleCreateKeydown}
-      />
-      <button
-        class="btn-sm save"
-        onclick={handleCreate}
-        disabled={createLoading || !createName.trim()}
-      >
-        {#if createLoading}Creating...{:else}<Plus size={12} /> Create{/if}
-      </button>
-    </div>
-    {#if createError}
-      <span class="form-error">{createError}</span>
-    {/if}
-  </div>
-
-  <div class="team-form-group">
-    <span class="form-label">Join Team</span>
-    <div class="team-form-row">
-      <input
-        class="setting-input mono"
-        type="text"
-        placeholder="Invite code"
-        bind:value={joinCode}
-        onkeydown={handleJoinKeydown}
-      />
-      <button
-        class="btn-sm save"
-        onclick={handleJoin}
-        disabled={joinLoading || !joinCode.trim()}
-      >
-        {#if joinLoading}Joining...{:else}Join{/if}
-      </button>
-    </div>
-    {#if joinError}
-      <span class="form-error">{joinError}</span>
-    {/if}
-  </div>
+  <h3 class="section-title">Teams</h3>
+  <p class="section-desc">Sign in to create or join teams for collaborative pipelines.</p>
 
 {:else}
-  <!-- Has team -->
-  <h3 class="section-title">{team.name}</h3>
-  <p class="section-desc">{team.members.length} member{team.members.length !== 1 ? 's' : ''}</p>
+  <h3 class="section-title">Teams</h3>
 
-  <!-- Invite code -->
-  <div class="invite-section">
-    <span class="form-label">Invite Code</span>
-    <div class="invite-row">
-      <code class="invite-code">{team.inviteCode}</code>
-      <button class="btn-icon" title="Copy" onclick={copyInviteCode}>
-        <Copy size={13} />
-        {#if copyFeedback}<span class="copy-ok">Copied</span>{/if}
-      </button>
-      {#if isAdmin}
-        <button
-          class="btn-icon"
-          title="Regenerate code"
-          onclick={handleRegenCode}
-          disabled={regenLoading}
-        >
-          <RefreshCw size={13} class={regenLoading ? 'spin' : ''} />
-        </button>
-      {/if}
-    </div>
-  </div>
-
-  <!-- Members list -->
-  <div class="members-section">
-    <span class="form-label">Members</span>
-    {#each team.members as member (member.id)}
-      <div class="member-row">
-        <span class="member-avatar">{memberInitial(member)}</span>
-        <div class="member-info">
-          <span class="member-name">
-            {memberLabel(member)}
-            {#if member.id === currentUserId}<span class="you-tag">you</span>{/if}
-          </span>
-          {#if member.displayName}
-            <span class="member-email">{member.email}</span>
-          {/if}
-        </div>
-        <span class="role-badge" class:admin={member.teamRole === 'admin'}>
-          {#if member.teamRole === 'admin'}<Shield size={10} />{/if}
-          {member.teamRole}
-        </span>
-        {#if isAdmin && member.id !== currentUserId}
-          <button
-            class="btn-icon danger"
-            title="Remove member"
-            onclick={() => handleRemoveMember(member.id)}
-            disabled={removingMemberId === member.id}
-          >
-            <UserMinus size={13} />
-          </button>
-        {/if}
-      </div>
-    {/each}
-  </div>
-
-  <!-- Leave team -->
-  <div class="leave-section">
-    <button class="btn-sm delete" onclick={handleLeave} disabled={leaveLoading}>
-      <LogOut size={12} />
-      {#if leaveLoading}Leaving...{:else}Leave Team{/if}
+  <!-- Action buttons — always visible -->
+  <div class="team-actions">
+    <button
+      class="btn-sm"
+      class:save={showCreateForm}
+      onclick={() => { showCreateForm = !showCreateForm; showJoinForm = false; }}
+    >
+      <Plus size={12} /> Create
+    </button>
+    <button
+      class="btn-sm"
+      class:save={showJoinForm}
+      onclick={() => { showJoinForm = !showJoinForm; showCreateForm = false; }}
+    >
+      <Users size={12} /> Join
     </button>
   </div>
+
+  <!-- Create form (toggled) -->
+  {#if showCreateForm}
+    <div class="team-form-group">
+      <div class="team-form-row">
+        <input
+          class="setting-input"
+          type="text"
+          placeholder="Team name"
+          bind:value={createName}
+          onkeydown={handleCreateKeydown}
+        />
+        <button
+          class="btn-sm save"
+          onclick={handleCreate}
+          disabled={createLoading || !createName.trim()}
+        >
+          {#if createLoading}Creating...{:else}Create{/if}
+        </button>
+      </div>
+      {#if createError}
+        <span class="form-error">{createError}</span>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Join form (toggled) -->
+  {#if showJoinForm}
+    <div class="team-form-group">
+      <div class="team-form-row">
+        <input
+          class="setting-input mono"
+          type="text"
+          placeholder="Invite code"
+          bind:value={joinCode}
+          onkeydown={handleJoinKeydown}
+        />
+        <button
+          class="btn-sm save"
+          onclick={handleJoin}
+          disabled={joinLoading || !joinCode.trim()}
+        >
+          {#if joinLoading}Joining...{:else}Join{/if}
+        </button>
+      </div>
+      {#if joinError}
+        <span class="form-error">{joinError}</span>
+      {/if}
+    </div>
+  {/if}
+
+  {#if !hasTeams && !showCreateForm && !showJoinForm}
+    <p class="section-desc">Create a team or join an existing one to run collaborative pipelines.</p>
+  {/if}
+
+  <!-- Team list -->
+  {#if hasTeams}
+    <div class="team-list">
+      {#each teams as team (team.id)}
+        <div class="team-item" class:expanded={expandedTeamId === team.id}>
+          <!-- Team header row -->
+          <button class="team-header" onclick={() => toggleExpand(team.id)}>
+            <span class="team-expand-icon">{expandedTeamId === team.id ? '▾' : '▸'}</span>
+            <span class="team-name">{team.name}</span>
+            <span class="team-member-count">{team.members.length}</span>
+            {#if team.id === activeTeamId}
+              <span class="active-dot" title="Active team"></span>
+            {/if}
+          </button>
+
+          <!-- Expanded team detail -->
+          {#if expandedTeamId === team.id}
+            <div class="team-detail">
+              <!-- Invite code -->
+              <div class="invite-section">
+                <span class="form-label">Invite Code</span>
+                <div class="invite-row">
+                  <code class="invite-code">{team.inviteCode}</code>
+                  <button class="btn-icon" title="Copy" onclick={() => copyInviteCode(team)}>
+                    <Copy size={13} />
+                    {#if copyFeedback === team.id}<span class="copy-ok">Copied</span>{/if}
+                  </button>
+                  {#if isOwner(team)}
+                    <button
+                      class="btn-icon"
+                      title="Regenerate code"
+                      onclick={() => handleRegenCode(team.id)}
+                      disabled={regenLoading === team.id}
+                    >
+                      <RefreshCw size={13} class={regenLoading === team.id ? 'spin' : ''} />
+                    </button>
+                  {/if}
+                </div>
+              </div>
+
+              <!-- Members list -->
+              <div class="members-section">
+                <span class="form-label">Members</span>
+                {#each team.members as member (member.id)}
+                  <div class="member-row">
+                    <span class="member-avatar">{memberInitial(member)}</span>
+                    <div class="member-info">
+                      <span class="member-name">
+                        {memberLabel(member)}
+                        {#if member.userId === currentUserId}<span class="you-tag">you</span>{/if}
+                      </span>
+                      {#if member.displayName}
+                        <span class="member-email">{member.email}</span>
+                      {/if}
+                    </div>
+                    <span class="role-badge" class:owner={member.role === 'owner'}>
+                      {#if member.role === 'owner'}<Crown size={10} />{/if}
+                      {member.role}
+                    </span>
+                    {#if isOwner(team) && member.userId !== currentUserId}
+                      <button
+                        class="btn-icon danger"
+                        title="Remove member"
+                        onclick={() => handleRemoveMember(team.id, member.userId)}
+                        disabled={removingMemberId === member.id}
+                      >
+                        <UserMinus size={13} />
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+
+              <!-- Team actions -->
+              <div class="team-detail-actions">
+                {#if team.id !== activeTeamId}
+                  <button class="btn-sm" onclick={() => handleSetActive(team.id)}>
+                    <Check size={12} /> Set Active
+                  </button>
+                {/if}
+                <button
+                  class="btn-sm delete"
+                  onclick={() => handleLeave(team.id)}
+                  disabled={leaveLoading === team.id}
+                >
+                  <LogOut size={12} />
+                  {#if leaveLoading === team.id}Leaving...{:else}Leave{/if}
+                </button>
+                {#if isOwner(team)}
+                  <button
+                    class="btn-sm delete"
+                    onclick={() => handleDelete(team.id)}
+                    disabled={deleteLoading === team.id}
+                  >
+                    <Trash2 size={12} />
+                    {#if deleteLoading === team.id}Deleting...{:else}Delete{/if}
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -262,8 +362,14 @@
     line-height: 1.4;
   }
 
+  .team-actions {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+
   .team-form-group {
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
 
   .form-label {
@@ -350,9 +456,88 @@
     background: rgba(239, 68, 68, 0.1);
   }
 
+  /* Team list */
+  .team-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 12px;
+  }
+
+  .team-item {
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-md);
+    overflow: hidden;
+  }
+
+  .team-item.expanded {
+    border-color: var(--weplex-accent);
+  }
+
+  .team-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    background: transparent;
+    color: var(--weplex-text);
+    font-size: var(--weplex-text-sm);
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .team-header:hover {
+    background: var(--weplex-surface-hover);
+  }
+
+  .team-expand-icon {
+    font-size: 10px;
+    color: var(--weplex-text-muted);
+    width: 12px;
+    flex-shrink: 0;
+  }
+
+  .team-name {
+    flex: 1;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .team-member-count {
+    font-size: var(--weplex-text-xs);
+    color: var(--weplex-text-muted);
+    flex-shrink: 0;
+  }
+
+  .active-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--weplex-active);
+    flex-shrink: 0;
+  }
+
+  /* Team detail (expanded) */
+  .team-detail {
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--weplex-border);
+  }
+
+  .team-detail-actions {
+    display: flex;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--weplex-border);
+    flex-wrap: wrap;
+  }
+
   /* Invite section */
   .invite-section {
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
 
   .invite-row {
@@ -429,7 +614,7 @@
 
   /* Members */
   .members-section {
-    margin-bottom: 16px;
+    margin-bottom: 8px;
   }
 
   .member-row {
@@ -506,13 +691,8 @@
     flex-shrink: 0;
   }
 
-  .role-badge.admin {
+  .role-badge.owner {
     background: color-mix(in srgb, var(--weplex-accent) 15%, transparent);
     color: var(--weplex-accent);
-  }
-
-  .leave-section {
-    padding-top: 8px;
-    border-top: 1px solid var(--weplex-border);
   }
 </style>

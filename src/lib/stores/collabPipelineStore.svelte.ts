@@ -10,6 +10,7 @@ import { pipelineWsService } from '../services/pipelineWsService';
 import { getAccessToken } from '../services/apiClient';
 import { showNativeNotification } from '../utils/notifications';
 import { authStore } from './authStore.svelte';
+import { teamStore } from './teamStore.svelte';
 
 // ── MCP event payload (same as pipelineRunStore) ──────────────────────────
 
@@ -168,10 +169,18 @@ export const collabPipelineStore = {
     loading = true;
     error = null;
     try {
-      // Fetch active/pending/running runs
+      const teamId = teamStore.activeTeamId;
+      if (!teamId) {
+        // No active team — nothing to fetch
+        runs = [];
+        loading = false;
+        return;
+      }
+
+      // Fetch active/pending/running runs for the active team
       const [active, pending] = await Promise.all([
-        pipelineCollabService.getRuns('running').catch(() => [] as CollaborativeRun[]),
-        pipelineCollabService.getRuns('pending').catch(() => [] as CollaborativeRun[]),
+        pipelineCollabService.getRuns(teamId, 'running').catch(() => [] as CollaborativeRun[]),
+        pipelineCollabService.getRuns(teamId, 'pending').catch(() => [] as CollaborativeRun[]),
       ]);
       runs = [...active, ...pending];
 
@@ -217,7 +226,12 @@ export const collabPipelineStore = {
     loading = true;
     error = null;
     try {
+      const teamId = teamStore.activeTeamId;
+      if (!teamId) {
+        throw new Error('No active team selected');
+      }
       const response = await pipelineCollabService.createRun({
+        teamId,
         pipelineName,
         task,
         stages,

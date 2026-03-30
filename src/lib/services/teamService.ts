@@ -4,19 +4,23 @@ import { request } from './apiClient';
 import type { TeamInfo } from '../types';
 
 export const teamService = {
+  async getMyTeams(): Promise<TeamInfo[]> {
+    return request<TeamInfo[]>('/teams', {
+      method: 'GET',
+    });
+  },
+
+  async getTeam(teamId: string): Promise<TeamInfo> {
+    return request<TeamInfo>(`/teams/${teamId}`, {
+      method: 'GET',
+    });
+  },
+
   async createTeam(name: string): Promise<TeamInfo> {
     return request<TeamInfo>('/teams', {
       method: 'POST',
       body: { name },
     });
-  },
-
-  async getMyTeam(): Promise<TeamInfo | null> {
-    // Server returns 204 when user has no team
-    const result = await request<TeamInfo | undefined>('/teams/mine', {
-      method: 'GET',
-    });
-    return result ?? null;
   },
 
   async joinTeam(inviteCode: string): Promise<TeamInfo> {
@@ -26,21 +30,34 @@ export const teamService = {
     });
   },
 
-  async leaveTeam(): Promise<void> {
-    return request<void>('/teams/leave', {
+  async leaveTeam(teamId: string): Promise<void> {
+    return request<void>(`/teams/${teamId}/leave`, {
       method: 'POST',
     });
   },
 
-  async regenerateCode(): Promise<{ inviteCode: string }> {
-    return request<{ inviteCode: string }>('/teams/regenerate-code', {
-      method: 'POST',
-    });
-  },
-
-  async removeMember(memberId: string): Promise<void> {
-    return request<void>(`/teams/members/${memberId}`, {
+  async deleteTeam(teamId: string): Promise<void> {
+    return request<void>(`/teams/${teamId}`, {
       method: 'DELETE',
+    });
+  },
+
+  async regenerateCode(teamId: string): Promise<{ inviteCode: string }> {
+    return request<{ inviteCode: string }>(`/teams/${teamId}/regenerate-code`, {
+      method: 'POST',
+    });
+  },
+
+  async removeMember(teamId: string, memberId: string): Promise<void> {
+    return request<void>(`/teams/${teamId}/members/${memberId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async transferOwnership(teamId: string, memberId: string): Promise<TeamInfo> {
+    return request<TeamInfo>(`/teams/${teamId}/transfer`, {
+      method: 'POST',
+      body: { memberId },
     });
   },
 };

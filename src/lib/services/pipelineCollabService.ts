@@ -11,9 +11,11 @@ export const pipelineCollabService = {
     });
   },
 
-  async getRuns(status?: string): Promise<CollaborativeRun[]> {
-    const query = status ? `?status=${encodeURIComponent(status)}` : '';
-    return request<CollaborativeRun[]>(`/pipelines/runs${query}`, {
+  async getRuns(teamId: string, status?: string): Promise<CollaborativeRun[]> {
+    const params = new URLSearchParams();
+    params.set('teamId', teamId);
+    if (status) params.set('status', status);
+    return request<CollaborativeRun[]>(`/pipelines/runs?${params.toString()}`, {
       method: 'GET',
     });
   },

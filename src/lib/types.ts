@@ -330,13 +330,15 @@ export interface TeamInfo {
 }
 
 export interface TeamMember {
-  id: string;
+  id: string;           // membership ID
+  userId: string;       // actual user ID
   email: string;
   displayName: string | null;
-  teamRole: 'admin' | 'member';
+  role: 'owner' | 'member';
 }
 
 export interface CreateRunPayload {
+  teamId: string;
   pipelineName: string;
   task: string;
   stages: StageDefinitionPayload[];

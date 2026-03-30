@@ -4,15 +4,35 @@ import { collabPipelineStore } from './collabPipelineStore.svelte';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
-let team = $state<TeamInfo | null>(null);
+let teams = $state<TeamInfo[]>([]);
+let activeTeamId = $state<string | null>(null);
 let loading = $state(false);
 let error = $state<string | null>(null);
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/** Select next available team or null. */
+function selectNextTeam(excludeId: string): void {
+  const remaining = teams.filter((t) => t.id !== excludeId);
+  activeTeamId = remaining.length > 0 ? remaining[0].id : null;
+}
+
+/** Update a single team in the list. */
+function updateTeamInList(updated: TeamInfo): void {
+  teams = teams.map((t) => (t.id === updated.id ? updated : t));
+}
 
 // ── Store ──────────────────────────────────────────────────────────────────
 
 export const teamStore = {
-  get team() {
-    return team;
+  get teams() {
+    return teams;
+  },
+  get activeTeamId() {
+    return activeTeamId;
+  },
+  get activeTeam(): TeamInfo | undefined {
+    return teams.find((t) => t.id === activeTeamId);
   },
   get loading() {
     return loading;
@@ -21,16 +41,23 @@ export const teamStore = {
     return error;
   },
 
-  /** Fetch current team on app start. Silently returns null if no team. */
+  /** Fetch all teams on app start. Auto-select first if no active team. */
   async init(): Promise<void> {
     loading = true;
     error = null;
     try {
-      team = await teamService.getMyTeam();
+      teams = await teamService.getMyTeams();
+      // Auto-select first team if none selected or current selection is stale
+      if (teams.length > 0 && (!activeTeamId || !teams.find((t) => t.id === activeTeamId))) {
+        activeTeamId = teams[0].id;
+      } else if (teams.length === 0) {
+        activeTeamId = null;
+      }
     } catch (e) {
-      // Not critical — user may simply not have a team yet
-      console.warn('[Weplex] Team fetch failed:', e);
-      team = null;
+      // Not critical — user may simply not have teams yet
+      console.warn('[Weplex] Teams fetch failed:', e);
+      teams = [];
+      activeTeamId = null;
     } finally {
       loading = false;
     }
@@ -40,7 +67,9 @@ export const teamStore = {
     loading = true;
     error = null;
     try {
-      team = await teamService.createTeam(name);
+      const newTeam = await teamService.createTeam(name);
+      teams = [...teams, newTeam];
+      activeTeamId = newTeam.id;
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to create team';
       throw e;
@@ -53,7 +82,9 @@ export const teamStore = {
     loading = true;
     error = null;
     try {
-      team = await teamService.joinTeam(inviteCode);
+      const joined = await teamService.joinTeam(inviteCode);
+      teams = [...teams, joined];
+      activeTeamId = joined.id;
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to join team';
       throw e;
@@ -62,13 +93,16 @@ export const teamStore = {
     }
   },
 
-  async leaveTeam(): Promise<void> {
+  async leaveTeam(teamId: string): Promise<void> {
     loading = true;
     error = null;
     try {
-      await teamService.leaveTeam();
-      team = null;
-      collabPipelineStore.reset();
+      await teamService.leaveTeam(teamId);
+      teams = teams.filter((t) => t.id !== teamId);
+      if (activeTeamId === teamId) {
+        selectNextTeam(teamId);
+        collabPipelineStore.reset();
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to leave team';
       throw e;
@@ -77,12 +111,42 @@ export const teamStore = {
     }
   },
 
-  async regenerateCode(): Promise<void> {
+  async deleteTeam(teamId: string): Promise<void> {
+    loading = true;
     error = null;
     try {
-      const result = await teamService.regenerateCode();
-      if (team) {
-        team = { ...team, inviteCode: result.inviteCode };
+      await teamService.deleteTeam(teamId);
+      teams = teams.filter((t) => t.id !== teamId);
+      if (activeTeamId === teamId) {
+        selectNextTeam(teamId);
+        collabPipelineStore.reset();
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to delete team';
+      throw e;
+    } finally {
+      loading = false;
+    }
+  },
+
+  /** Switch active team context. Resets collaborative pipeline state. */
+  setActiveTeam(teamId: string): void {
+    if (activeTeamId === teamId) return;
+    activeTeamId = teamId;
+    // Reset and re-init collab pipelines for the new team
+    collabPipelineStore.reset();
+    collabPipelineStore.init().catch((e) =>
+      console.warn('[Weplex] Collab pipeline re-init failed on team switch:', e),
+    );
+  },
+
+  async regenerateCode(teamId: string): Promise<void> {
+    error = null;
+    try {
+      const result = await teamService.regenerateCode(teamId);
+      const target = teams.find((t) => t.id === teamId);
+      if (target) {
+        updateTeamInList({ ...target, inviteCode: result.inviteCode });
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to regenerate code';
@@ -90,16 +154,17 @@ export const teamStore = {
     }
   },
 
-  async removeMember(memberId: string): Promise<void> {
+  async removeMember(teamId: string, memberId: string): Promise<void> {
     error = null;
     try {
-      await teamService.removeMember(memberId);
+      await teamService.removeMember(teamId, memberId);
       // Update local state — remove member from the list
-      if (team) {
-        team = {
-          ...team,
-          members: team.members.filter((m) => m.id !== memberId),
-        };
+      const target = teams.find((t) => t.id === teamId);
+      if (target) {
+        updateTeamInList({
+          ...target,
+          members: target.members.filter((m) => m.id !== memberId),
+        });
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to remove member';
@@ -107,9 +172,10 @@ export const teamStore = {
     }
   },
 
-  /** Clear state (on logout). */
+  /** Clear all state (on logout). */
   reset(): void {
-    team = null;
+    teams = [];
+    activeTeamId = null;
     loading = false;
     error = null;
   },
