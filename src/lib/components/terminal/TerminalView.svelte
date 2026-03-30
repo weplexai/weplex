@@ -450,9 +450,14 @@
         const pollForSessionId = async (attempt: number) => {
           if (destroyed || claudeIdCaptured || attempt > 12) return;
           try {
+            // Collect IDs already claimed by other sessions to avoid collisions
+            const excludeIds = sessionStore.sessions
+              .filter((s) => s.id !== sessionId && s.claudeSessionId)
+              .map((s) => s.claudeSessionId!);
             const newId = await invoke<string | null>('get_new_claude_session', {
               cwd: session!.cwd,
               afterEpochMs: launchTime,
+              excludeIds,
             });
             if (newId) {
               claudeIdCaptured = true;

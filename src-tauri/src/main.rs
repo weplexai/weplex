@@ -85,7 +85,11 @@ fn claude_sessions_dir(cwd: &str) -> String {
 /// Find a Claude session file CREATED after a given timestamp (ms since epoch).
 /// Uses file birthtime (macOS) to avoid picking up existing sessions from other terminals.
 #[tauri::command]
-fn get_new_claude_session(cwd: String, after_epoch_ms: u64) -> Result<Option<String>, String> {
+fn get_new_claude_session(
+    cwd: String,
+    after_epoch_ms: u64,
+    exclude_ids: Option<Vec<String>>,
+) -> Result<Option<String>, String> {
     let sessions_dir = claude_sessions_dir(&cwd);
     let dir = match std::fs::read_dir(&sessions_dir) {
         Ok(d) => d,
@@ -95,6 +99,8 @@ fn get_new_claude_session(cwd: String, after_epoch_ms: u64) -> Result<Option<Str
     };
 
     let after = std::time::UNIX_EPOCH + std::time::Duration::from_millis(after_epoch_ms);
+    let excluded: std::collections::HashSet<String> =
+        exclude_ids.unwrap_or_default().into_iter().collect();
 
     let mut newest: Option<(String, std::time::SystemTime)> = None;
     for entry in dir.flatten() {
@@ -109,6 +115,9 @@ fn get_new_claude_session(cwd: String, after_epoch_ms: u64) -> Result<Option<Str
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
+            if excluded.contains(&stem) {
+                continue;
+            }
             if newest.is_none() || created > newest.as_ref().unwrap().1 {
                 newest = Some((stem, created));
             }
