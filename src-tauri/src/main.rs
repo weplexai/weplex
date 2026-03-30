@@ -8,6 +8,7 @@ mod oauth_server;
 mod pipeline_engine;
 mod pipeline_parser;
 mod pty_manager;
+mod secure_store;
 mod weplex_agents;
 
 use pipeline_engine::PipelineEngine;
@@ -1394,6 +1395,9 @@ fn main() {
             keychain::keychain_save,
             keychain::keychain_load,
             keychain::keychain_delete,
+            secure_store::secure_store_save,
+            secure_store::secure_store_load,
+            secure_store::secure_store_delete,
             start_mcp_for_run,
             stop_mcp_for_run,
             set_run_artifact,

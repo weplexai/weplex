@@ -38,25 +38,24 @@ async function keychainDeleteTokens(): Promise<void> {
   await invoke('keychain_delete', { key: KEYCHAIN_KEY });
 }
 
-// ── Persistence helpers (file backup) ─────────────────────────────────────
-// File backup uses the same persist_store/load_store Tauri commands as other stores.
-// Tokens are base64-encoded to prevent accidental exposure in plain text.
-// NOTE: base64 is NOT encryption — primary secure storage is OS keychain; file is fallback only.
+// ── Persistence helpers (encrypted file backup) ──────────────────────────
+// Encrypted backup uses AES-256-GCM with a machine-derived key (hostname + username).
+// Primary storage is OS keychain; encrypted file is fallback for keychain failures.
+// Files stored in appDataDir/secure/ with 0600 permissions.
 
 async function fileSaveTokens(t: AuthTokens): Promise<void> {
   try {
-    const encoded = btoa(JSON.stringify(t));
-    await invoke('persist_store', { key: FILE_BACKUP_KEY, value: encoded });
+    await invoke('secure_store_save', { key: FILE_BACKUP_KEY, value: JSON.stringify(t) });
   } catch (e) {
-    console.warn('[auth] File backup save failed:', e);
+    console.warn('[auth] Encrypted backup save failed:', e);
   }
 }
 
 async function fileLoadTokens(): Promise<AuthTokens | null> {
   try {
-    const raw = await invoke<string | null>('load_store', { key: FILE_BACKUP_KEY });
+    const raw = await invoke<string | null>('secure_store_load', { key: FILE_BACKUP_KEY });
     if (!raw) return null;
-    const decoded = JSON.parse(atob(raw)) as AuthTokens;
+    const decoded = JSON.parse(raw) as AuthTokens;
     if (decoded.accessToken && decoded.refreshToken) return decoded;
     return null;
   } catch {
@@ -66,9 +65,9 @@ async function fileLoadTokens(): Promise<AuthTokens | null> {
 
 async function fileDeleteTokens(): Promise<void> {
   try {
-    await invoke('persist_store', { key: FILE_BACKUP_KEY, value: '' });
+    await invoke('secure_store_delete', { key: FILE_BACKUP_KEY });
   } catch (e) {
-    console.warn('[auth] File backup delete failed:', e);
+    console.warn('[auth] Encrypted backup delete failed:', e);
   }
 }
 
