@@ -8,6 +8,7 @@ import { collabPipelineStore } from './collabPipelineStore.svelte';
 import { pipelineWsService } from '../services/pipelineWsService';
 
 const KEYCHAIN_KEY = 'auth_tokens';
+const FILE_BACKUP_KEY = 'weplex_auth_tokens';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -15,6 +16,7 @@ let user = $state<AuthUser | null>(null);
 let tokens = $state<AuthTokens | null>(null);
 let loading = $state(false);
 let error = $state<string | null>(null);
+let focusRetryCleanup: (() => void) | null = null;
 
 // ── Persistence helpers (OS keychain) ──────────────────────────────────────
 
@@ -36,6 +38,40 @@ async function keychainDeleteTokens(): Promise<void> {
   await invoke('keychain_delete', { key: KEYCHAIN_KEY });
 }
 
+// ── Persistence helpers (file backup) ─────────────────────────────────────
+// File backup uses the same persist_store/load_store Tauri commands as other stores.
+// Tokens are base64-encoded to prevent accidental exposure in plain text.
+// NOTE: base64 is NOT encryption — primary secure storage is OS keychain; file is fallback only.
+
+async function fileSaveTokens(t: AuthTokens): Promise<void> {
+  try {
+    const encoded = btoa(JSON.stringify(t));
+    await invoke('persist_store', { key: FILE_BACKUP_KEY, value: encoded });
+  } catch (e) {
+    console.warn('[auth] File backup save failed:', e);
+  }
+}
+
+async function fileLoadTokens(): Promise<AuthTokens | null> {
+  try {
+    const raw = await invoke<string | null>('load_store', { key: FILE_BACKUP_KEY });
+    if (!raw) return null;
+    const decoded = JSON.parse(atob(raw)) as AuthTokens;
+    if (decoded.accessToken && decoded.refreshToken) return decoded;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function fileDeleteTokens(): Promise<void> {
+  try {
+    await invoke('persist_store', { key: FILE_BACKUP_KEY, value: '' });
+  } catch (e) {
+    console.warn('[auth] File backup delete failed:', e);
+  }
+}
+
 // ── Wire up apiClient token access ─────────────────────────────────────────
 
 initApiClient(
@@ -44,8 +80,10 @@ initApiClient(
     tokens = newTokens;
     if (newTokens) {
       keychainSaveTokens(newTokens).catch(console.error);
+      fileSaveTokens(newTokens).catch(console.error);
     } else {
       keychainDeleteTokens().catch(console.error);
+      fileDeleteTokens().catch(console.error);
     }
   },
 );
@@ -63,7 +101,9 @@ export const authStore = {
     return error;
   },
   get isAuthenticated() {
-    return user !== null && tokens !== null;
+    // Consider authenticated if we have tokens, even if profile is not yet loaded
+    // (e.g., server is temporarily unreachable after app restart)
+    return tokens !== null;
   },
   get syncStatus() {
     return syncService.status;
@@ -74,7 +114,16 @@ export const authStore = {
     // Resolve best API endpoint (try .ai first, fallback to .xyz)
     await resolveApiEndpoint();
 
-    const saved = await keychainLoadTokens();
+    // Try keychain first, fall back to file backup
+    let saved = await keychainLoadTokens();
+    if (!saved) {
+      saved = await fileLoadTokens();
+      if (saved) {
+        // Restore to keychain for next time
+        await keychainSaveTokens(saved).catch(() => {});
+        console.log('[auth] Restored tokens from file backup');
+      }
+    }
     if (!saved) return;
 
     tokens = saved;
@@ -85,14 +134,77 @@ export const authStore = {
       // Initialize team and collaborative pipelines after auth
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
       collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
-    } catch {
-      // Token expired and refresh failed — clean up
-      tokens = null;
-      user = null;
-      await keychainDeleteTokens().catch((e) =>
-        console.error('[Weplex] Failed to clear keychain during init cleanup:', e),
-      );
+      // Ensure file backup is in sync
+      fileSaveTokens(tokens!).catch(() => {});
+    } catch (e: any) {
+      // Only clear tokens on confirmed auth failure (401)
+      // Network errors, timeouts, server errors — keep tokens, retry later
+      const status = e?.status || e?.response?.status;
+      if (status === 401) {
+        tokens = null;
+        user = null;
+        await keychainDeleteTokens().catch((err) =>
+          console.error('[Weplex] Failed to clear keychain during init cleanup:', err),
+        );
+        await fileDeleteTokens();
+      } else {
+        // Keep tokens, user stays "logged in" but profile not loaded
+        // Will retry on next app focus or scheduled retry
+        console.warn('[auth] Profile fetch failed, keeping tokens for retry:', e?.message || e);
+        this._scheduleProfileRetry();
+      }
     }
+  },
+
+  /** Retry profile fetch after transient failure. Cleans up on success or 401. */
+  _scheduleProfileRetry(): void {
+    // Clean up any previous listener
+    if (focusRetryCleanup) {
+      focusRetryCleanup();
+      focusRetryCleanup = null;
+    }
+
+    const retryProfile = async () => {
+      if (!tokens || user) return; // already resolved
+      try {
+        user = await authService.getProfile();
+        // Success — init dependent stores
+        syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after retry:', e));
+        teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
+        collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
+        // Clean up listener
+        if (focusRetryCleanup) {
+          focusRetryCleanup();
+          focusRetryCleanup = null;
+        }
+      } catch (err: any) {
+        const status = err?.status || err?.response?.status;
+        if (status === 401) {
+          // Confirmed auth failure — clean up
+          tokens = null;
+          user = null;
+          await keychainDeleteTokens().catch(() => {});
+          await fileDeleteTokens();
+          if (focusRetryCleanup) {
+            focusRetryCleanup();
+            focusRetryCleanup = null;
+          }
+        }
+        // Otherwise keep waiting for next focus/retry
+      }
+    };
+
+    // Retry once after 30 seconds
+    const timerId = setTimeout(retryProfile, 30_000);
+
+    // Retry on window focus
+    const onFocus = () => retryProfile();
+    window.addEventListener('focus', onFocus);
+
+    focusRetryCleanup = () => {
+      clearTimeout(timerId);
+      window.removeEventListener('focus', onFocus);
+    };
   },
 
   async login(email: string, password: string): Promise<void> {
@@ -103,6 +215,7 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       await keychainSaveTokens(tokens);
+      await fileSaveTokens(tokens);
       syncService
         .pull()
         .catch((e) => console.warn('[Weplex] Settings sync failed after login:', e));
@@ -125,6 +238,7 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       await keychainSaveTokens(tokens);
+      await fileSaveTokens(tokens);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Registration failed';
       throw e;
@@ -166,6 +280,7 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       await keychainSaveTokens(tokens);
+      await fileSaveTokens(tokens);
       syncService
         .pull()
         .catch((e) => console.warn('[Weplex] Settings sync failed after OAuth:', e));
@@ -202,12 +317,19 @@ export const authStore = {
     collabPipelineStore.reset();
     pipelineWsService.disconnect();
 
+    // Clean up any pending retry listener
+    if (focusRetryCleanup) {
+      focusRetryCleanup();
+      focusRetryCleanup = null;
+    }
+
     tokens = null;
     user = null;
     error = null;
     await keychainDeleteTokens().catch((e) =>
       console.error('[Weplex] Failed to clear keychain on logout:', e),
     );
+    await fileDeleteTokens();
   },
 
   async updateProfile(patch: { displayName?: string }): Promise<void> {

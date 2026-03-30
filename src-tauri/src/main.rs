@@ -978,6 +978,13 @@ fn persist_store(app: tauri::AppHandle, key: String, value: String) -> Result<()
     // Atomic rename: tmp → current
     std::fs::rename(&tmp_path, &path).map_err(|e| e.to_string())?;
 
+    // Restrict permissions for sensitive keys (auth tokens)
+    #[cfg(unix)]
+    if key.contains("auth") {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
     Ok(())
 }
 
