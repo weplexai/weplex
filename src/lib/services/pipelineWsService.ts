@@ -37,7 +37,7 @@ export const pipelineWsService = {
         socket?.emit('join-space', { spaceId, displayName });
       }
       for (const teamId of joinedTeams) {
-        socket?.emit('join-team', { teamId });
+        socket?.emit('join-team-room', { teamId });
       }
     });
 
@@ -148,13 +148,13 @@ export const pipelineWsService = {
   /** Join a team room to receive team/space events. */
   joinTeamRoom(teamId: string): void {
     joinedTeams.add(teamId);
-    socket?.emit('join-team', { teamId });
+    socket?.emit('join-team-room', { teamId });
   },
 
   /** Leave a team room. */
   leaveTeamRoom(teamId: string): void {
     joinedTeams.delete(teamId);
-    socket?.emit('leave-team', { teamId });
+    socket?.emit('leave-team-room', { teamId });
   },
 
   /** Subscribe to team member joined events. Returns an unsubscribe function. */

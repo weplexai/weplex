@@ -233,7 +233,7 @@ export const teamStore = {
       if (target) {
         updateTeamInList({
           ...target,
-          members: target.members.filter((m) => m.id !== memberId),
+          members: target.members.filter((m) => m.userId !== memberId),
         });
       }
     } catch (e) {
