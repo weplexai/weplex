@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { HYPERSPACE_ID } from '../../types';
   import { sessionStore } from '../../stores/sessionStore';
   import { spaceStore } from '../../stores/spaceStore';
@@ -12,6 +13,12 @@
   import { updateState, installUpdate, restartToUpdate } from '../../utils/updater';
 
   let updateDismissed = $state(false);
+
+  // Hide/show native traffic lights when sidebar toggles
+  $effect(() => {
+    invoke('set_traffic_lights_visible', { visible: uiStore.sidebarVisible }).catch(() => {});
+  });
+
   // Re-show after 1 hour if dismissed
   $effect(() => {
     if (updateDismissed) {
