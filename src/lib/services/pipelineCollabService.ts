@@ -64,9 +64,10 @@ export const pipelineCollabService = {
   },
 
   async getArtifact(runId: string, stageName: string): Promise<string> {
-    return request<string>(
+    const res = await request<{ artifact: string }>(
       `/pipelines/runs/${runId}/artifacts/${encodeURIComponent(stageName)}`,
       { method: 'GET' },
     );
+    return res.artifact;
   },
 };

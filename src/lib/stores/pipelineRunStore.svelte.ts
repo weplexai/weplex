@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { PipelineRunInfo, StageRunInfo, StageStatus, PipelineRunStatus } from '../types';
+import type { PipelineRunInfo, StageRunInfo, StageStatus, PipelineRunStatus, StageDefinitionPayload } from '../types';
 import type { PipelineConfig, PipelineStage } from '../components/overlays/types';
 import { sessionStore } from './sessionStore.svelte';
 import { collabPipelineStore } from './collabPipelineStore.svelte';
@@ -326,15 +326,15 @@ function hasCollaborativeStages(stages: PipelineStage[]): boolean {
 /** Convert PipelineStage[] to StageDefinitionPayload[] for the collab API. */
 function toCollabStages(
   stages: PipelineStage[],
-): { name: string; agent?: string; role?: string; receives: string[]; optional?: boolean; ownerEmail?: string }[] {
-  const result: { name: string; agent?: string; role?: string; receives: string[]; optional?: boolean; ownerEmail?: string }[] = [];
+): StageDefinitionPayload[] {
+  const result: StageDefinitionPayload[] = [];
   for (const s of stages) {
     if (s.parallel) {
       for (const ps of s.parallel) {
         result.push({
           name: ps.name || ps.agent || 'stage',
-          agent: ps.agent || undefined,
-          role: ps.role || undefined,
+          agent: ps.agent || 'unknown',
+          role: ps.role || 'unknown',
           receives: ps.receives || [],
           optional: ps.optional || undefined,
           ownerEmail: ps.owner || undefined,
@@ -343,8 +343,8 @@ function toCollabStages(
     } else {
       result.push({
         name: s.name || s.agent || 'stage',
-        agent: s.agent || undefined,
-        role: s.role || undefined,
+        agent: s.agent || 'unknown',
+        role: s.role || 'unknown',
         receives: s.receives || [],
         optional: s.optional || undefined,
         ownerEmail: s.owner || undefined,

@@ -354,8 +354,8 @@ export interface CreateRunPayload {
 
 export interface StageDefinitionPayload {
   name: string;
-  agent?: string;
-  role?: string;
+  agent: string;
+  role: string;
   receives: string[];
   optional?: boolean;
   ownerEmail?: string;

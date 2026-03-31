@@ -133,7 +133,8 @@ async function prefetchArtifacts(runId: string, receives: string[]): Promise<voi
   }
 }
 
-function cleanupWs(): void {
+/** Clean up pipeline-specific subscriptions without disconnecting the shared WS. */
+function cleanupPipelineSubscriptions(): void {
   unsubRunUpdated?.();
   unsubStageReady?.();
   unsubNotification?.();
@@ -142,6 +143,11 @@ function cleanupWs(): void {
   unsubStageReady = null;
   unsubNotification = null;
   mcpUnlisten = null;
+}
+
+/** Full WS teardown — only call on logout when nothing else needs the connection. */
+function cleanupWs(): void {
+  cleanupPipelineSubscriptions();
   pipelineWsService.disconnect();
 }
 
@@ -325,8 +331,17 @@ export const collabPipelineStore = {
     activeRunId = runId;
   },
 
-  /** Clear all state and disconnect WS. Called on logout. */
+  /** Clear pipeline state and unsubscribe events. Does NOT disconnect WS (shared for presence/team/space). */
   reset(): void {
+    cleanupPipelineSubscriptions();
+    runs = [];
+    activeRunId = null;
+    loading = false;
+    error = null;
+  },
+
+  /** Full teardown including WS disconnect. Call only on logout. */
+  destroy(): void {
     cleanupWs();
     runs = [];
     activeRunId = null;

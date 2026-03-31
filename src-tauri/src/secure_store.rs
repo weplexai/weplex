@@ -6,7 +6,6 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
-use ring::digest;
 use std::path::PathBuf;
 use tauri::Manager;
 
