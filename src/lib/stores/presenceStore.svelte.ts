@@ -35,6 +35,7 @@ let summaryCache: Record<string, SummaryData> = {};
 
 /** Build SessionMeta array from local sessions for a given space. */
 function buildLocalSessionMeta(spaceId: string): SessionMeta[] {
+  console.debug('[presence] buildMeta for spaceId:', spaceId, '| all sessions:', sessionStore.sessions.map(s => ({ id: s.id, name: s.name, spaceId: s.spaceId })));
   const sessions = sessionStore.sessions.filter((s) => s.spaceId === spaceId);
   const now = new Date().toISOString();
 
