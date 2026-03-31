@@ -84,15 +84,25 @@ function getSharedSpaceIds(): string[] {
 
 /** Sync sessions for all active shared spaces. */
 async function syncAllSharedSpaces(): Promise<void> {
-  if (!authStore.isAuthenticated) return;
+  if (!authStore.isAuthenticated) {
+    console.debug('[presence] skip sync: not authenticated');
+    return;
+  }
   const activeSpace = spaceStore.activeSpace;
-  if (!activeSpace || (!activeSpace.shared && activeSpace.type !== 'team')) return;
-  if (!activeSpace.serverId) return;
+  if (!activeSpace || (!activeSpace.shared && activeSpace.type !== 'team')) {
+    console.debug('[presence] skip sync: active space not shared/team', activeSpace?.name, activeSpace?.type, activeSpace?.shared);
+    return;
+  }
+  if (!activeSpace.serverId) {
+    console.debug('[presence] skip sync: no serverId on active space');
+    return;
+  }
 
   // Refresh summary cache before building metadata
   await refreshSummaryCache(activeSpace.id);
 
   const sessions = buildLocalSessionMeta(activeSpace.id);
+  console.log(`[presence] syncing ${sessions.length} sessions for space "${activeSpace.name}" (${activeSpace.serverId}), WS connected: ${pipelineWsService.isConnected()}`);
   pipelineWsService.syncSessions(activeSpace.serverId, sessions);
 }
 
@@ -165,6 +175,7 @@ export const presenceStore = {
   /** Start periodic session sync for active shared/team spaces. */
   startSyncing(): void {
     if (syncTimer) return;
+    console.log('[presence] startSyncing called');
     syncAllSharedSpaces();
     syncTimer = setInterval(syncAllSharedSpaces, SYNC_INTERVAL_MS);
   },
