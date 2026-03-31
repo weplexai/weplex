@@ -4,6 +4,7 @@ import type { MemberPresence, SessionMeta, SessionRecord } from '../types';
 import { pipelineWsService } from '../services/pipelineWsService';
 import { spaceStore } from './spaceStore';
 import { sessionStore } from './sessionStore';
+import { authStore } from './authStore.svelte';
 import { spaceService } from '../services/spaceService';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -82,6 +83,7 @@ function getSharedSpaceIds(): string[] {
 
 /** Sync sessions for all active shared spaces. */
 async function syncAllSharedSpaces(): Promise<void> {
+  if (!authStore.isAuthenticated) return;
   const activeSpace = spaceStore.activeSpace;
   if (!activeSpace || (!activeSpace.shared && activeSpace.type !== 'team')) return;
   if (!activeSpace.serverId) return;
@@ -121,6 +123,7 @@ export const presenceStore = {
 
   /** Load session history from the server for a shared/team space. */
   async loadHistory(serverId: string): Promise<void> {
+    if (!authStore.isAuthenticated) return;
     historyLoading = { ...historyLoading, [serverId]: true };
     try {
       const records = await spaceService.getSessionHistory(serverId);

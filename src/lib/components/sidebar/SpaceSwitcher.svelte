@@ -5,6 +5,14 @@
   import { sessionStore } from '../../stores/sessionStore';
   import { folderStore } from '../../stores/folderStore';
   import { uiStore } from '../../stores/uiStore';
+  import { authStore } from '../../stores/authStore.svelte';
+
+  // Filter out shared/team spaces when not authenticated
+  let visibleSpaces = $derived(
+    authStore.isAuthenticated
+      ? spaceStore.spaces
+      : spaceStore.spaces.filter(s => !s.shared && s.type !== 'team')
+  );
 
   let showMenu = $state(false);
   let menuBtnEl = $state<HTMLButtonElement>();
@@ -122,7 +130,7 @@
     <Layers size={14} />
   </button>
 
-  {#each spaceStore.spaces as space, i (space.id)}
+  {#each visibleSpaces as space, i (space.id)}
     {#if isDragging && dropIndex === i && dragIndex !== i}
       <div class="drop-indicator"></div>
     {/if}
