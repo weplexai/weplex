@@ -405,3 +405,24 @@ export interface PipelineNotification {
   runId: string;
   stageName?: string;
 }
+
+// ── Session History (server-persisted records for shared spaces) ──────────
+
+export interface SessionRecord {
+  id: string;
+  spaceId: string;
+  userId: string;
+  sessionLocalId: string;
+  name: string;
+  agentType?: string;
+  cwd?: string;
+  gitBranch?: string;
+  status: 'active' | 'idle' | 'closed';
+  startedAt: string;
+  lastSeenAt: string;
+  endedAt?: string;
+  user?: {
+    email: string;
+    displayName: string | null;
+  };
+}

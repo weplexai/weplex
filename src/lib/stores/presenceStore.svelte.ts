@@ -1,15 +1,18 @@
 // Presence store — tracks team member sessions in shared/team spaces
 
-import type { MemberPresence, SessionMeta } from '../types';
+import type { MemberPresence, SessionMeta, SessionRecord } from '../types';
 import { pipelineWsService } from '../services/pipelineWsService';
 import { spaceStore } from './spaceStore';
 import { sessionStore } from './sessionStore';
+import { spaceService } from '../services/spaceService';
 
 const SYNC_INTERVAL_MS = 10_000; // 10 seconds
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 let presenceMap = $state<Record<string, MemberPresence[]>>({});
+let sessionHistory = $state<Record<string, SessionRecord[]>>({});
+let historyLoading = $state<Record<string, boolean>>({});
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 let unsubSessions: (() => void) | null = null;
 let unsubOffline: (() => void) | null = null;
@@ -59,9 +62,36 @@ export const presenceStore = {
     return presenceMap;
   },
 
+  get sessionHistory() {
+    return sessionHistory;
+  },
+
   /** Get members present in a specific space (by serverId). */
   getMembers(serverId: string): MemberPresence[] {
     return presenceMap[serverId] ?? [];
+  },
+
+  /** Get session history records for a space (by serverId). */
+  getHistory(serverId: string): SessionRecord[] {
+    return sessionHistory[serverId] ?? [];
+  },
+
+  /** Check if history is currently loading for a space. */
+  isHistoryLoading(serverId: string): boolean {
+    return historyLoading[serverId] ?? false;
+  },
+
+  /** Load session history from the server for a shared/team space. */
+  async loadHistory(serverId: string): Promise<void> {
+    historyLoading = { ...historyLoading, [serverId]: true };
+    try {
+      const records = await spaceService.getSessionHistory(serverId);
+      sessionHistory = { ...sessionHistory, [serverId]: records };
+    } catch (err) {
+      console.warn('[Weplex] Failed to load session history:', err);
+    } finally {
+      historyLoading = { ...historyLoading, [serverId]: false };
+    }
   },
 
   /** Subscribe to WebSocket presence events. Call once after WS connects. */
