@@ -15,6 +15,7 @@ const SYNC_INTERVAL_MS = 10_000; // 10 seconds
 let presenceMap = $state<Record<string, MemberPresence[]>>({});
 let sessionHistory = $state<Record<string, SessionRecord[]>>({});
 let historyLoading = $state<Record<string, boolean>>({});
+let historyLoadedAt: Record<string, number> = {}; // timestamp of last load per space (cooldown)
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 let unsubSessions: (() => void) | null = null;
 let unsubOffline: (() => void) | null = null;
@@ -124,12 +125,18 @@ export const presenceStore = {
   /** Load session history from the server for a shared/team space. */
   async loadHistory(serverId: string): Promise<void> {
     if (!authStore.isAuthenticated) return;
+    // Prevent duplicate/loop: skip if already loading or recently loaded
+    if (historyLoading[serverId]) return;
+    if (sessionHistory[serverId] && historyLoadedAt[serverId] && Date.now() - historyLoadedAt[serverId] < 30_000) return;
     historyLoading = { ...historyLoading, [serverId]: true };
     try {
       const records = await spaceService.getSessionHistory(serverId);
       sessionHistory = { ...sessionHistory, [serverId]: records };
+      historyLoadedAt[serverId] = Date.now();
     } catch (err) {
       console.warn('[Weplex] Failed to load session history:', err);
+      // On error, set a cooldown to prevent retry loops
+      historyLoadedAt[serverId] = Date.now();
     } finally {
       historyLoading = { ...historyLoading, [serverId]: false };
     }
@@ -193,5 +200,6 @@ export const presenceStore = {
     presenceMap = {};
     sessionHistory = {};
     historyLoading = {};
+    historyLoadedAt = {};
   },
 };
