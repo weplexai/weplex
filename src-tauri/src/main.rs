@@ -9,6 +9,7 @@ mod pipeline_engine;
 mod pipeline_parser;
 mod pty_manager;
 mod secure_store;
+mod session_summary;
 mod weplex_agents;
 
 use pipeline_engine::PipelineEngine;
@@ -58,6 +59,11 @@ fn resize_pty(state: State<AppState>, session_id: u32, cols: u16, rows: u16) -> 
 fn kill_pty(state: State<AppState>, session_id: u32) -> Result<(), String> {
     let mut manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     manager.kill(session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_session_summary(session_id: String) -> Option<session_summary::SessionSummary> {
+    session_summary::read_summary(&session_id)
 }
 
 /// Resolve a cwd with tilde to an absolute path.
@@ -1404,6 +1410,10 @@ fn main() {
             // Clean up stale socket files from previous crashes
             ipc_server::IpcSocketPool::cleanup_stale_socket_files();
 
+            // Ensure summaries directory exists and clean up old files
+            session_summary::ensure_summaries_dir();
+            session_summary::cleanup_old_summaries();
+
             // Register MCP server in ~/.claude.json
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -1456,6 +1466,7 @@ fn main() {
             get_mcp_binary_path,
             register_mcp_in_claude,
             set_traffic_lights_visible,
+            get_session_summary,
         ])
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())

@@ -378,6 +378,9 @@ export interface SessionMeta {
   shared: boolean;
   createdAt: string;
   updatedAt: string;
+  summary?: string;
+  filesChanged?: string[];
+  decisions?: string[];
 }
 
 export interface MemberPresence {
@@ -421,6 +424,9 @@ export interface SessionRecord {
   startedAt: string;
   lastSeenAt: string;
   endedAt?: string;
+  summary?: string | null;
+  filesChanged?: string[] | null;
+  decisions?: string[] | null;
   user?: {
     email: string;
     displayName: string | null;

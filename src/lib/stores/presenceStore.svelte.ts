@@ -5,6 +5,7 @@ import { pipelineWsService } from '../services/pipelineWsService';
 import { spaceStore } from './spaceStore';
 import { sessionStore } from './sessionStore';
 import { spaceService } from '../services/spaceService';
+import { invoke } from '@tauri-apps/api/core';
 
 const SYNC_INTERVAL_MS = 10_000; // 10 seconds
 
@@ -17,6 +18,17 @@ let syncTimer: ReturnType<typeof setInterval> | null = null;
 let unsubSessions: (() => void) | null = null;
 let unsubOffline: (() => void) | null = null;
 
+// ── Summary cache (read from local files via Tauri command) ───────────────
+
+interface SummaryData {
+  summary: string;
+  filesChanged: string[];
+  decisions: string[];
+  updatedAt: number;
+}
+
+let summaryCache: Record<string, SummaryData> = {};
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /** Build SessionMeta array from local sessions for a given space. */
@@ -24,17 +36,40 @@ function buildLocalSessionMeta(spaceId: string): SessionMeta[] {
   const sessions = sessionStore.sessions.filter((s) => s.spaceId === spaceId);
   const now = new Date().toISOString();
 
-  return sessions.map((s) => ({
-    id: String(s.id),
-    name: s.name,
-    status: s.status === 'active' ? 'active' : s.status === 'idle' ? 'idle' : 'closed',
-    agentType: s.agentType,
-    cwd: s.cwd,
-    gitBranch: s.branch,
-    shared: true,
-    createdAt: new Date(s.createdAt).toISOString(),
-    updatedAt: now,
-  }));
+  return sessions.map((s) => {
+    const cached = summaryCache[String(s.id)];
+    return {
+      id: String(s.id),
+      name: s.name,
+      status: s.status === 'active' ? 'active' : s.status === 'idle' ? 'idle' : 'closed',
+      agentType: s.agentType,
+      cwd: s.cwd,
+      gitBranch: s.branch,
+      shared: true,
+      createdAt: new Date(s.createdAt).toISOString(),
+      updatedAt: now,
+      summary: cached?.summary,
+      filesChanged: cached?.filesChanged,
+      decisions: cached?.decisions,
+    };
+  });
+}
+
+/** Refresh the summary cache by reading files for all active sessions in a space. */
+async function refreshSummaryCache(spaceId: string): Promise<void> {
+  const sessions = sessionStore.sessions.filter((s) => s.spaceId === spaceId);
+  for (const s of sessions) {
+    try {
+      const data = await invoke<SummaryData | null>('get_session_summary', {
+        sessionId: String(s.id),
+      });
+      if (data) {
+        summaryCache[String(s.id)] = data;
+      }
+    } catch {
+      // Summary file may not exist yet — that's fine
+    }
+  }
 }
 
 /** Get all shared/team space IDs that are currently relevant. */
@@ -46,10 +81,13 @@ function getSharedSpaceIds(): string[] {
 }
 
 /** Sync sessions for all active shared spaces. */
-function syncAllSharedSpaces(): void {
+async function syncAllSharedSpaces(): Promise<void> {
   const activeSpace = spaceStore.activeSpace;
   if (!activeSpace || (!activeSpace.shared && activeSpace.type !== 'team')) return;
   if (!activeSpace.serverId) return;
+
+  // Refresh summary cache before building metadata
+  await refreshSummaryCache(activeSpace.id);
 
   const sessions = buildLocalSessionMeta(activeSpace.id);
   pipelineWsService.syncSessions(activeSpace.serverId, sessions);

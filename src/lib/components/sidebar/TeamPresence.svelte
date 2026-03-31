@@ -116,6 +116,15 @@
                 <span class="session-branch">{session.gitBranch}</span>
               {/if}
             </div>
+            {#if session.summary}
+              <div class="session-summary">"{session.summary}"</div>
+            {/if}
+            {#if session.filesChanged && session.filesChanged.length > 0}
+              <div class="session-files">files: {session.filesChanged.map(f => f.split('/').pop()).join(', ')}</div>
+            {/if}
+            {#if session.decisions && session.decisions.length > 0}
+              <div class="session-decisions">Decisions: {session.decisions.join(', ')}</div>
+            {/if}
           {/each}
         </div>
       {/each}
@@ -142,6 +151,15 @@
                 <span class="session-branch">{session.gitBranch}</span>
               {/if}
             </div>
+            {#if session.summary}
+              <div class="session-summary">"{session.summary}"</div>
+            {/if}
+            {#if session.filesChanged && session.filesChanged.length > 0}
+              <div class="session-files">files: {session.filesChanged.map(f => f.split('/').pop()).join(', ')}</div>
+            {/if}
+            {#if session.decisions && session.decisions.length > 0}
+              <div class="session-decisions">Decisions: {session.decisions.join(', ')}</div>
+            {/if}
           {/each}
         </div>
       {/each}
@@ -255,5 +273,40 @@
     color: var(--weplex-accent);
     font-family: var(--weplex-font-mono);
     font-size: 10px;
+  }
+
+  .session-summary {
+    padding: 1px 0 1px 12px;
+    font-size: var(--weplex-text-xs);
+    color: var(--weplex-text-muted);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-height: 1.3;
+  }
+
+  .session-files {
+    padding: 0 0 0 12px;
+    font-size: 10px;
+    color: var(--weplex-text-muted);
+    font-family: var(--weplex-font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.7;
+  }
+
+  .session-decisions {
+    padding: 0 0 1px 12px;
+    font-size: 10px;
+    color: var(--weplex-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.7;
   }
 </style>

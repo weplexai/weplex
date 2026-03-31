@@ -11,9 +11,10 @@ fn main() {
     let run_id = std::env::var("WEPLEX_RUN_ID").unwrap_or_default();
     let stage_name = std::env::var("WEPLEX_STAGE_NAME").unwrap_or_default();
     let socket_path = std::env::var("WEPLEX_MCP_SOCKET").unwrap_or_default();
+    let session_id = std::env::var("WEPLEX_SESSION_ID").unwrap_or_default();
 
     eprintln!(
-        "[weplex-mcp] starting (run_id={}, stage={}, socket={})",
+        "[weplex-mcp] starting (run_id={}, stage={}, socket={}, session={})",
         if run_id.is_empty() { "<none>" } else { &run_id },
         if stage_name.is_empty() {
             "<none>"
@@ -24,6 +25,11 @@ fn main() {
             "<none>"
         } else {
             &socket_path
+        },
+        if session_id.is_empty() {
+            "<none>"
+        } else {
+            &session_id
         },
     );
 
@@ -61,7 +67,7 @@ fn main() {
             }
         };
 
-        let response = handle_request(&request, &run_id, &stage_name, &socket_path, &mut ipc);
+        let response = handle_request(&request, &run_id, &stage_name, &socket_path, &session_id, &mut ipc);
 
         // Notifications (no id) don't get a response
         if let Some(resp) = response {
@@ -77,6 +83,7 @@ fn handle_request(
     run_id: &str,
     stage_name: &str,
     socket_path: &str,
+    session_id: &str,
     ipc: &mut IpcClient,
 ) -> Option<JsonRpcResponse> {
     match request.method.as_str() {
@@ -104,7 +111,7 @@ fn handle_request(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
-            match tools::call_tool(tool_name, &arguments, run_id, stage_name, ipc) {
+            match tools::call_tool(tool_name, &arguments, run_id, stage_name, session_id, ipc) {
                 Ok(result) => Some(JsonRpcResponse::success(request.id.clone(), result)),
                 Err(msg) => {
                     // Return error as tool result content (not JSON-RPC error)

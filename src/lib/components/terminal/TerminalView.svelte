@@ -293,6 +293,9 @@
         envVars = { ...(envVars || {}), ...session.extraEnvVars };
       }
 
+      // Always set WEPLEX_SESSION_ID so the MCP server can save session summaries
+      envVars = { ...(envVars || {}), WEPLEX_SESSION_ID: String(sessionId) };
+
       await invoke('create_pty', {
         sessionId,
         cols: term.cols > 2 ? term.cols : 80,
