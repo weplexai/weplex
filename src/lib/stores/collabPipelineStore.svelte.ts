@@ -168,10 +168,21 @@ export const collabPipelineStore = {
   async init(): Promise<void> {
     loading = true;
     error = null;
+
+    // Connect WebSocket FIRST — before any fetches, unconditionally
+    // WS is needed for presence, team events, space events — not just pipeline runs
+    const token = getAccessToken();
+    if (token) {
+      pipelineWsService.connect(token);
+      console.log('[Weplex] WS connect initiated with token');
+    } else {
+      console.warn('[Weplex] No access token available for WS connection');
+    }
+
     try {
       const teamId = teamStore.activeTeamId;
       if (!teamId) {
-        // No active team — nothing to fetch
+        // No active team — nothing to fetch, but WS is already connected
         runs = [];
         loading = false;
         return;
@@ -189,16 +200,8 @@ export const collabPipelineStore = {
         console.warn('[Weplex] Failed to set up collab MCP listener:', e),
       );
 
-      // Connect WebSocket for real-time updates
-      const user = authStore.user;
-      if (user) {
-        // Pass the current access token for WebSocket authentication
-        const token = getAccessToken();
-        if (!token) {
-          console.warn('[Weplex] No access token available for WS connection');
-          return;
-        }
-        pipelineWsService.connect(token);
+      // Subscribe to WS events (WS already connected above)
+      if (token) {
 
         unsubRunUpdated = pipelineWsService.onRunUpdated(handleRunUpdated);
         unsubStageReady = pipelineWsService.onStageReady(handleStageReady);
