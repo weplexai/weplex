@@ -90,9 +90,11 @@ fn decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// Get the secure store directory path.
+/// Uses "secure-dev" in debug mode to prevent dev/release cross-contamination.
 fn secure_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let dir = app_data.join("secure");
+    let dir_name = if cfg!(debug_assertions) { "secure-dev" } else { "secure" };
+    let dir = app_data.join(dir_name);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     // Restrict directory permissions to owner only

@@ -1,5 +1,10 @@
 use keyring::Entry;
 
+/// Use different keychain service names for dev and release builds
+/// to prevent cross-contamination when both are running simultaneously.
+#[cfg(debug_assertions)]
+const SERVICE_NAME: &str = "com.weplex.app.dev";
+#[cfg(not(debug_assertions))]
 const SERVICE_NAME: &str = "com.weplex.app";
 
 #[tauri::command]

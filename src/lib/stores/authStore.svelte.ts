@@ -158,7 +158,20 @@ export const authStore = {
     tokens = saved;
     try {
       user = await authService.getProfile();
-      if (user?.email) saveLastUserEmail(user.email);
+      if (user?.email) {
+        // Double-check: if we had a last_user_email, verify server confirmed the same user
+        // This catches cases where JWT check was skipped (no last_user_email yet)
+        const lastEmail = localStorage.getItem(LAST_USER_KEY);
+        if (lastEmail && user.email !== lastEmail) {
+          console.warn(`[auth] Server returned ${user.email} but expected ${lastEmail}. Logging out foreign session.`);
+          tokens = null;
+          user = null;
+          await keychainDeleteTokens().catch(() => {});
+          await fileDeleteTokens();
+          return;
+        }
+        saveLastUserEmail(user.email);
+      }
       // Pull remote settings silently after login
       syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after init:', e));
       // Initialize team and collaborative pipelines after auth
