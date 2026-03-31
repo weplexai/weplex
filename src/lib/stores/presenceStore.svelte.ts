@@ -150,5 +150,7 @@ export const presenceStore = {
       unsubOffline = null;
     }
     presenceMap = {};
+    sessionHistory = {};
+    historyLoading = {};
   },
 };

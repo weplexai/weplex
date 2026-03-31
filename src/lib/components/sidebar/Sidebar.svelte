@@ -40,6 +40,7 @@
       const displayName = authStore.user?.displayName || authStore.user?.email || undefined;
       pipelineWsService.joinSpace(serverId, displayName);
       presenceStore.startSyncing();
+      presenceStore.loadHistory(serverId);
       prevPresenceSpaceId = serverId;
     } else {
       prevPresenceSpaceId = null;
