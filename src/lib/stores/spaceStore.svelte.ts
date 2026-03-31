@@ -204,9 +204,7 @@ export const spaceStore = {
   /** Fetch shared/team spaces from server for a team and merge with local state. */
   async syncSharedSpaces(teamId: string): Promise<void> {
     try {
-      console.log('[Weplex] Syncing shared spaces for team:', teamId);
       const serverSpaces = await spaceService.listSpaces(teamId);
-      console.log('[Weplex] Got', serverSpaces.length, 'spaces from server');
 
       for (const ss of serverSpaces) {
         // Check if already exists locally by serverId

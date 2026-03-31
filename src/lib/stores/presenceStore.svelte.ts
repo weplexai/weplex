@@ -35,7 +35,6 @@ let summaryCache: Record<string, SummaryData> = {};
 
 /** Build SessionMeta array from local sessions for a given space. */
 function buildLocalSessionMeta(spaceId: string): SessionMeta[] {
-  console.debug('[presence] buildMeta for spaceId:', spaceId, '| all sessions:', sessionStore.sessions.map(s => ({ id: s.id, name: s.name, spaceId: s.spaceId })));
   const sessions = sessionStore.sessions.filter((s) => s.spaceId === spaceId);
   const now = new Date().toISOString();
 
@@ -85,25 +84,14 @@ function getSharedSpaceIds(): string[] {
 
 /** Sync sessions for all active shared spaces. */
 async function syncAllSharedSpaces(): Promise<void> {
-  if (!authStore.isAuthenticated) {
-    console.debug('[presence] skip sync: not authenticated');
-    return;
-  }
+  if (!authStore.isAuthenticated) return;
   const activeSpace = spaceStore.activeSpace;
-  if (!activeSpace || (!activeSpace.shared && activeSpace.type !== 'team')) {
-    console.debug('[presence] skip sync: active space not shared/team', activeSpace?.name, activeSpace?.type, activeSpace?.shared);
-    return;
-  }
-  if (!activeSpace.serverId) {
-    console.debug('[presence] skip sync: no serverId on active space');
-    return;
-  }
+  if (!activeSpace || (!activeSpace.shared && activeSpace.type !== 'team')) return;
+  if (!activeSpace.serverId) return;
 
-  // Refresh summary cache before building metadata
   await refreshSummaryCache(activeSpace.id);
 
   const sessions = buildLocalSessionMeta(activeSpace.id);
-  console.log(`[presence] syncing ${sessions.length} sessions for space "${activeSpace.name}" (${activeSpace.serverId}), WS connected: ${pipelineWsService.isConnected()}`);
   pipelineWsService.syncSessions(activeSpace.serverId, sessions);
 }
 
@@ -176,7 +164,6 @@ export const presenceStore = {
   /** Start periodic session sync for active shared/team spaces. */
   startSyncing(): void {
     if (syncTimer) return;
-    console.log('[presence] startSyncing called');
     syncAllSharedSpaces();
     syncTimer = setInterval(syncAllSharedSpaces, SYNC_INTERVAL_MS);
   },
