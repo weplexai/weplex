@@ -1314,12 +1314,14 @@ fn ensure_hook_script() -> Result<(), String> {
     let script_path = format!("{}/stop-hook.sh", hooks_dir);
     let script_content = r#"#!/bin/bash
 # Weplex Stop Hook — checks if agent provided activity notes
+# No external dependencies (no python3, no jq — pure bash + grep)
 WEPLEX_SID="${WEPLEX_SESSION_ID:-}"
 if [ -z "$WEPLEX_SID" ]; then exit 0; fi
 
 SUMMARY_FILE="$HOME/.weplex/summaries/${WEPLEX_SID}.json"
 if [ -f "$SUMMARY_FILE" ]; then
-  UPDATED_AT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('updatedAt',0))" "$SUMMARY_FILE" 2>/dev/null || echo "0")
+  # Extract updatedAt using grep (no python3/jq dependency)
+  UPDATED_AT=$(grep -o '"updatedAt":[0-9]*' "$SUMMARY_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
   NOW=$(date +%s)
   AGE=$(( NOW - UPDATED_AT ))
   if [ "$AGE" -lt 300 ]; then exit 0; fi

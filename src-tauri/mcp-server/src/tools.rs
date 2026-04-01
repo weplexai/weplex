@@ -286,6 +286,13 @@ fn handle_update_notes(arguments: &Value, session_id: &str) -> Result<Value, Str
         "at": now
     });
 
+    // Validate session_id to prevent path traversal
+    if session_id.is_empty()
+        || !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Invalid session ID format".to_string());
+    }
+
     let dir = summaries_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create summaries dir: {}", e))?;
@@ -299,14 +306,15 @@ fn handle_update_notes(arguments: &Value, session_id: &str) -> Result<Value, Str
         serde_json::json!({})
     };
 
-    // Ensure notes array exists and append
+    // Ensure notes array exists and append (max 200 entries to prevent unbounded growth)
     if !payload.get("notes").map(|v| v.is_array()).unwrap_or(false) {
         payload["notes"] = serde_json::json!([]);
     }
-    payload["notes"]
-        .as_array_mut()
-        .unwrap()
-        .push(new_note);
+    let notes = payload["notes"].as_array_mut().unwrap();
+    if notes.len() >= 200 {
+        notes.remove(0); // Drop oldest to stay within limit
+    }
+    notes.push(new_note);
 
     // Update top-level fields for hook freshness check and backward compat
     payload["updatedAt"] = serde_json::json!(now);
