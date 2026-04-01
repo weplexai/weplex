@@ -2,7 +2,7 @@
 
 import { io, type Socket } from 'socket.io-client';
 import { getBaseUrl } from './apiClient';
-import type { CollaborativeRun, PipelineNotification, SessionMeta, MemberPresence, TeamMember, ServerSpace } from '../types';
+import type { CollaborativeRun, PipelineNotification, SessionMeta, MemberPresence, TeamMember, ServerSpace, ChatMessage } from '../types';
 
 let socket: Socket | null = null;
 
@@ -140,6 +140,33 @@ export const pipelineWsService = {
     socket.on('member-offline', cb);
     return () => {
       socket?.off('member-offline', cb);
+    };
+  },
+
+  // ── Chat Events ───────────────────────────────────────────────────────
+
+  /** Send a chat message to a space. */
+  sendChatMessage(spaceId: string, text: string): void {
+    socket?.emit('chat-message', { spaceId, text });
+  },
+
+  /** Subscribe to incoming chat messages. Returns an unsubscribe function. */
+  onChatMessage(cb: (msg: ChatMessage) => void): () => void {
+    if (!socket) return () => {};
+    socket.on('chat-message', cb);
+    return () => {
+      socket?.off('chat-message', cb);
+    };
+  },
+
+  /** Subscribe to chat history (sent on join-space). Returns an unsubscribe function. */
+  onChatHistory(
+    cb: (data: { spaceId: string; messages: ChatMessage[] }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('chat-history', cb);
+    return () => {
+      socket?.off('chat-history', cb);
     };
   },
 

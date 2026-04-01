@@ -417,6 +417,18 @@ export interface PipelineNotification {
   stageName?: string;
 }
 
+// ── Chat ─────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  id: string;
+  spaceId: string;
+  userId: string;
+  userEmail: string;
+  displayName: string;
+  text: string;
+  createdAt: string;
+}
+
 // ── Session History (server-persisted records for shared spaces) ──────────
 
 export interface SessionRecord {

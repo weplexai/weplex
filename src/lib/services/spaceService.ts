@@ -1,7 +1,7 @@
 // Space management service — server-synced shared/team spaces
 
 import { request } from './apiClient';
-import type { ServerSpace, SpaceType, SessionRecord } from '../types';
+import type { ServerSpace, SpaceType, SessionRecord, ChatMessage } from '../types';
 
 export const spaceService = {
   /** Create a shared or team space on the server. */
@@ -40,6 +40,16 @@ export const spaceService = {
   async deleteSpace(spaceId: string): Promise<void> {
     return request<void>(`/spaces/${spaceId}`, {
       method: 'DELETE',
+    });
+  },
+
+  /** Fetch older chat messages for a space (pagination). */
+  async getChatMessages(spaceId: string, before?: string): Promise<ChatMessage[]> {
+    const params = new URLSearchParams();
+    if (before) params.set('before', before);
+    const qs = params.toString();
+    return request<ChatMessage[]>(`/spaces/${spaceId}/chat${qs ? `?${qs}` : ''}`, {
+      method: 'GET',
     });
   },
 

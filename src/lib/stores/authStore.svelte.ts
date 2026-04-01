@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { teamStore } from './teamStore.svelte';
 import { collabPipelineStore } from './collabPipelineStore.svelte';
 import { presenceStore } from './presenceStore.svelte';
+import { chatStore } from './chatStore.svelte';
 import { pipelineWsService } from '../services/pipelineWsService';
 
 const KEYCHAIN_KEY = 'auth_tokens';
@@ -178,6 +179,7 @@ export const authStore = {
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
       collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
       presenceStore.init();
+      chatStore.init();
       // Ensure file backup is in sync
       fileSaveTokens(tokens!).catch(() => {});
     } catch (e: any) {
@@ -218,6 +220,7 @@ export const authStore = {
         teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
         collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
       presenceStore.init();
+      chatStore.init();
         // Clean up listener
         if (focusRetryCleanup) {
           focusRetryCleanup();
@@ -270,6 +273,7 @@ export const authStore = {
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
       collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
       presenceStore.init();
+      chatStore.init();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Login failed';
       throw e;
@@ -338,6 +342,7 @@ export const authStore = {
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
       collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
       presenceStore.init();
+      chatStore.init();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('Bind failed')) {
@@ -367,6 +372,7 @@ export const authStore = {
     teamStore.reset();
     collabPipelineStore.reset();
     presenceStore.reset();
+    chatStore.reset();
     pipelineWsService.disconnect();
 
     // Clean up any pending retry listener

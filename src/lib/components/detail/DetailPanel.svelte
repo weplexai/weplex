@@ -19,6 +19,8 @@
   import StageOutput from './StageOutput.svelte';
   import CollabRunDetail from './CollabRunDetail.svelte';
   import ActivitySection from './ActivitySection.svelte';
+  import SpaceChat from './SpaceChat.svelte';
+  import { chatStore } from '../../stores/chatStore.svelte';
 
   let { session }: { session: Session | undefined } = $props();
   let showPipelineView = $derived(pipelineRunStore.activeRunId !== null);
@@ -35,6 +37,11 @@
   );
   let profileEnvVars = $derived(profile ? Object.entries(profile.envVars || {}) : []);
   let sessionDurationMs = $derived(session ? Date.now() - session.createdAt : 0);
+
+  // Chat tab for team/shared spaces
+  let isSharedSpace = $derived(space ? (space.shared || space.type === 'team') && !!space.serverId : false);
+  let chatUnread = $derived(space?.serverId ? chatStore.getUnread(space.serverId) : 0);
+  let showChat = $state(false);
 
   // Note key: SSH → "user@host", others → cwd
   let noteKey = $derived(
@@ -302,6 +309,25 @@
         </section>
       {/if}
     {/if}
+    <!-- CHAT tab for team/shared spaces -->
+    {#if isSharedSpace}
+      <section class="section">
+        <button
+          class="section-title chat-toggle"
+          class:active={showChat}
+          onclick={() => showChat = !showChat}
+        >
+          CHAT
+          {#if chatUnread > 0 && !showChat}
+            <span class="unread-badge">{chatUnread > 99 ? '99+' : chatUnread}</span>
+          {/if}
+        </button>
+        {#if showChat && space?.serverId}
+          <SpaceChat serverId={space.serverId} />
+        {/if}
+      </section>
+    {/if}
+
     <!-- NOTES section (all types) -->
     <section class="section">
       <h3 class="section-title">NOTES</h3>
@@ -458,6 +484,45 @@
     padding: 2px 5px;
     background: transparent;
     color: var(--weplex-text);
+  }
+
+  .chat-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--weplex-text-muted);
+    letter-spacing: 0.06em;
+    margin-bottom: 8px;
+  }
+
+  .chat-toggle:hover {
+    color: var(--weplex-text);
+  }
+
+  .chat-toggle.active {
+    color: var(--weplex-accent);
+  }
+
+  .unread-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--weplex-accent);
+    color: var(--weplex-bg);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1;
   }
 
   .notes-input {
