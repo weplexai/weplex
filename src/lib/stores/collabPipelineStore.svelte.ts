@@ -206,6 +206,9 @@ export const collabPipelineStore = {
         console.warn('[Weplex] Failed to set up collab MCP listener:', e),
       );
 
+      // Clean up any existing subscriptions before re-subscribing (prevents double handlers)
+      cleanupPipelineSubscriptions();
+
       // Subscribe to WS events (WS already connected above)
       if (token) {
 

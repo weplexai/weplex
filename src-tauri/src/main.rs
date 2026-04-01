@@ -63,6 +63,14 @@ fn kill_pty(state: State<AppState>, session_id: u32) -> Result<(), String> {
 
 #[tauri::command]
 fn get_session_summary(session_id: String) -> Option<session_summary::SessionSummary> {
+    // Validate session_id to prevent path traversal or injection
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
     session_summary::read_summary(&session_id)
 }
 

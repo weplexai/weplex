@@ -179,8 +179,10 @@ pub fn save(
 
 pub fn delete(file_path: &str) -> Result<(), String> {
     let dir = pipelines_dir();
-    let path = std::path::Path::new(file_path);
-    if path.exists() && path.starts_with(&dir) {
+    // Canonicalize both paths to prevent path traversal via symlinks or ../ segments
+    let path = std::fs::canonicalize(file_path).map_err(|e| e.to_string())?;
+    let canonical_dir = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
+    if path.starts_with(&canonical_dir) {
         std::fs::remove_file(path).map_err(|e| e.to_string())?;
     }
     Ok(())

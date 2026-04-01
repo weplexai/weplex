@@ -2,7 +2,7 @@
   import type { NoteEntry } from '../../types';
   import { invoke } from '@tauri-apps/api/core';
   import { timeAgo } from '../../utils/time';
-  import { onDestroy } from 'svelte';
+
 
   let { sessionId }: { sessionId: number } = $props();
 
@@ -30,10 +30,14 @@
 
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(fetchNotes, 10_000);
-  });
 
-  onDestroy(() => {
-    if (pollTimer) clearInterval(pollTimer);
+    // Cleanup interval when effect re-runs or component unmounts
+    return () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
   });
 </script>
 
