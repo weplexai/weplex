@@ -35,10 +35,41 @@ fn create_pty(
     cwd: Option<String>,
     env_vars: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
+    // Write session-map file so stop hooks can resolve cwd → session_id
+    if let Some(ref cwd_path) = cwd {
+        let _ = write_session_map(session_id, cwd_path);
+    }
+
     let mut manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     manager
         .create(session_id, cols, rows, command, cwd, env_vars, app)
         .map_err(|e| e.to_string())
+}
+
+/// Clean all session-map files on startup (stale from previous runs).
+fn clean_session_map() -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let map_dir = format!("{}/.weplex/session-map", home);
+    if let Ok(entries) = std::fs::read_dir(&map_dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// Write cwd → session_id mapping for stop hook resolution.
+/// Path: ~/.weplex/session-map/<encoded_cwd> containing session ID.
+fn write_session_map(session_id: u32, cwd: &str) -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let map_dir = format!("{}/.weplex/session-map", home);
+    std::fs::create_dir_all(&map_dir).map_err(|e| e.to_string())?;
+
+    // Encode cwd: replace / with _ (same logic as hook script)
+    let encoded = cwd.replace('/', "_");
+    let map_path = format!("{}/{}", map_dir, encoded);
+    std::fs::write(&map_path, session_id.to_string()).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1323,12 +1354,31 @@ fn ensure_hook_script() -> Result<(), String> {
     let script_content = r#"#!/bin/bash
 # Weplex Stop Hook — checks if agent provided activity notes
 # No external dependencies (no python3, no jq — pure bash + grep)
-WEPLEX_SID="${WEPLEX_SESSION_ID:-}"
+# Reads JSON from stdin (Claude Code hook protocol) to get cwd,
+# then looks up Weplex session ID from session-map directory.
+
+INPUT=$(cat -)
+
+# Extract cwd from stdin JSON (Claude Code passes it in hook payload)
+CWD=$(echo "$INPUT" | grep -o '"cwd":"[^"]*"' | head -1 | sed 's/"cwd":"//;s/"//')
+if [ -z "$CWD" ]; then exit 0; fi
+
+# Look up Weplex session ID from session-map (written by Weplex on PTY creation)
+SESSION_MAP_DIR="$HOME/.weplex/session-map"
+# Encode cwd to safe filename: replace / with _
+ENCODED_CWD=$(echo "$CWD" | sed 's|/|_|g')
+MAP_FILE="$SESSION_MAP_DIR/$ENCODED_CWD"
+
+if [ ! -f "$MAP_FILE" ]; then
+  # Not a Weplex-managed session
+  exit 0
+fi
+
+WEPLEX_SID=$(cat "$MAP_FILE")
 if [ -z "$WEPLEX_SID" ]; then exit 0; fi
 
 SUMMARY_FILE="$HOME/.weplex/summaries/${WEPLEX_SID}.json"
 if [ -f "$SUMMARY_FILE" ]; then
-  # Extract updatedAt using grep (no python3/jq dependency)
   UPDATED_AT=$(grep -o '"updatedAt":[0-9]*' "$SUMMARY_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
   NOW=$(date +%s)
   AGE=$(( NOW - UPDATED_AT ))
@@ -1541,6 +1591,8 @@ fn main() {
                 let _ = do_register_mcp_in_claude(&handle);
                 let _ = ensure_hook_script();
                 let _ = register_hooks_in_claude();
+                // Clean stale session-map from previous runs
+                let _ = clean_session_map();
             });
 
             Ok(())
