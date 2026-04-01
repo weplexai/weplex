@@ -1369,25 +1369,35 @@ fn register_hooks_in_claude() -> Result<(), String> {
 
     let stop_hooks = config["hooks"]["Stop"].as_array_mut().unwrap();
 
-    // Check if weplex hook already exists
-    let existing_idx = stop_hooks.iter().position(|h| {
-        h.get("command")
-            .and_then(|c| c.as_str())
-            .map(|c| c.contains("weplex"))
+    // Claude Code Stop hooks format:
+    // [{ "hooks": [{ "type": "command", "command": "..." }] }]
+    // Each entry is a matcher group with nested hooks array.
+    // Search for existing weplex entry by checking nested command paths.
+    let existing_idx = stop_hooks.iter().position(|entry| {
+        entry.get("hooks")
+            .and_then(|h| h.as_array())
+            .map(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.contains("weplex"))
+                        .unwrap_or(false)
+                })
+            })
             .unwrap_or(false)
     });
 
     let hook_entry = serde_json::json!({
-        "type": "command",
-        "command": hook_command,
-        "timeout": 10
+        "hooks": [{
+            "type": "command",
+            "command": hook_command,
+            "timeout": 10
+        }]
     });
 
     if let Some(idx) = existing_idx {
-        // Update existing entry
         stop_hooks[idx] = hook_entry;
     } else {
-        // Append new entry
         stop_hooks.push(hook_entry);
     }
 
