@@ -8,7 +8,7 @@
   import { uiStore } from '../../stores/uiStore';
   import { dragStore } from '../../stores/dragStore';
   import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-  import { Plus, X, User, Settings, Download, RotateCw } from 'lucide-svelte';
+  import { Plus, X, User, Settings, Download, RotateCw, MessageSquare } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
   import { pipelineWsService } from '../../services/pipelineWsService';
   import { updateState, installUpdate, restartToUpdate } from '../../utils/updater';
@@ -44,6 +44,8 @@
       prevPresenceSpaceId = serverId;
     } else {
       prevPresenceSpaceId = null;
+      // Close chat when switching to a non-shared space
+      if (uiStore.spaceChatOpen) uiStore.closeSpaceChat();
     }
   });
 
@@ -610,6 +612,17 @@
               <span>New Session</span>
             </button>
 
+            {#if (space.shared || space.type === 'team') && space.serverId}
+              <button
+                class="new-session-btn"
+                class:active-chat={uiStore.spaceChatOpen}
+                onclick={() => uiStore.toggleSpaceChat()}
+              >
+                <MessageSquare size={12} />
+                <span>Chat</span>
+              </button>
+            {/if}
+
             <!-- Unpinned zone -->
             <div
               class="unpinned-zone"
@@ -971,5 +984,10 @@
   .new-session-btn:hover {
     color: var(--weplex-text);
     background: var(--weplex-surface-hover);
+  }
+
+  .new-session-btn.active-chat {
+    color: var(--weplex-accent);
+    background: color-mix(in srgb, var(--weplex-accent) 10%, transparent);
   }
 </style>

@@ -6,6 +6,7 @@
   import SplitContainer from './lib/components/terminal/SplitContainer.svelte';
   import TerminalView from './lib/components/terminal/TerminalView.svelte';
   import DetailPanel from './lib/components/detail/DetailPanel.svelte';
+  import SpaceChat from './lib/components/detail/SpaceChat.svelte';
 
   import CommandPalette from './lib/components/overlays/CommandPalette.svelte';
   import NewSessionDialog from './lib/components/overlays/NewSessionDialog.svelte';
@@ -57,6 +58,7 @@
   let activeSession = $derived(sessionStore.activeSession);
   let spaceBgColor = $derived(spaceStore.activeSpace.bgColor || null);
   let activeSpaceId = $derived(spaceStore.activeSpaceId);
+  let chatServerId = $derived(spaceStore.activeSpace?.serverId ?? null);
   // Ensure layout exists (mutation — must be in $effect, not $derived)
   $effect(() => {
     splitStore.ensureLayout(activeSpaceId);
@@ -116,8 +118,14 @@
 
     <div class="main" class:with-detail={uiStore.detailPanelOpen} class:no-sidebar={uiStore.sidebarHidden}>
       <div class="terminal-area">
-        {#if splitLayout}
-          <SplitContainer node={splitLayout} spaceId={activeSpaceId} />
+        {#if uiStore.spaceChatOpen && chatServerId}
+          <div class="space-chat-view">
+            <SpaceChat serverId={chatServerId} />
+          </div>
+        {:else}
+          {#if splitLayout}
+            <SplitContainer node={splitLayout} spaceId={activeSpaceId} />
+          {/if}
         {/if}
 
         <button
@@ -288,6 +296,15 @@
     position: relative;
     min-height: 0;
     overflow: hidden;
+    background: var(--weplex-bg);
+  }
+
+  .space-chat-view {
+    position: absolute;
+    inset: 0;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
     background: var(--weplex-bg);
   }
 

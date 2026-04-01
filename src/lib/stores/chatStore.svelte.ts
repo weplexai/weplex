@@ -59,7 +59,7 @@ export const chatStore = {
   /** Set the active chat space — clears unread for it. */
   setActive(serverId: string | null): void {
     activeSpaceId = serverId;
-    if (serverId) {
+    if (serverId && (unreadCounts[serverId] ?? 0) > 0) {
       unreadCounts = { ...unreadCounts, [serverId]: 0 };
     }
   },

@@ -27,6 +27,7 @@ function loadSidebarHidden(): boolean {
 }
 
 let detailPanelOpen = $state(false);
+let spaceChatOpen = $state(false);
 let activeOverlay = $state<OverlayType>('none');
 let sidebarWidthVal = $state(loadSidebarWidth());
 let sidebarHidden = $state(loadSidebarHidden());
@@ -87,6 +88,22 @@ export const uiStore = {
     try {
       localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped));
     } catch {}
+  },
+
+  get spaceChatOpen() {
+    return spaceChatOpen;
+  },
+
+  toggleSpaceChat() {
+    spaceChatOpen = !spaceChatOpen;
+  },
+
+  openSpaceChat() {
+    spaceChatOpen = true;
+  },
+
+  closeSpaceChat() {
+    spaceChatOpen = false;
   },
 
   toggleDetailPanel() {
