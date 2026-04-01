@@ -80,6 +80,13 @@ export interface Note {
   updatedAt: number;
 }
 
+export interface NoteEntry {
+  text: string;
+  filesChanged?: string[];
+  decisions?: string[];
+  at: number; // unix timestamp
+}
+
 export interface GitFileChange {
   path: string;
   status: 'M' | 'A' | 'D' | 'R';
@@ -381,6 +388,7 @@ export interface SessionMeta {
   summary?: string;
   filesChanged?: string[];
   decisions?: string[];
+  notes?: NoteEntry[];
 }
 
 export interface MemberPresence {

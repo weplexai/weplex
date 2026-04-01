@@ -3,13 +3,29 @@ use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct NoteEntry {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_changed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
+    pub at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
+    /// Legacy field — kept for backward compat reading
+    #[serde(default)]
     pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files_changed: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<String>,
     pub updated_at: u64,
+    /// Chronological list of activity notes appended by the agent
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<NoteEntry>,
 }
 
 /// Return the path to ~/.weplex/summaries/

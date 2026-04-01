@@ -9,27 +9,27 @@ const MAX_SUMMARY_SIZE: usize = 10 * 1024;
 
 // ── Tool definitions ───────────────────────────────────────────────────────
 
-/// Session summary tool definition — available in all contexts.
-fn session_summary_tool() -> Value {
+/// Activity notes tool definition — available in all contexts.
+fn update_notes_tool() -> Value {
     serde_json::json!({
-        "name": "deck_session_summary",
-        "description": "Save a summary of what you accomplished in this session. Your team members will see this context even when you're offline. Call when finishing work or at natural breakpoints.",
+        "name": "deck_update_notes",
+        "description": "Record what you accomplished. Notes are appended chronologically and visible to your team in real time. Call at natural breakpoints, when finishing a task, or before stopping work.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "summary": {
                     "type": "string",
-                    "description": "1-3 sentence summary of what was accomplished"
+                    "description": "1-3 sentence summary of what was accomplished in this step"
                 },
                 "filesChanged": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "File paths that were modified"
+                    "description": "File paths that were modified in this step"
                 },
                 "decisions": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Key technical decisions made"
+                    "description": "Key technical decisions made in this step"
                 }
             },
             "required": ["summary"]
@@ -38,11 +38,11 @@ fn session_summary_tool() -> Value {
 }
 
 /// Return the list of available MCP tools.
-/// When `socket_path` is empty (no pipeline context), returns only `deck_session_summary`.
-/// When in a pipeline context, returns all pipeline tools + `deck_session_summary`.
+/// When `socket_path` is empty (no pipeline context), returns only `deck_update_notes`.
+/// When in a pipeline context, returns all pipeline tools + `deck_update_notes`.
 pub fn list_tools(socket_path: &str) -> Value {
     if socket_path.is_empty() {
-        return serde_json::json!({ "tools": [session_summary_tool()] });
+        return serde_json::json!({ "tools": [update_notes_tool()] });
     }
 
     serde_json::json!({
@@ -83,7 +83,7 @@ pub fn list_tools(socket_path: &str) -> Value {
                     "properties": {}
                 }
             },
-            session_summary_tool()
+            update_notes_tool()
         ]
     })
 }
@@ -103,7 +103,7 @@ pub fn call_tool(
         "deck_stage_complete" => handle_stage_complete(arguments, run_id, stage_name, ipc),
         "deck_get_artifact" => handle_get_artifact(arguments, run_id, ipc),
         "deck_pipeline_info" => handle_pipeline_info(run_id, ipc),
-        "deck_session_summary" => handle_session_summary(arguments, session_id),
+        "deck_update_notes" | "deck_session_summary" => handle_update_notes(arguments, session_id),
         _ => Err(format!("Unknown tool: {}", tool_name)),
     }
 }
@@ -224,7 +224,7 @@ fn handle_pipeline_info(run_id: &str, ipc: &mut IpcClient) -> Result<Value, Stri
     }))
 }
 
-// ── Session summary (file-based, no IPC) ──────────────────────────────────
+// ── Activity notes (file-based, no IPC) ───────────────────────────────────
 
 /// Return the path to ~/.weplex/summaries/
 fn summaries_dir() -> PathBuf {
@@ -232,9 +232,11 @@ fn summaries_dir() -> PathBuf {
     PathBuf::from(home).join(".weplex/summaries")
 }
 
-fn handle_session_summary(arguments: &Value, session_id: &str) -> Result<Value, String> {
+/// Append an activity note to the session summary file.
+/// Reads existing file, adds a new NoteEntry to the `notes` array, writes back.
+fn handle_update_notes(arguments: &Value, session_id: &str) -> Result<Value, String> {
     if session_id.is_empty() {
-        return Err("WEPLEX_SESSION_ID not set — cannot save summary".to_string());
+        return Err("WEPLEX_SESSION_ID not set — cannot save notes".to_string());
     }
 
     let summary = arguments
@@ -242,10 +244,10 @@ fn handle_session_summary(arguments: &Value, session_id: &str) -> Result<Value, 
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required argument: summary".to_string())?;
 
-    // Enforce 10KB limit on the summary text
+    // Enforce 10KB limit on the note text
     if summary.len() > MAX_SUMMARY_SIZE {
         return Err(format!(
-            "Summary exceeds {}KB limit ({} bytes)",
+            "Note text exceeds {}KB limit ({} bytes)",
             MAX_SUMMARY_SIZE / 1024,
             summary.len()
         ));
@@ -271,16 +273,17 @@ fn handle_session_summary(arguments: &Value, session_id: &str) -> Result<Value, 
         })
         .unwrap_or_default();
 
-    let updated_at = std::time::SystemTime::now()
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let payload = serde_json::json!({
-        "summary": summary,
+    // Build the new note entry
+    let new_note = serde_json::json!({
+        "text": summary,
         "filesChanged": files_changed,
         "decisions": decisions,
-        "updatedAt": updated_at
+        "at": now
     });
 
     let dir = summaries_dir();
@@ -288,24 +291,48 @@ fn handle_session_summary(arguments: &Value, session_id: &str) -> Result<Value, 
         .map_err(|e| format!("Failed to create summaries dir: {}", e))?;
 
     let path = dir.join(format!("{}.json", session_id));
+
+    // Read existing file or start fresh
+    let mut payload: Value = if let Ok(content) = std::fs::read_to_string(&path) {
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure notes array exists and append
+    if !payload.get("notes").map(|v| v.is_array()).unwrap_or(false) {
+        payload["notes"] = serde_json::json!([]);
+    }
+    payload["notes"]
+        .as_array_mut()
+        .unwrap()
+        .push(new_note);
+
+    // Update top-level fields for hook freshness check and backward compat
+    payload["updatedAt"] = serde_json::json!(now);
+    payload["summary"] = serde_json::json!(summary);
+    payload["filesChanged"] = serde_json::json!(files_changed);
+    payload["decisions"] = serde_json::json!(decisions);
+
     let content = serde_json::to_string_pretty(&payload)
-        .map_err(|e| format!("Failed to serialize summary: {}", e))?;
+        .map_err(|e| format!("Failed to serialize notes: {}", e))?;
 
     std::fs::write(&path, &content)
         .map_err(|e| format!("Failed to write summary file: {}", e))?;
 
+    let note_count = payload["notes"].as_array().map(|a| a.len()).unwrap_or(0);
+
     eprintln!(
-        "[weplex-mcp] saved session summary for {} ({} bytes)",
-        session_id,
-        content.len()
+        "[weplex-mcp] appended note #{} for session {} ({} bytes)",
+        note_count, session_id, content.len()
     );
 
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
             "text": format!(
-                "Session summary saved ({} bytes). Team members will see this context.",
-                content.len()
+                "Activity note #{} saved. Team members will see this in real time.",
+                note_count
             )
         }]
     }))

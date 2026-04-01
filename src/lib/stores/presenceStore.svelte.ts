@@ -1,6 +1,6 @@
 // Presence store — tracks team member sessions in shared/team spaces
 
-import type { MemberPresence, SessionMeta, SessionRecord } from '../types';
+import type { MemberPresence, NoteEntry, SessionMeta, SessionRecord } from '../types';
 import { pipelineWsService } from '../services/pipelineWsService';
 import { spaceStore } from './spaceStore';
 import { sessionStore } from './sessionStore';
@@ -27,6 +27,7 @@ interface SummaryData {
   filesChanged: string[];
   decisions: string[];
   updatedAt: number;
+  notes: NoteEntry[];
 }
 
 let summaryCache: Record<string, SummaryData> = {};
@@ -53,6 +54,7 @@ function buildLocalSessionMeta(spaceId: string): SessionMeta[] {
       summary: cached?.summary,
       filesChanged: cached?.filesChanged,
       decisions: cached?.decisions,
+      notes: cached?.notes,
     };
   });
 }

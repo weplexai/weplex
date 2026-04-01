@@ -18,6 +18,7 @@
   import { shortPath } from '../../utils/path';
   import StageOutput from './StageOutput.svelte';
   import CollabRunDetail from './CollabRunDetail.svelte';
+  import ActivitySection from './ActivitySection.svelte';
 
   let { session }: { session: Session | undefined } = $props();
   let showPipelineView = $derived(pipelineRunStore.activeRunId !== null);
@@ -220,6 +221,9 @@
           </div>
         {/if}
       </section>
+
+      <!-- Activity notes from agent (polled every 10s) -->
+      <ActivitySection sessionId={session.id} />
     {:else if session.type === 'ssh'}
       <section class="section">
         <h3 class="section-title">CONNECTION</h3>

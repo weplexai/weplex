@@ -1302,6 +1302,107 @@ fn find_mcp_binary(_app: &tauri::AppHandle) -> Result<String, String> {
     Err("weplex-mcp binary not found".to_string())
 }
 
+/// Generate the stop-hook.sh script at ~/.weplex/hooks/stop-hook.sh.
+/// This hook reminds agents to call deck_update_notes before finishing.
+fn ensure_hook_script() -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let hooks_dir = format!("{}/.weplex/hooks", home);
+
+    std::fs::create_dir_all(&hooks_dir)
+        .map_err(|e| format!("Failed to create hooks dir: {}", e))?;
+
+    let script_path = format!("{}/stop-hook.sh", hooks_dir);
+    let script_content = r#"#!/bin/bash
+# Weplex Stop Hook — checks if agent provided activity notes
+WEPLEX_SID="${WEPLEX_SESSION_ID:-}"
+if [ -z "$WEPLEX_SID" ]; then exit 0; fi
+
+SUMMARY_FILE="$HOME/.weplex/summaries/${WEPLEX_SID}.json"
+if [ -f "$SUMMARY_FILE" ]; then
+  UPDATED_AT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('updatedAt',0))" "$SUMMARY_FILE" 2>/dev/null || echo "0")
+  NOW=$(date +%s)
+  AGE=$(( NOW - UPDATED_AT ))
+  if [ "$AGE" -lt 300 ]; then exit 0; fi
+fi
+
+echo "Please call the deck_update_notes tool to record what you accomplished before finishing." >&2
+exit 2
+"#;
+
+    std::fs::write(&script_path, script_content)
+        .map_err(|e| format!("Failed to write hook script: {}", e))?;
+
+    // Make executable (0755)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&script_path, perms)
+            .map_err(|e| format!("Failed to set hook permissions: {}", e))?;
+    }
+
+    eprintln!("[weplex] hook script written: {}", script_path);
+    Ok(())
+}
+
+/// Register the Weplex stop hook in ~/.claude/settings.json.
+/// Merges into existing hooks without overwriting other entries.
+fn register_hooks_in_claude() -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let settings_path = format!("{}/.claude/settings.json", home);
+    let hook_command = format!("{}/.weplex/hooks/stop-hook.sh", home);
+
+    // Read existing settings or create empty object
+    let mut config: serde_json::Value = if let Ok(content) = std::fs::read_to_string(&settings_path) {
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure hooks.Stop is an array
+    if !config.get("hooks").is_some() {
+        config["hooks"] = serde_json::json!({});
+    }
+    if !config["hooks"].get("Stop").map(|v| v.is_array()).unwrap_or(false) {
+        config["hooks"]["Stop"] = serde_json::json!([]);
+    }
+
+    let stop_hooks = config["hooks"]["Stop"].as_array_mut().unwrap();
+
+    // Check if weplex hook already exists
+    let existing_idx = stop_hooks.iter().position(|h| {
+        h.get("command")
+            .and_then(|c| c.as_str())
+            .map(|c| c.contains("weplex"))
+            .unwrap_or(false)
+    });
+
+    let hook_entry = serde_json::json!({
+        "type": "command",
+        "command": hook_command,
+        "timeout": 10
+    });
+
+    if let Some(idx) = existing_idx {
+        // Update existing entry
+        stop_hooks[idx] = hook_entry;
+    } else {
+        // Append new entry
+        stop_hooks.push(hook_entry);
+    }
+
+    // Ensure ~/.claude/ directory exists
+    let claude_dir = format!("{}/.claude", home);
+    std::fs::create_dir_all(&claude_dir)
+        .map_err(|e| format!("Failed to create ~/.claude dir: {}", e))?;
+
+    let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
+
+    eprintln!("[weplex] stop hook registered in ~/.claude/settings.json");
+    Ok(())
+}
+
 /// Register or update the weplex MCP server entry in ~/.claude.json.
 fn do_register_mcp_in_claude(app: &tauri::AppHandle) -> Result<(), String> {
     let binary_path = match find_mcp_binary(app) {
@@ -1414,10 +1515,12 @@ fn main() {
             session_summary::ensure_summaries_dir();
             session_summary::cleanup_old_summaries();
 
-            // Register MCP server in ~/.claude.json
+            // Register MCP server in ~/.claude.json and stop hook in ~/.claude/settings.json
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let _ = do_register_mcp_in_claude(&handle);
+                let _ = ensure_hook_script();
+                let _ = register_hooks_in_claude();
             });
 
             Ok(())
