@@ -34,6 +34,9 @@ export interface Session {
   // Tracks if session ever had terminal output (for smart restore)
   hasOutput?: boolean;
 
+  // Status before app restart (used to decide if resume is appropriate)
+  previousStatus?: SessionStatus;
+
   // Agent metadata
   claudeSessionId?: string;
   model?: string;
@@ -144,6 +147,8 @@ export interface AppSettings {
   sidebarDefault: SidebarState;
   idleTimeout: number;
   persistSessions: boolean;
+  chatSoundEnabled: boolean;
+  chatNotificationsEnabled: boolean;
 }
 
 export interface SplitLeaf {
@@ -427,6 +432,9 @@ export interface ChatMessage {
   displayName: string;
   text: string;
   createdAt: string;
+  replyToId?: string;
+  replyTo?: { text: string; displayName: string };
+  editedAt?: string;
 }
 
 // ── Session History (server-persisted records for shared spaces) ──────────

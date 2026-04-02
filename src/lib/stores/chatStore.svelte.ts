@@ -4,6 +4,42 @@ import type { ChatMessage } from '../types';
 import { pipelineWsService } from '../services/pipelineWsService';
 import { spaceService } from '../services/spaceService';
 import { authStore } from './authStore.svelte';
+import { settingsStore } from './settingsStore.svelte';
+import { showNativeNotification } from '../utils/notifications';
+
+// ── Notification helpers ──────────────────────────────────────────────────
+
+/** Play a short subtle pop sound using Web Audio API. */
+function playNotificationSound(): void {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 800;
+    osc.type = 'sine';
+    gain.gain.value = 0.1;
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.15);
+  } catch {
+    // AudioContext may not be available or may require user interaction
+  }
+}
+
+/** Notify user about an incoming chat message (sound + OS notification). */
+function notifyIncomingMessage(msg: ChatMessage): void {
+  if (settingsStore.settings.chatSoundEnabled) {
+    playNotificationSound();
+  }
+
+  if (settingsStore.settings.chatNotificationsEnabled && !document.hasFocus()) {
+    const title = msg.displayName ?? 'New message';
+    const body = msg.text.length > 100 ? msg.text.slice(0, 100) + '…' : msg.text;
+    showNativeNotification(title, body);
+  }
+}
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -22,8 +58,19 @@ let loadingOlder = $state<Record<string, boolean>>({});
 /** Whether there are more older messages to load */
 let hasMore = $state<Record<string, boolean>>({});
 
+/** Who is currently typing, per space. Auto-cleared after 3s. */
+let typingUsers = $state<Record<string, { userId: string; displayName: string; timeout: ReturnType<typeof setTimeout> }[]>>({});
+let typingDebounce: ReturnType<typeof setTimeout> | null = null;
+
+/** Reply/Edit state */
+let replyingTo = $state<ChatMessage | null>(null);
+let editingMessage = $state<ChatMessage | null>(null);
+
 let unsubMessage: (() => void) | null = null;
 let unsubHistory: (() => void) | null = null;
+let unsubTyping: (() => void) | null = null;
+let unsubEdited: (() => void) | null = null;
+let unsubDeleted: (() => void) | null = null;
 
 // ── Store ──────────────────────────────────────────────────────────────────
 
@@ -97,9 +144,41 @@ export const chatStore = {
     }
   },
 
-  /** Send a chat message. */
+  /** Get the message being replied to. */
+  get replyTo(): ChatMessage | null {
+    return replyingTo;
+  },
+
+  /** Set the message to reply to (or null to cancel). */
+  setReplyTo(msg: ChatMessage | null): void {
+    replyingTo = msg;
+  },
+
+  /** Get the message being edited. */
+  get editing(): ChatMessage | null {
+    return editingMessage;
+  },
+
+  /** Set a message to edit (or null to cancel). */
+  setEditing(msg: ChatMessage | null): void {
+    editingMessage = msg;
+  },
+
+  /** Edit a message's text. */
+  edit(messageId: string, text: string): void {
+    pipelineWsService.editChatMessage(messageId, text);
+    editingMessage = null;
+  },
+
+  /** Delete a message. */
+  deleteMsg(messageId: string): void {
+    pipelineWsService.deleteChatMessage(messageId);
+  },
+
+  /** Send a chat message (with optional reply). */
   send(serverId: string, text: string): void {
-    pipelineWsService.sendChatMessage(serverId, text);
+    pipelineWsService.sendChatMessage(serverId, text, replyingTo?.id);
+    replyingTo = null;
   },
 
   /** Subscribe to WebSocket chat events. Call once after WS connects. */
@@ -112,6 +191,29 @@ export const chatStore = {
       hasMore = { ...hasMore, [data.spaceId]: data.messages.length >= 50 };
     });
 
+    unsubTyping = pipelineWsService.onChatTyping((data) => {
+      const current = typingUsers[data.spaceId] ?? [];
+      // Remove existing entry for this user (reset timer)
+      const filtered = current.filter((t) => {
+        if (t.userId === data.userId) {
+          clearTimeout(t.timeout);
+          return false;
+        }
+        return true;
+      });
+      // Auto-remove after 3s
+      const timeout = setTimeout(() => {
+        typingUsers = {
+          ...typingUsers,
+          [data.spaceId]: (typingUsers[data.spaceId] ?? []).filter((t) => t.userId !== data.userId),
+        };
+      }, 3000);
+      typingUsers = {
+        ...typingUsers,
+        [data.spaceId]: [...filtered, { userId: data.userId, displayName: data.displayName, timeout }],
+      };
+    });
+
     unsubMessage = pipelineWsService.onChatMessage((msg) => {
       const current = messages[msg.spaceId] ?? [];
       messages = {
@@ -119,14 +221,51 @@ export const chatStore = {
         [msg.spaceId]: [...current, msg],
       };
 
-      // Increment unread if not viewing this space's chat (skip own messages)
+      // Increment unread and notify if not viewing this space's chat (skip own messages)
       if (activeSpaceId !== msg.spaceId && msg.userId !== authStore.user?.id) {
         unreadCounts = {
           ...unreadCounts,
           [msg.spaceId]: (unreadCounts[msg.spaceId] ?? 0) + 1,
         };
+        notifyIncomingMessage(msg);
       }
     });
+
+    unsubEdited = pipelineWsService.onChatMessageEdited((data) => {
+      const msgs = messages[data.spaceId];
+      if (msgs) {
+        messages = {
+          ...messages,
+          [data.spaceId]: msgs.map((m) =>
+            m.id === data.messageId ? { ...m, text: data.text, editedAt: data.editedAt } : m,
+          ),
+        };
+      }
+    });
+
+    unsubDeleted = pipelineWsService.onChatMessageDeleted((data) => {
+      const msgs = messages[data.spaceId];
+      if (msgs) {
+        messages = {
+          ...messages,
+          [data.spaceId]: msgs.filter((m) => m.id !== data.messageId),
+        };
+      }
+    });
+  },
+
+  /** Get display names of users currently typing in a space. */
+  getTypingUsers(serverId: string): string[] {
+    return (typingUsers[serverId] ?? []).map((t) => t.displayName);
+  },
+
+  /** Emit a typing indicator (debounced: max once per 2s). */
+  emitTyping(serverId: string): void {
+    if (typingDebounce) return;
+    pipelineWsService.emitTyping(serverId);
+    typingDebounce = setTimeout(() => {
+      typingDebounce = null;
+    }, 2000);
   },
 
   /** Clean up all state and subscriptions. */
@@ -138,6 +277,31 @@ export const chatStore = {
     if (unsubHistory) {
       unsubHistory();
       unsubHistory = null;
+    }
+    if (unsubTyping) {
+      unsubTyping();
+      unsubTyping = null;
+    }
+    if (unsubEdited) {
+      unsubEdited();
+      unsubEdited = null;
+    }
+    if (unsubDeleted) {
+      unsubDeleted();
+      unsubDeleted = null;
+    }
+    replyingTo = null;
+    editingMessage = null;
+    // Clear all typing timeouts
+    for (const entries of Object.values(typingUsers)) {
+      for (const entry of entries) {
+        clearTimeout(entry.timeout);
+      }
+    }
+    typingUsers = {};
+    if (typingDebounce) {
+      clearTimeout(typingDebounce);
+      typingDebounce = null;
     }
     messages = {};
     unreadCounts = {};

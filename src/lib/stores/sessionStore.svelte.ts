@@ -21,8 +21,10 @@ function loadSessions(): { sessions: Session[]; nextId: number; activeId: number
         ? saved[saved.length - 1].id
         : null;
     // Reset status — PTY connections are gone after restart
+    // Save previous status so resume logic can skip finished sessions
     // Backfill order for sessions created before order field existed
     for (const s of saved) {
+      s.previousStatus = s.status;
       s.status = 'new';
       if (s.order === undefined) s.order = s.createdAt;
     }

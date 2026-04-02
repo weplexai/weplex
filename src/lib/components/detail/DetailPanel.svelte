@@ -19,6 +19,8 @@
   import StageOutput from './StageOutput.svelte';
   import CollabRunDetail from './CollabRunDetail.svelte';
   import ActivitySection from './ActivitySection.svelte';
+  import SpaceChat from './SpaceChat.svelte';
+  import { chatStore } from '../../stores/chatStore.svelte';
 
   let { session }: { session: Session | undefined } = $props();
   let showPipelineView = $derived(pipelineRunStore.activeRunId !== null);
@@ -35,6 +37,17 @@
   );
   let profileEnvVars = $derived(profile ? Object.entries(profile.envVars || {}) : []);
   let sessionDurationMs = $derived(session ? Date.now() - session.createdAt : 0);
+
+  // Chat tab — only visible in shared/team spaces
+  let isSharedSpace = $derived(space?.shared === true || space?.type === 'team');
+  let activeTab = $state<'info' | 'chat'>('info');
+  let chatUnread = $derived(space?.serverId ? chatStore.getUnread(space.serverId) : 0);
+
+  // Reset tab when session or space changes, or space loses shared status
+  $effect(() => {
+    const _sessionId = session?.id;
+    activeTab = 'info';
+  });
 
   // Note key: SSH → "user@host", others → cwd
   let noteKey = $derived(
@@ -71,6 +84,32 @@
   {:else if showPipelineView}
     <StageOutput />
   {:else if session}
+    <!-- Tab switcher for shared/team spaces -->
+    {#if isSharedSpace}
+      <div class="tab-bar">
+        <button
+          class="tab-btn"
+          class:active={activeTab === 'info'}
+          onclick={() => (activeTab = 'info')}
+        >
+          Info
+        </button>
+        <button
+          class="tab-btn"
+          class:active={activeTab === 'chat'}
+          onclick={() => (activeTab = 'chat')}
+        >
+          Chat
+          {#if chatUnread > 0}
+            <span class="unread-badge">{chatUnread > 99 ? '99+' : chatUnread}</span>
+          {/if}
+        </button>
+      </div>
+    {/if}
+
+    {#if activeTab === 'chat' && isSharedSpace && space?.serverId}
+      <SpaceChat serverId={space.serverId} sessionId={session?.id} />
+    {:else}
     <!-- Space / Profile section -->
     {#if space}
       <section class="section">
@@ -313,6 +352,7 @@
         onblur={saveNotes}
       ></textarea>
     </section>
+    {/if}
   {:else}
     <div class="empty">No session selected</div>
   {/if}
@@ -482,5 +522,56 @@
 
   .notes-input::placeholder {
     color: var(--weplex-text-muted);
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--weplex-border);
+    padding-bottom: 0;
+  }
+
+  .tab-btn {
+    flex: 1;
+    padding: 6px 0;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--weplex-text-muted);
+    font-size: var(--weplex-text-xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .tab-btn:hover {
+    color: var(--weplex-text);
+  }
+
+  .tab-btn.active {
+    color: var(--weplex-text);
+    border-bottom-color: var(--weplex-accent);
+  }
+
+  .unread-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--weplex-accent);
+    color: var(--weplex-bg);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: none;
   }
 </style>

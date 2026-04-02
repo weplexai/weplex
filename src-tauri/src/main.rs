@@ -1365,6 +1365,8 @@ if [ -z "$CWD" ]; then exit 0; fi
 
 # Look up Weplex session ID from session-map (written by Weplex on PTY creation)
 SESSION_MAP_DIR="$HOME/.weplex/session-map"
+# Normalize: replace $HOME with ~ (Weplex stores cwd with ~ prefix)
+CWD=$(echo "$CWD" | sed "s|^$HOME|~|")
 # Encode cwd to safe filename: replace / with _
 ENCODED_CWD=$(echo "$CWD" | sed 's|/|_|g')
 MAP_FILE="$SESSION_MAP_DIR/$ENCODED_CWD"

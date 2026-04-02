@@ -49,6 +49,17 @@
     }
   });
 
+  // Close chat when switching to a session in a different space
+  let prevChatSpaceId: string | null = null;
+  $effect(() => {
+    const session = sessionStore.activeSession;
+    const spaceId = session?.spaceId ?? null;
+    if (prevChatSpaceId !== null && spaceId !== prevChatSpaceId && uiStore.spaceChatOpen) {
+      uiStore.closeSpaceChat();
+    }
+    prevChatSpaceId = spaceId;
+  });
+
   // Re-show after 1 hour if dismissed
   $effect(() => {
     if (updateDismissed) {

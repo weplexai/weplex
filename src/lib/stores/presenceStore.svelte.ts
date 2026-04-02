@@ -34,6 +34,28 @@ let summaryCache: Record<string, SummaryData> = {};
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/** Shallow-compare two MemberPresence arrays to avoid unnecessary re-renders. */
+function membersEqual(a: MemberPresence[], b: MemberPresence[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].userId !== b[i].userId) return false;
+    if (a[i].displayName !== b[i].displayName) return false;
+    const sa = a[i].sessions;
+    const sb = b[i].sessions;
+    if (sa.length !== sb.length) return false;
+    for (let j = 0; j < sa.length; j++) {
+      if (
+        sa[j].id !== sb[j].id ||
+        sa[j].status !== sb[j].status ||
+        sa[j].cwd !== sb[j].cwd ||
+        sa[j].gitBranch !== sb[j].gitBranch ||
+        sa[j].summary !== sb[j].summary
+      ) return false;
+    }
+  }
+  return true;
+}
+
 /** Build SessionMeta array from local sessions for a given space. */
 function buildLocalSessionMeta(spaceId: string): SessionMeta[] {
   const sessions = sessionStore.sessions.filter((s) => s.spaceId === spaceId);
@@ -149,6 +171,8 @@ export const presenceStore = {
     this.reset();
 
     unsubSessions = pipelineWsService.onSpaceSessions((data) => {
+      const existing = presenceMap[data.spaceId];
+      if (existing && membersEqual(existing, data.members)) return;
       presenceMap = { ...presenceMap, [data.spaceId]: data.members };
     });
 

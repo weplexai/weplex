@@ -65,6 +65,28 @@ function countItems(json: string): number {
  * For scalar keys (active_session, active_space): recover if localStorage is empty but file has data.
  */
 export async function recoverStores(): Promise<void> {
+  // SECURITY: Before recovering, verify file data belongs to the same user.
+  // Prevents cross-account data leakage when users switch on the same machine.
+  try {
+    const fileEmail = await invoke<string | null>('load_store', { key: 'weplex_last_user_email' });
+    const localEmail = localStorage.getItem('weplex_last_user_email');
+    if (fileEmail && localEmail && fileEmail !== localEmail) {
+      console.warn(`[Weplex] File backup belongs to different user (${fileEmail} vs ${localEmail}). Skipping recovery.`);
+      // Clear stale file data
+      for (const key of STORE_KEYS) {
+        invoke('persist_store', { key, value: '' }).catch(() => {});
+      }
+      invoke('persist_store', { key: 'weplex_last_user_email', value: localEmail }).catch(() => {});
+      return;
+    }
+    if (fileEmail && !localEmail) {
+      // File has user email but localStorage doesn't — recover the email
+      localStorage.setItem('weplex_last_user_email', fileEmail);
+    }
+  } catch (e) {
+    console.error('[Weplex] User email check failed:', e);
+  }
+
   for (const key of STORE_KEYS) {
     try {
       const fileValue = await invoke<string | null>('load_store', { key });

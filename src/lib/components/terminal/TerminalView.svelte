@@ -254,17 +254,20 @@
       // For restored agent sessions, modify command to resume (only if session had real activity)
       let command = session?.command || null;
       if (isRestored && command) {
+        // Only resume sessions that were actively running before restart
+        const wasRunning =
+          session?.previousStatus === 'active' ||
+          session?.previousStatus === 'idle' ||
+          session?.previousStatus === 'waiting';
         if (
+          wasRunning &&
           session?.hasOutput &&
+          session?.claudeSessionId &&
           command.includes('claude') &&
           !command.includes('--resume') &&
           !command.includes('--continue')
         ) {
-          if (session?.claudeSessionId) {
-            command = command + ' --resume ' + session.claudeSessionId;
-          } else {
-            command = command + ' --continue';
-          }
+          command = command + ' --resume ' + session.claudeSessionId;
         }
         sessionStore.clearRestored(sessionId);
       }

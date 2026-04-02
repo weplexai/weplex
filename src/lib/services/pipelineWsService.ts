@@ -145,9 +145,19 @@ export const pipelineWsService = {
 
   // ── Chat Events ───────────────────────────────────────────────────────
 
-  /** Send a chat message to a space. */
-  sendChatMessage(spaceId: string, text: string): void {
-    socket?.emit('chat-message', { spaceId, text });
+  /** Send a chat message to a space, optionally replying to another message. */
+  sendChatMessage(spaceId: string, text: string, replyToId?: string): void {
+    socket?.emit('chat-message', { spaceId, text, replyToId });
+  },
+
+  /** Edit a chat message. */
+  editChatMessage(messageId: string, text: string): void {
+    socket?.emit('chat-edit-message', { messageId, text });
+  },
+
+  /** Delete a chat message. */
+  deleteChatMessage(messageId: string): void {
+    socket?.emit('chat-delete-message', { messageId });
   },
 
   /** Subscribe to incoming chat messages. Returns an unsubscribe function. */
@@ -167,6 +177,44 @@ export const pipelineWsService = {
     socket.on('chat-history', cb);
     return () => {
       socket?.off('chat-history', cb);
+    };
+  },
+
+  /** Subscribe to chat message edited events. Returns an unsubscribe function. */
+  onChatMessageEdited(
+    cb: (data: { spaceId: string; messageId: string; text: string; editedAt: string }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('chat-message-edited', cb);
+    return () => {
+      socket?.off('chat-message-edited', cb);
+    };
+  },
+
+  /** Subscribe to chat message deleted events. Returns an unsubscribe function. */
+  onChatMessageDeleted(
+    cb: (data: { spaceId: string; messageId: string }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('chat-message-deleted', cb);
+    return () => {
+      socket?.off('chat-message-deleted', cb);
+    };
+  },
+
+  /** Emit a typing indicator to a space. */
+  emitTyping(spaceId: string): void {
+    socket?.emit('chat-typing', { spaceId });
+  },
+
+  /** Subscribe to chat typing indicators. Returns an unsubscribe function. */
+  onChatTyping(
+    cb: (data: { spaceId: string; userId: string; displayName: string }) => void,
+  ): () => void {
+    if (!socket) return () => {};
+    socket.on('chat-typing', cb);
+    return () => {
+      socket?.off('chat-typing', cb);
     };
   },
 

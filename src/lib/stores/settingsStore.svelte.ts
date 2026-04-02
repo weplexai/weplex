@@ -9,6 +9,8 @@ const DEFAULTS: AppSettings = {
   sidebarDefault: 'expanded',
   idleTimeout: 300000,
   persistSessions: true,
+  chatSoundEnabled: true,
+  chatNotificationsEnabled: true,
 };
 
 let settings = $state<AppSettings>({ ...DEFAULTS });

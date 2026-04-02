@@ -26,6 +26,8 @@ function extractEmailFromJwt(token: string): string | null {
 /** Save last authenticated user email for cross-account protection. */
 function saveLastUserEmail(email: string): void {
   localStorage.setItem(LAST_USER_KEY, email);
+  // Also persist to file backup so recoverStores() can verify ownership
+  invoke('persist_store', { key: LAST_USER_KEY, value: email }).catch(() => {});
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -146,14 +148,17 @@ export const authStore = {
     // Prevents cross-account contamination if tokens from another account
     // somehow ended up in keychain or encrypted file backup.
     const lastEmail = localStorage.getItem('weplex_last_user_email');
-    if (lastEmail) {
-      const tokenEmail = extractEmailFromJwt(saved.accessToken);
-      if (tokenEmail && tokenEmail !== lastEmail) {
-        console.warn(`[auth] Token mismatch: expected ${lastEmail}, got ${tokenEmail}. Discarding foreign tokens.`);
-        await keychainDeleteTokens().catch(() => {});
-        await fileDeleteTokens();
-        return;
-      }
+    const tokenEmail = extractEmailFromJwt(saved.accessToken);
+    if (lastEmail && tokenEmail && tokenEmail !== lastEmail) {
+      console.warn(`[auth] Token mismatch: expected ${lastEmail}, got ${tokenEmail}. Discarding foreign tokens.`);
+      await keychainDeleteTokens().catch(() => {});
+      await fileDeleteTokens();
+      return;
+    }
+    // If no lastEmail yet (first login on this device), extract from JWT and record it
+    // so that subsequent loads can validate ownership
+    if (!lastEmail && tokenEmail) {
+      saveLastUserEmail(tokenEmail);
     }
 
     tokens = saved;
