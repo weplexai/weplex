@@ -51,3 +51,4 @@ src-tauri/.claude/
 update-worker/
 icon-fix*
 icon-final.*
+.claude/worktrees/

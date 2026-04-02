@@ -337,14 +337,9 @@
         </button>
 
         <div class="about-divider"></div>
-        <footer class="shipooor-footer">
-          <a class="shipooor-link" href="https://shipooor.xyz" target="_blank" rel="noopener">
-            <span class="shipooor-stamp-outer">
-              <span class="shipooor-stamp-inner">SHIPPED</span>
-            </span>
-            <span class="shipooor-ft">by <strong>shipooor</strong> · </span>
-          </a>
-          <a class="shipooor-x" href="https://x.com/shipooor" target="_blank" rel="noopener">X</a>
+        <footer class="about-footer">
+          <a class="about-footer-link" href="https://weplex.ai" target="_blank" rel="noopener">weplex.ai</a>
+          <span class="about-footer-copy">&copy; 2026</span>
         </footer>
       {/if}
     </div>
@@ -450,148 +445,29 @@
     margin: 10px 0;
   }
 
-  /* ═══ shipooor footer stamp (SM size) ═══ */
-  .shipooor-footer {
+  /* ═══ About footer ═══ */
+  .about-footer {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0;
+    gap: 8px;
     padding: 8px 0 0;
   }
 
-  .shipooor-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    text-decoration: none;
-    cursor: pointer;
-  }
-
-  .shipooor-stamp-outer {
-    display: inline-block;
-    transform: rotate(-5deg);
-    border: 2px solid rgba(255, 255, 255, 0.7);
-    border-radius: 3px;
-    padding: 2px;
-    position: relative;
-    overflow: visible;
-    transition:
-      border-color 0.3s ease,
-      box-shadow 0.3s ease;
-  }
-
-  .shipooor-stamp-inner {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 0.75px solid rgba(255, 255, 255, 0.4);
-    border-radius: 1.5px;
-    height: 16px;
-    padding: 0 6px;
-    font-family: var(--weplex-font-mono);
-    font-weight: 700;
-    font-size: 8px;
-    letter-spacing: 0.1em;
-    line-height: 1;
-    text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.85);
-    position: relative;
-    overflow: hidden;
-    transition: border-color 0.3s ease;
-  }
-
-  .shipooor-stamp-inner::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: #fff;
-    transform: translateY(100%);
-    transition: transform 0.3s cubic-bezier(0.65, 0, 0.35, 1);
-    z-index: 0;
-  }
-
-  .shipooor-stamp-outer::after {
-    content: '';
-    position: absolute;
-    inset: -3px;
-    border-radius: 5px;
-    border: 1.5px solid transparent;
-    pointer-events: none;
-  }
-
-  .shipooor-ft {
+  .about-footer-link {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.3);
-    transition: color 0.3s ease;
-  }
-
-  .shipooor-ft strong {
-    color: rgba(255, 255, 255, 0.45);
-    font-weight: 600;
-  }
-
-  .shipooor-x {
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.2);
+    color: var(--weplex-text-muted);
     text-decoration: none;
-    transition: color 0.3s ease;
   }
 
-  /* Hover: Combo */
-  .shipooor-link:hover .shipooor-stamp-outer {
-    border-color: #fff;
-    box-shadow:
-      0 0 16px rgba(255, 255, 255, 0.25),
-      0 0 40px rgba(255, 255, 255, 0.08);
-    animation: shipooor-slam 0.5s cubic-bezier(0.22, 1, 0.36, 1);
-  }
-  .shipooor-link:hover .shipooor-stamp-inner::before {
-    transform: translateY(0);
-  }
-  .shipooor-link:hover .shipooor-stamp-inner {
-    border-color: rgba(255, 255, 255, 0.7);
-    color: #000;
-  }
-  .shipooor-link:hover .shipooor-stamp-outer::after {
-    animation: shipooor-ring 0.6s ease-out forwards;
-  }
-  .shipooor-link:hover .shipooor-ft,
-  .shipooor-link:hover .shipooor-ft strong {
-    color: rgba(255, 255, 255, 0.8);
-  }
-  .shipooor-link:hover ~ .shipooor-x {
-    color: rgba(255, 255, 255, 0.8);
+  .about-footer-link:hover {
+    color: var(--weplex-accent);
   }
 
-  @keyframes shipooor-slam {
-    0% {
-      transform: rotate(-5deg) scale(1);
-    }
-    15% {
-      transform: rotate(-5deg) scale(1.3) translateY(-6px);
-    }
-    35% {
-      transform: rotate(-3deg) scale(0.92) translateY(1px);
-    }
-    55% {
-      transform: rotate(-5deg) scale(1.05);
-    }
-    100% {
-      transform: rotate(-5deg) scale(1);
-    }
-  }
-
-  @keyframes shipooor-ring {
-    0% {
-      inset: -3px;
-      border-color: rgba(255, 255, 255, 0.5);
-      opacity: 1;
-    }
-    100% {
-      inset: -16px;
-      border-color: rgba(255, 255, 255, 0);
-      opacity: 0;
-    }
+  .about-footer-copy {
+    font-size: 12px;
+    color: var(--weplex-text-muted);
+    opacity: 0.5;
   }
 
   /* Profiles */
