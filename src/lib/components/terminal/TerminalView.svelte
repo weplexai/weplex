@@ -63,7 +63,7 @@
     const settings = settingsStore.settings;
 
     const isLight = settings.theme === 'light';
-    const darkTheme = {
+    const darkTermTheme = {
       background: '#0a0a0f',
       foreground: '#e8e8ed',
       cursor: 'transparent',
@@ -87,7 +87,7 @@
       brightCyan: '#22d3ee',
       brightWhite: '#f9fafb',
     };
-    const lightTheme = {
+    const lightTermTheme = {
       background: '#fafafa',
       foreground: '#1a1a1f',
       cursor: 'transparent',
@@ -118,7 +118,7 @@
       scrollback: 5000,
       fontSize: settings.fontSize,
       fontFamily: settings.fontFamily,
-      theme: isLight ? lightTheme : darkTheme,
+      theme: isLight ? lightTermTheme : darkTermTheme,
       allowProposedApi: true,
     });
 
@@ -191,12 +191,33 @@
     }
   });
 
-  // Reactively update terminal font when settings change
+  // Reactively update terminal font and theme when settings change
   $effect(() => {
-    const { fontSize, fontFamily } = settingsStore.settings;
+    const { fontSize, fontFamily, theme } = settingsStore.settings;
     if (term) {
       term.options.fontSize = fontSize;
       term.options.fontFamily = fontFamily;
+      // Update terminal theme on the fly
+      const isLightNow = theme === 'light';
+      term.options.theme = isLightNow
+        ? {
+            background: '#fafafa', foreground: '#1a1a1f', cursor: '#7c3aed',
+            cursorAccent: '#fafafa', selectionBackground: 'rgba(124, 58, 237, 0.2)',
+            black: '#1a1a1f', red: '#dc2626', green: '#059669', yellow: '#d97706',
+            blue: '#2563eb', magenta: '#7c3aed', cyan: '#0891b2', white: '#f5f5f5',
+            brightBlack: '#9898a8', brightRed: '#ef4444', brightGreen: '#10b981',
+            brightYellow: '#f59e0b', brightBlue: '#3b82f6', brightMagenta: '#8b5cf6',
+            brightCyan: '#06b6d4', brightWhite: '#ffffff',
+          }
+        : {
+            background: '#0a0a0f', foreground: '#e8e8ed', cursor: '#8b5cf6',
+            cursorAccent: '#0a0a0f', selectionBackground: 'rgba(139, 92, 246, 0.3)',
+            black: '#1a1a25', red: '#ef4444', green: '#10b981', yellow: '#f59e0b',
+            blue: '#3b82f6', magenta: '#8b5cf6', cyan: '#06b6d4', white: '#e8e8ed',
+            brightBlack: '#6b6b80', brightRed: '#f87171', brightGreen: '#34d399',
+            brightYellow: '#fbbf24', brightBlue: '#60a5fa', brightMagenta: '#a78bfa',
+            brightCyan: '#22d3ee', brightWhite: '#f9fafb',
+          };
       if (fitAddon) fitAddon.fit();
     }
   });
@@ -451,9 +472,9 @@
       const agentNeedsInputRe =
         /Enter\s*to\s*select|↑.{0,3}↓|Tab\s*to\s*amend|Do you want to proceed|Esc\s*to\s*cancel|ctrl\+g.*edit|\[y\/n\]|\[Y\/n\]|\[yes\/no\]|\(y\)es\/\(n\)o|\? $/m;
 
-      // Agent error patterns — fatal errors that stop the agent
+      // Agent error patterns — only truly fatal errors, not normal tool output
       const agentErrorRe =
-        /Error:|FATAL|panic:|Traceback|ENOENT|EACCES|Permission denied|Command failed|Process exited with code [1-9]|API error|rate limit|exceeded your|quota exceeded/im;
+        /panic:|Traceback \(most recent|ENOENT.*no such file|EACCES.*permission denied|Process exited with code [1-9]|API error.*status [45]\d\d|quota exceeded|rate limit exceeded/im;
 
       // For Claude: poll JSONL to detect when Claude finishes its turn (reliable).
       // For other agents: fall back to timeout.
@@ -557,6 +578,7 @@
 
           // Detect agent errors in output
           if (agentErrorRe.test(outputTail)) {
+            outputTail = ''; // consume — don't re-trigger
             sessionStore.updateStatus(sessionId, 'error');
             notifyError(session?.name || `session-${sessionId}`);
           }
