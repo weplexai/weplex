@@ -94,6 +94,15 @@
           },
         },
         {
+          id: 'marketplace',
+          label: 'Marketplace',
+          category: 'Actions',
+          action: () => {
+            uiStore.closeOverlay();
+            uiStore.openOverlay('marketplace');
+          },
+        },
+        {
           id: 'new-project-dashboard',
           label: 'New Project Dashboard',
           category: 'Dashboards',

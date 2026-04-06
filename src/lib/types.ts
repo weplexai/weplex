@@ -11,6 +11,7 @@ export type OverlayType =
   | 'space-modal'
   | 'agents'
   | 'auth'
+  | 'marketplace'
   | 'uikit';
 export type SplitDirection = 'horizontal' | 'vertical';
 

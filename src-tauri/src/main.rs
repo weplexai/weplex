@@ -1495,6 +1495,30 @@ fn get_stage_artifact(
 /// Open a URL in the system default browser.
 /// Only allows https:// and http://localhost URLs to prevent command injection.
 #[tauri::command]
+/// Save a marketplace package (agent/pipeline YAML) to local filesystem.
+fn save_marketplace_package(dir: String, name: String, content: String) -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let target_dir = format!("{}/.weplex/{}", home, dir);
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    // Sanitize filename
+    let safe_name: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+
+    let ext = if dir == "agents" { "yaml" } else { "yaml" };
+    let path = format!("{}/{}.{}", target_dir, safe_name, ext);
+
+    std::fs::write(&path, &content)
+        .map_err(|e| format!("Failed to write package: {}", e))?;
+
+    eprintln!("[weplex] marketplace package saved: {}", path);
+    Ok(())
+}
+
+#[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     // Strict URL validation: only https:// or http://localhost are allowed
     let is_safe = url.starts_with("https://")
@@ -2105,6 +2129,7 @@ fn main() {
             get_stage_artifact,
             oauth_server::start_oauth_server,
             open_url,
+            save_marketplace_package,
             keychain::keychain_save,
             keychain::keychain_load,
             keychain::keychain_delete,
