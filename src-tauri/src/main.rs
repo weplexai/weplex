@@ -768,6 +768,52 @@ fn read_agents_from_dir(dir_path: &str, source: &str) -> Vec<AgentConfig> {
     agents
 }
 
+/// Convert a Claude AgentConfig to a WeplexAgent for unified pipeline resolution.
+/// Claude agents always use binary="claude".
+fn agent_config_to_weplex(config: &AgentConfig) -> weplex_agents::WeplexAgent {
+    weplex_agents::WeplexAgent {
+        name: config.name.clone(),
+        description: config.description.clone(),
+        binary: "claude".to_string(),
+        model: if config.model.is_empty() { None } else { Some(config.model.clone()) },
+        prompt: config.system_prompt.clone(),
+        one_shot: None,
+        env: std::collections::HashMap::new(),
+        file_path: config.file_path.clone(),
+    }
+}
+
+/// Collect all agents (Weplex YAML + Claude native) for pipeline resolution.
+/// Claude agents from ~/.claude/agents/ and {cwd}/.claude/agents/ are converted
+/// to WeplexAgent format. Weplex agents take priority on name conflicts.
+fn collect_all_agents(cwd: &str) -> Result<std::collections::HashMap<String, weplex_agents::WeplexAgent>, String> {
+    let mut agent_map = std::collections::HashMap::new();
+
+    // 1. Load Claude user agents (~/.claude/agents/)
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let user_agents_dir = format!("{}/.claude/agents", home);
+    for agent in read_agents_from_dir(&user_agents_dir, "user") {
+        agent_map.insert(agent.name.clone(), agent_config_to_weplex(&agent));
+    }
+
+    // 2. Load Claude project agents ({cwd}/.claude/agents/)
+    let resolved_cwd = resolve_cwd(cwd);
+    let project_agents_dir = format!("{}/.claude/agents", resolved_cwd);
+    if project_agents_dir != user_agents_dir {
+        for agent in read_agents_from_dir(&project_agents_dir, "project") {
+            // Project agents override user agents with same name
+            agent_map.insert(agent.name.clone(), agent_config_to_weplex(&agent));
+        }
+    }
+
+    // 3. Load Weplex agents (~/.weplex/agents/) — override Claude agents on conflict
+    for agent in weplex_agents::list()? {
+        agent_map.insert(agent.name.clone(), agent);
+    }
+
+    Ok(agent_map)
+}
+
 /// List all configured Claude agents (user-level from ~/.claude/agents/).
 #[tauri::command]
 fn list_agents() -> Result<Vec<AgentConfig>, String> {
@@ -1242,6 +1288,9 @@ fn start_pipeline(
 ) -> Result<String, String> {
     let profile = profile_name.unwrap_or_else(|| "Default".to_string());
 
+    // Collect all agents (Weplex YAML + Claude native from user + project level)
+    let agent_map = collect_all_agents(&cwd)?;
+
     // Phase 1: Prepare run (parse config, create run record) — no thread spawned yet
     let prepared = {
         let mut engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
@@ -1251,6 +1300,7 @@ fn start_pipeline(
             &cwd,
             &profile,
             env_vars.unwrap_or_default(),
+            Some(agent_map),
             &app,
         )?
     };

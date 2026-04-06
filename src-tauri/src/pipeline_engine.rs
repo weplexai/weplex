@@ -175,6 +175,7 @@ impl PipelineEngine {
         cwd: &str,
         profile_name: &str,
         profile_env: HashMap<String, String>,
+        extra_agents: Option<HashMap<String, weplex_agents::WeplexAgent>>,
         app: &AppHandle,
     ) -> Result<PreparedRun, String> {
         // Cleanup old finished runs before adding a new one
@@ -183,9 +184,11 @@ impl PipelineEngine {
         let content = std::fs::read_to_string(pipeline_file).map_err(|e| e.to_string())?;
         let config = pipeline_parser::parse(&content, pipeline_file)?;
 
-        let agents = weplex_agents::list()?;
         let agent_map: HashMap<String, weplex_agents::WeplexAgent> =
-            agents.into_iter().map(|a| (a.name.clone(), a)).collect();
+            extra_agents.unwrap_or_else(|| {
+                let agents = weplex_agents::list().unwrap_or_default();
+                agents.into_iter().map(|a| (a.name.clone(), a)).collect()
+            });
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let now_ms = epoch_ms();
@@ -559,7 +562,10 @@ fn execute_stage(
     let agent = agents.get(agent_name).ok_or_else(|| {
         (
             -1,
-            format!("Agent '{}' not found in ~/.weplex/agents/", agent_name),
+            format!(
+                "Agent '{}' not found. Searched ~/.weplex/agents/ and .claude/agents/",
+                agent_name
+            ),
             0u64,
         )
     })?;
