@@ -1,5 +1,6 @@
 <script lang="ts">
   import { sessionStore } from '../../stores/sessionStore';
+  import { spaceStore } from '../../stores/spaceStore';
   import { uiStore } from '../../stores/uiStore';
   import { shortcuts, getShortcutHint } from '../../utils/shortcuts';
   import { Modal } from '../ui';
@@ -90,6 +91,30 @@
           action: () => {
             uiStore.closeOverlay();
             uiStore.openOverlay('agents');
+          },
+        },
+        {
+          id: 'new-project-dashboard',
+          label: 'New Project Dashboard',
+          category: 'Dashboards',
+          action: () => {
+            const active = sessionStore.activeSession;
+            if (active?.cwd) {
+              sessionStore.createProjectDashboard(active.cwd, active.spaceId);
+            }
+            uiStore.closeOverlay();
+          },
+        },
+        {
+          id: 'new-space-dashboard',
+          label: 'New Space Dashboard',
+          category: 'Dashboards',
+          action: () => {
+            const spaceId = spaceStore.activeSpaceId;
+            if (spaceId) {
+              sessionStore.createSpaceDashboard(spaceId);
+            }
+            uiStore.closeOverlay();
           },
         },
       ];

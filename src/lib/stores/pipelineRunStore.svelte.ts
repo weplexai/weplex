@@ -598,6 +598,11 @@ export const pipelineRunStore = {
     // Start first stage
     startStage(run, 0);
 
+    // Auto-create orchestration dashboard for multi-stage pipelines
+    if (run.stages.length > 1 && run.stages[0].sessionId) {
+      sessionStore.createDashboard(run.stages[0].sessionId);
+    }
+
     // Start watching for completion
     startWatching();
 
