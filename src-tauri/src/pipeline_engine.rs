@@ -175,7 +175,7 @@ impl PipelineEngine {
         cwd: &str,
         profile_name: &str,
         profile_env: HashMap<String, String>,
-        extra_agents: Option<HashMap<String, weplex_agents::WeplexAgent>>,
+        agent_map: HashMap<String, weplex_agents::WeplexAgent>,
         app: &AppHandle,
     ) -> Result<PreparedRun, String> {
         // Cleanup old finished runs before adding a new one
@@ -184,11 +184,7 @@ impl PipelineEngine {
         let content = std::fs::read_to_string(pipeline_file).map_err(|e| e.to_string())?;
         let config = pipeline_parser::parse(&content, pipeline_file)?;
 
-        let agent_map: HashMap<String, weplex_agents::WeplexAgent> =
-            extra_agents.unwrap_or_else(|| {
-                let agents = weplex_agents::list().unwrap_or_default();
-                agents.into_iter().map(|a| (a.name.clone(), a)).collect()
-            });
+        // agent_map is pre-collected by the caller (all sources merged)
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let now_ms = epoch_ms();

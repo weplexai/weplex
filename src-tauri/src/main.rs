@@ -1300,7 +1300,7 @@ fn start_pipeline(
             &cwd,
             &profile,
             env_vars.unwrap_or_default(),
-            Some(agent_map),
+            agent_map,
             &app,
         )?
     };
