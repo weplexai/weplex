@@ -89,6 +89,7 @@ export const sessionStore = {
       folderId?: string;
       pinned?: boolean;
       extraEnvVars?: Record<string, string>;
+      parentId?: number;
     } = {},
   ): Session {
     const id = nextId++;
@@ -112,6 +113,7 @@ export const sessionStore = {
       command: opts.command,
       cwd: opts.cwd || '~',
       extraEnvVars: opts.extraEnvVars,
+      parentId: opts.parentId,
     };
 
     sessions.push(session);
@@ -210,6 +212,13 @@ export const sessionStore = {
     const idx = sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;
 
+    // Promote orphaned children to top level
+    for (const s of sessions) {
+      if (s.parentId === id) {
+        s.parentId = undefined;
+      }
+    }
+
     // Kill the PTY backend
     import('@tauri-apps/api/core')
       .then(({ invoke }) => {
@@ -228,7 +237,8 @@ export const sessionStore = {
   },
 
   moveToSpace(id: number, spaceId: string) {
-    this.update(id, { spaceId });
+    // Clear parentId — child detaches from parent when moved to another space
+    this.update(id, { spaceId, parentId: undefined });
     persist();
   },
 
@@ -380,5 +390,33 @@ export const sessionStore = {
     const idle = sessions.filter((s) => s.status === 'idle').length;
     const totalCost = sessions.reduce((sum, s) => sum + (s.cost || 0), 0);
     return { active, waiting, idle, total: sessions.length, totalCost };
+  },
+
+  /** Get child sessions of a parent. */
+  getChildren(parentId: number): Session[] {
+    return sessions.filter((s) => s.parentId === parentId);
+  },
+
+  /** Check if a session has children. */
+  hasChildren(sessionId: number): boolean {
+    return sessions.some((s) => s.parentId === sessionId);
+  },
+
+  /** Toggle collapsed state of a parent session's children. */
+  toggleChildCollapsed(sessionId: number) {
+    const idx = sessions.findIndex((s) => s.id === sessionId);
+    if (idx !== -1) {
+      sessions[idx] = { ...sessions[idx], childCollapsed: !sessions[idx].childCollapsed };
+      persist();
+    }
+  },
+
+  /** Get aggregated status for a parent (active if any child is active). */
+  getAggregatedStatus(sessionId: number): SessionStatus {
+    const children = this.getChildren(sessionId);
+    if (children.length === 0) return sessions.find((s) => s.id === sessionId)?.status || 'idle';
+    if (children.some((c) => c.status === 'active')) return 'active';
+    if (children.some((c) => c.status === 'waiting')) return 'waiting';
+    return 'idle';
   },
 };

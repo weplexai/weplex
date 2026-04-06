@@ -14,13 +14,25 @@
     onclick,
     badgeLetter,
     badgeColor,
+    hasChildren = false,
+    collapsed = false,
+    ontoggle,
+    depth = 0,
+    statusOverride,
   }: {
     session: Session;
     active?: boolean;
     onclick: () => void;
     badgeLetter?: string;
     badgeColor?: string;
+    hasChildren?: boolean;
+    collapsed?: boolean;
+    ontoggle?: () => void;
+    depth?: number;
+    statusOverride?: import('../../types').SessionStatus;
   } = $props();
+
+  let effectiveStatus = $derived(statusOverride || session.status);
 
   let showMenu = $state(false);
   let showFolderMenu = $state(false);
@@ -227,13 +239,22 @@
   onkeydown={(e) => e.key === 'Enter' && onclick()}
   onpointerdown={handlePointerDown}
 >
+  {#if hasChildren}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <span
+      class="collapse-toggle"
+      class:collapsed
+      onclick={(e) => { e.stopPropagation(); ontoggle?.(); }}
+    >▸</span>
+  {/if}
   {#if session.icon}
     <span class="icon"><SessionIcon icon={session.icon} /></span>
   {/if}
   <span
     class="dot"
-    class:pulse={session.status === 'active'}
-    style="background: {STATUS_COLORS[session.status]}"
+    class:pulse={effectiveStatus === 'active'}
+    style="background: {STATUS_COLORS[effectiveStatus]}"
   ></span>
   {#if renaming}
     <input
@@ -468,6 +489,25 @@
     justify-content: center;
     color: var(--weplex-text-muted);
     flex-shrink: 0;
+  }
+
+  .collapse-toggle {
+    width: 12px;
+    font-size: 10px;
+    color: var(--weplex-text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: transform 0.15s;
+    transform: rotate(90deg);
+    text-align: center;
+  }
+
+  .collapse-toggle.collapsed {
+    transform: rotate(0deg);
+  }
+
+  .collapse-toggle:hover {
+    color: var(--weplex-text);
   }
 
   .dot {

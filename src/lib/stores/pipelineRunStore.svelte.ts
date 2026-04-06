@@ -293,6 +293,10 @@ function startStage(run: InteractiveRun, index: number) {
     extraEnvVars['WEPLEX_MCP_SOCKET'] = run.mcpSocketPath;
   }
 
+  // Determine parentId: first stage is the parent, subsequent stages are children
+  const firstStageSession = run.stages[0]?.sessionId;
+  const parentId = index > 0 && firstStageSession ? firstStageSession : undefined;
+
   // Create a real PTY session — prompt injection handled by checkRunProgress
   const session = sessionStore.create({
     command: 'claude',
@@ -300,6 +304,7 @@ function startStage(run: InteractiveRun, index: number) {
     name: `${run.pipelineName}: ${stage.agent}`,
     spaceId: sessionStore.activeSession?.spaceId || 'default',
     extraEnvVars,
+    parentId,
   });
 
   stage.sessionId = session.id;

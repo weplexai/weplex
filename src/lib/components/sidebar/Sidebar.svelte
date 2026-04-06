@@ -607,13 +607,31 @@
                 <FolderItem {folder} />
               {/each}
 
-              {#each spacePinned as session (session.id)}
+              {#each spacePinned.filter(s => !s.parentId) as session (session.id)}
                 {#if !splitIds.includes(session.id) || splitIds.length <= 1}
+                  {@const hasChildren = sessionStore.hasChildren(session.id)}
+                  {@const aggregatedStatus = hasChildren ? sessionStore.getAggregatedStatus(session.id) : undefined}
                   <SessionItem
                     {session}
                     active={session.id === sessionStore.activeSessionId}
                     onclick={() => sessionStore.activate(session.id)}
+                    {hasChildren}
+                    collapsed={session.childCollapsed}
+                    ontoggle={() => sessionStore.toggleChildCollapsed(session.id)}
+                    statusOverride={aggregatedStatus}
                   />
+                  {#if hasChildren && !session.childCollapsed}
+                    <div class="session-children">
+                      {#each sessionStore.getChildren(session.id) as child (child.id)}
+                        <SessionItem
+                          session={child}
+                          active={child.id === sessionStore.activeSessionId}
+                          onclick={() => sessionStore.activate(child.id)}
+                          depth={1}
+                        />
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
               {/each}
             </div>
@@ -639,13 +657,31 @@
               class="unpinned-zone"
               class:zone-highlight={unpinnedZoneHighlight && space.id === spaceId}
             >
-              {#each spaceUnpinned as session (session.id)}
+              {#each spaceUnpinned.filter(s => !s.parentId) as session (session.id)}
                 {#if !splitIds.includes(session.id) || splitIds.length <= 1}
+                  {@const hasChildren = sessionStore.hasChildren(session.id)}
+                  {@const aggregatedStatus = hasChildren ? sessionStore.getAggregatedStatus(session.id) : undefined}
                   <SessionItem
                     {session}
                     active={session.id === sessionStore.activeSessionId}
                     onclick={() => sessionStore.activate(session.id)}
+                    {hasChildren}
+                    collapsed={session.childCollapsed}
+                    ontoggle={() => sessionStore.toggleChildCollapsed(session.id)}
+                    statusOverride={aggregatedStatus}
                   />
+                  {#if hasChildren && !session.childCollapsed}
+                    <div class="session-children">
+                      {#each sessionStore.getChildren(session.id) as child (child.id)}
+                        <SessionItem
+                          session={child}
+                          active={child.id === sessionStore.activeSessionId}
+                          onclick={() => sessionStore.activate(child.id)}
+                          depth={1}
+                        />
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
               {/each}
             </div>
@@ -719,6 +755,12 @@
 {/if}
 
 <style>
+  .session-children {
+    padding-left: 18px;
+    display: flex;
+    flex-direction: column;
+  }
+
   .sidebar {
     position: relative;
     height: 100%;
