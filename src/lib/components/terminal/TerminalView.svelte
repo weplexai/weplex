@@ -10,6 +10,7 @@
   import { profileStore } from '../../stores/profileStore';
   import { splitStore } from '../../stores/splitStore';
   import { pipelineInjectStore } from '../../stores/pipelineInjectStore.svelte';
+  import { contextInjectionStore } from '../../stores/contextInjectionStore.svelte';
   import { terminalRegistry } from '../../stores/terminalRegistry';
 
   let { sessionId }: { sessionId: number } = $props();
@@ -298,6 +299,11 @@
 
       // Always set WEPLEX_SESSION_ID so the MCP server can save session summaries
       envVars = { ...(envVars || {}), WEPLEX_SESSION_ID: String(sessionId) };
+
+      // Inject Weplex context into CLAUDE.md before starting Claude sessions
+      if (isClaude && session) {
+        await contextInjectionStore.inject(session);
+      }
 
       await invoke('create_pty', {
         sessionId,

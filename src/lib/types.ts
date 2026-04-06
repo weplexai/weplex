@@ -249,6 +249,8 @@ export interface PipelineRunInfo {
   pipeline_file: string;
   task: string;
   cwd: string;
+  /** Profile used for this run — all stages share the same profile. */
+  profile_name: string;
   status: PipelineRunStatus;
   stages: StageRunInfo[];
   started_at: number | null;
@@ -459,4 +461,36 @@ export interface SessionRecord {
     email: string;
     displayName: string | null;
   };
+}
+
+// ── Hook Events ──────────────────────────────────────────────────────────────
+
+export type HookEventType = 'pre_tool_use' | 'post_tool_use' | 'stop';
+
+export interface HookEventPayload {
+  event_type: HookEventType;
+  session_id: number;
+  tool_name?: string;
+  file_path?: string;
+  cwd?: string;
+  tool_input?: string;
+  tool_output?: string;
+  timestamp: number;
+}
+
+/** Accumulated tool activity for a session. */
+export interface SessionActivity {
+  /** Recent tool uses (last 50). */
+  toolUses: ToolUseEntry[];
+  /** Files touched by this session (Set-like, deduped). */
+  filesTouched: string[];
+  /** Total tool call count. */
+  totalToolCalls: number;
+}
+
+export interface ToolUseEntry {
+  toolName: string;
+  filePath?: string;
+  timestamp: number;
+  type: 'pre' | 'post';
 }

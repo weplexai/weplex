@@ -22,6 +22,7 @@ aes-gcm = "0.10.3"
 ring = "0.17.14"
 hostname = "0.4.2"
 whoami = "2.1.1"
+tiny_http = "0.12"
 
 [profile.release]
 strip = true

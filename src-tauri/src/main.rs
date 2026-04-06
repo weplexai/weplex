@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(clippy::too_many_arguments)]
 
+mod hook_server;
 mod ipc_server;
 mod keychain;
 mod oauth_server;
@@ -60,13 +61,20 @@ fn clean_session_map() -> Result<(), String> {
 
 /// Write cwd → session_id mapping for stop hook resolution.
 /// Path: ~/.weplex/session-map/<encoded_cwd> containing session ID.
+/// Normalizes $HOME → ~ before encoding to match hook script behavior.
 fn write_session_map(session_id: u32, cwd: &str) -> Result<(), String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let map_dir = format!("{}/.weplex/session-map", home);
     std::fs::create_dir_all(&map_dir).map_err(|e| e.to_string())?;
 
-    // Encode cwd: replace / with _ (same logic as hook script)
-    let encoded = cwd.replace('/', "_");
+    // Normalize: replace $HOME with ~ (must match hook script normalization)
+    let normalized = if cwd.starts_with(&home) {
+        format!("~{}", &cwd[home.len()..])
+    } else {
+        cwd.to_string()
+    };
+    // Encode: replace / with _
+    let encoded = normalized.replace('/', "_");
     let map_path = format!("{}/{}", map_dir, encoded);
     std::fs::write(&map_path, session_id.to_string()).map_err(|e| e.to_string())?;
     Ok(())
@@ -929,6 +937,136 @@ fn get_project_config(cwd: String) -> Result<ProjectConfig, String> {
     })
 }
 
+/// Inject a Weplex context block into the project's CLAUDE.md.
+/// Finds or creates .claude/CLAUDE.md, strips any existing Weplex block,
+/// and prepends the new context. Returns the path written.
+#[tauri::command]
+fn inject_claude_md(cwd: String, context_block: String) -> Result<String, String> {
+    let resolved = resolve_cwd(&cwd);
+
+    // Path validation: must be an existing directory, no traversal
+    let canonical = std::fs::canonicalize(&resolved)
+        .map_err(|_| format!("Invalid project directory: {}", resolved))?;
+    if !canonical.is_dir() {
+        return Err(format!("Not a directory: {}", resolved));
+    }
+    let resolved = canonical.to_string_lossy().to_string();
+
+    // Prefer .claude/CLAUDE.md (project-scoped), fallback to root CLAUDE.md
+    let config_path = {
+        let dot_claude = format!("{}/.claude/CLAUDE.md", resolved);
+        let root = format!("{}/CLAUDE.md", resolved);
+        if std::path::Path::new(&dot_claude).exists() {
+            dot_claude
+        } else if std::path::Path::new(&root).exists() {
+            root
+        } else {
+            // Create .claude/ directory and CLAUDE.md
+            let dir = format!("{}/.claude", resolved);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("Failed to create .claude dir: {}", e))?;
+            dot_claude
+        }
+    };
+
+    // Read existing content
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+
+    // Strip old Weplex block if present
+    let cleaned = strip_weplex_block(&existing);
+
+    // Prepend new context block
+    let new_content = if cleaned.trim().is_empty() {
+        context_block
+    } else {
+        format!("{}\n\n{}", context_block, cleaned)
+    };
+
+    std::fs::write(&config_path, &new_content)
+        .map_err(|e| format!("Failed to write CLAUDE.md: {}", e))?;
+
+    eprintln!("[weplex] injected context into {}", config_path);
+    Ok(config_path)
+}
+
+/// Remove a previously injected Weplex context block from CLAUDE.md.
+#[tauri::command]
+fn remove_claude_md_injection(cwd: String) -> Result<(), String> {
+    let resolved = resolve_cwd(&cwd);
+
+    // Path validation: must be an existing directory
+    let canonical = std::fs::canonicalize(&resolved)
+        .map_err(|_| format!("Invalid project directory: {}", resolved))?;
+    if !canonical.is_dir() {
+        return Err(format!("Not a directory: {}", resolved));
+    }
+    let resolved = canonical.to_string_lossy().to_string();
+
+    for path_suffix in &[".claude/CLAUDE.md", "CLAUDE.md"] {
+        let config_path = format!("{}/{}", resolved, path_suffix);
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if content.contains("<!-- Injected by Weplex") {
+                let cleaned = strip_weplex_block(&content);
+                std::fs::write(&config_path, cleaned.trim_start())
+                    .map_err(|e| format!("Failed to clean CLAUDE.md: {}", e))?;
+                eprintln!("[weplex] removed injection from {}", config_path);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Strip the Weplex context block delimited by HTML comments.
+/// Handles edge cases: missing end marker, end before start.
+fn strip_weplex_block(content: &str) -> String {
+    let start_marker = "<!-- Injected by Weplex";
+    let end_marker = "<!-- End Weplex block -->";
+
+    if let Some(start) = content.find(start_marker) {
+        // Search for end marker AFTER start position only
+        let after_start = &content[start..];
+        let end = if let Some(rel_end) = after_start.find(end_marker) {
+            start + rel_end + end_marker.len()
+        } else {
+            // Missing end marker — strip from start to end of line (or end of file)
+            if let Some(next_newline) = content[start..].find('\n') {
+                // Find the next blank line or non-Weplex content
+                let mut pos = start + next_newline + 1;
+                while pos < content.len() {
+                    if content[pos..].starts_with("<!-- End Weplex") {
+                        pos += end_marker.len();
+                        break;
+                    }
+                    if let Some(nl) = content[pos..].find('\n') {
+                        pos += nl + 1;
+                    } else {
+                        pos = content.len();
+                        break;
+                    }
+                }
+                pos
+            } else {
+                content.len()
+            }
+        };
+
+        let before = &content[..start];
+        let after = &content[end..];
+        let mut result = before.trim_end().to_string();
+        let after_trimmed = after.trim_start();
+        if !after_trimmed.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n\n");
+            }
+            result.push_str(after_trimmed);
+        }
+        return result;
+    }
+
+    content.to_string()
+}
+
 #[derive(serde::Serialize)]
 struct SkillInfo {
     name: String,
@@ -1099,8 +1237,11 @@ fn start_pipeline(
     pipeline_file: String,
     task: String,
     cwd: String,
+    profile_name: Option<String>,
     env_vars: Option<std::collections::HashMap<String, String>>,
 ) -> Result<String, String> {
+    let profile = profile_name.unwrap_or_else(|| "Default".to_string());
+
     // Phase 1: Prepare run (parse config, create run record) — no thread spawned yet
     let prepared = {
         let mut engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
@@ -1108,6 +1249,7 @@ fn start_pipeline(
             &pipeline_file,
             &task,
             &cwd,
+            &profile,
             env_vars.unwrap_or_default(),
             &app,
         )?
@@ -1341,8 +1483,9 @@ fn find_mcp_binary(_app: &tauri::AppHandle) -> Result<String, String> {
     Err("weplex-mcp binary not found".to_string())
 }
 
-/// Generate the stop-hook.sh script at ~/.weplex/hooks/stop-hook.sh.
-/// This hook reminds agents to call deck_update_notes before finishing.
+/// Generate all hook scripts at ~/.weplex/hooks/.
+/// Each hook reads JSON from stdin (Claude Code hook protocol), resolves
+/// the Weplex session ID, and POSTs the event to the local hook server.
 fn ensure_hook_script() -> Result<(), String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let hooks_dir = format!("{}/.weplex/hooks", home);
@@ -1350,38 +1493,117 @@ fn ensure_hook_script() -> Result<(), String> {
     std::fs::create_dir_all(&hooks_dir)
         .map_err(|e| format!("Failed to create hooks dir: {}", e))?;
 
-    let script_path = format!("{}/stop-hook.sh", hooks_dir);
-    let script_content = r#"#!/bin/bash
-# Weplex Stop Hook — checks if agent provided activity notes
-# No external dependencies (no python3, no jq — pure bash + grep)
-# Reads JSON from stdin (Claude Code hook protocol) to get cwd,
-# then looks up Weplex session ID from session-map directory.
+    // Shared preamble: read stdin, resolve session ID, read hook-port + auth token.
+    // Uses jq for safe JSON parsing and construction (pre-installed on macOS).
+    let preamble = r#"#!/bin/bash
+# Weplex Hook — reads Claude Code hook JSON from stdin,
+# resolves Weplex session ID, POSTs event to local hook server.
+# Requires: jq, curl (both pre-installed on macOS).
+
+# Fail silently if jq is not available
+command -v jq >/dev/null 2>&1 || exit 0
 
 INPUT=$(cat -)
 
-# Extract cwd from stdin JSON (Claude Code passes it in hook payload)
-CWD=$(echo "$INPUT" | grep -o '"cwd":"[^"]*"' | head -1 | sed 's/"cwd":"//;s/"//')
+# Extract cwd from stdin JSON using jq (safe parsing)
+CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 if [ -z "$CWD" ]; then exit 0; fi
 
-# Look up Weplex session ID from session-map (written by Weplex on PTY creation)
+# Resolve Weplex session ID from session-map
 SESSION_MAP_DIR="$HOME/.weplex/session-map"
-# Normalize: replace $HOME with ~ (Weplex stores cwd with ~ prefix)
-CWD=$(echo "$CWD" | sed "s|^$HOME|~|")
-# Encode cwd to safe filename: replace / with _
-ENCODED_CWD=$(echo "$CWD" | sed 's|/|_|g')
+CWD_NORM=$(echo "$CWD" | sed "s|^$HOME|~|")
+ENCODED_CWD=$(echo "$CWD_NORM" | sed 's|/|_|g')
 MAP_FILE="$SESSION_MAP_DIR/$ENCODED_CWD"
 
-if [ ! -f "$MAP_FILE" ]; then
-  # Not a Weplex-managed session
-  exit 0
-fi
-
+if [ ! -f "$MAP_FILE" ]; then exit 0; fi
 WEPLEX_SID=$(cat "$MAP_FILE")
 if [ -z "$WEPLEX_SID" ]; then exit 0; fi
 
-SUMMARY_FILE="$HOME/.weplex/summaries/${WEPLEX_SID}.json"
+# Read hook server port and auth token
+PORT_FILE="$HOME/.weplex/hook-port"
+TOKEN_FILE="$HOME/.weplex/hook-token"
+if [ ! -f "$PORT_FILE" ]; then exit 0; fi
+PORT=$(cat "$PORT_FILE")
+if [ -z "$PORT" ]; then exit 0; fi
+TOKEN=""
+if [ -f "$TOKEN_FILE" ]; then TOKEN=$(cat "$TOKEN_FILE"); fi
+"#;
+
+    // ── PreToolUse hook ──
+    let pre_tool_script = format!(
+        r#"{}
+# Build safe JSON payload using jq
+PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "pre_tool_use" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
+  '{{
+    event_type: $evt,
+    session_id: ($sid | tonumber),
+    tool_name: (.tool_name // null),
+    file_path: (.file_path // null),
+    cwd: $cwd,
+    tool_input: ((.tool_input // "") | tostring | .[0:500])
+  }}' 2>/dev/null)
+
+if [ -z "$PAYLOAD" ]; then exit 0; fi
+
+curl -s -X POST "http://127.0.0.1:$PORT/hook" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "$PAYLOAD" \
+  --max-time 2 > /dev/null 2>&1
+
+exit 0
+"#,
+        preamble
+    );
+
+    // ── PostToolUse hook ──
+    let post_tool_script = format!(
+        r#"{}
+PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "post_tool_use" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
+  '{{
+    event_type: $evt,
+    session_id: ($sid | tonumber),
+    tool_name: (.tool_name // null),
+    file_path: (.file_path // null),
+    cwd: $cwd,
+    tool_output: ((.tool_output // "") | tostring | .[0:500])
+  }}' 2>/dev/null)
+
+if [ -z "$PAYLOAD" ]; then exit 0; fi
+
+curl -s -X POST "http://127.0.0.1:$PORT/hook" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "$PAYLOAD" \
+  --max-time 2 > /dev/null 2>&1
+
+exit 0
+"#,
+        preamble
+    );
+
+    // ── Stop hook ──
+    let stop_script = format!(
+        r#"{}
+PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "stop" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
+  '{{
+    event_type: $evt,
+    session_id: ($sid | tonumber),
+    cwd: $cwd
+  }}' 2>/dev/null)
+
+if [ -n "$PAYLOAD" ]; then
+  curl -s -X POST "http://127.0.0.1:$PORT/hook" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d "$PAYLOAD" \
+    --max-time 2 > /dev/null 2>&1
+fi
+
+# Check if agent provided activity notes
+SUMMARY_FILE="$HOME/.weplex/summaries/${{WEPLEX_SID}}.json"
 if [ -f "$SUMMARY_FILE" ]; then
-  UPDATED_AT=$(grep -o '"updatedAt":[0-9]*' "$SUMMARY_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+  UPDATED_AT=$(jq -r '.updatedAt // 0' "$SUMMARY_FILE" 2>/dev/null || echo "0")
   NOW=$(date +%s)
   AGE=$(( NOW - UPDATED_AT ))
   if [ "$AGE" -lt 300 ]; then exit 0; fi
@@ -1389,30 +1611,41 @@ fi
 
 echo "Please call the deck_update_notes tool to record what you accomplished before finishing." >&2
 exit 2
-"#;
+"#,
+        preamble
+    );
 
-    std::fs::write(&script_path, script_content)
-        .map_err(|e| format!("Failed to write hook script: {}", e))?;
+    // Write all scripts
+    let scripts = [
+        ("pre-tool-use.sh", pre_tool_script),
+        ("post-tool-use.sh", post_tool_script),
+        ("stop-hook.sh", stop_script),
+    ];
 
-    // Make executable (0755)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(&script_path, perms)
-            .map_err(|e| format!("Failed to set hook permissions: {}", e))?;
+    for (name, content) in &scripts {
+        let path = format!("{}/{}", hooks_dir, name);
+        std::fs::write(&path, content)
+            .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o700);
+            std::fs::set_permissions(&path, perms)
+                .map_err(|e| format!("Failed to set permissions on {}: {}", name, e))?;
+        }
     }
 
-    eprintln!("[weplex] hook script written: {}", script_path);
+    eprintln!("[weplex] hook scripts written to {}", hooks_dir);
     Ok(())
 }
 
-/// Register the Weplex stop hook in ~/.claude/settings.json.
+/// Register all Weplex hooks (PreToolUse, PostToolUse, Stop) in ~/.claude/settings.json.
 /// Merges into existing hooks without overwriting other entries.
 fn register_hooks_in_claude() -> Result<(), String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let settings_path = format!("{}/.claude/settings.json", home);
-    let hook_command = format!("{}/.weplex/hooks/stop-hook.sh", home);
+    let hooks_dir = format!("{}/.weplex/hooks", home);
 
     // Read existing settings or create empty object
     let mut config: serde_json::Value = if let Ok(content) = std::fs::read_to_string(&settings_path) {
@@ -1421,46 +1654,56 @@ fn register_hooks_in_claude() -> Result<(), String> {
         serde_json::json!({})
     };
 
-    // Ensure hooks.Stop is an array
-    if !config.get("hooks").is_some() {
+    if config.get("hooks").is_none() {
         config["hooks"] = serde_json::json!({});
     }
-    if !config["hooks"].get("Stop").map(|v| v.is_array()).unwrap_or(false) {
-        config["hooks"]["Stop"] = serde_json::json!([]);
-    }
 
-    let stop_hooks = config["hooks"]["Stop"].as_array_mut().unwrap();
+    // Register each hook type
+    let hook_types = [
+        ("PreToolUse", format!("{}/pre-tool-use.sh", hooks_dir)),
+        ("PostToolUse", format!("{}/post-tool-use.sh", hooks_dir)),
+        ("Stop", format!("{}/stop-hook.sh", hooks_dir)),
+    ];
 
-    // Claude Code Stop hooks format:
-    // [{ "hooks": [{ "type": "command", "command": "..." }] }]
-    // Each entry is a matcher group with nested hooks array.
-    // Search for existing weplex entry by checking nested command paths.
-    let existing_idx = stop_hooks.iter().position(|entry| {
-        entry.get("hooks")
-            .and_then(|h| h.as_array())
-            .map(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook.get("command")
-                        .and_then(|c| c.as_str())
-                        .map(|c| c.contains("weplex"))
-                        .unwrap_or(false)
+    for (hook_type, command) in &hook_types {
+        // Ensure hooks.<Type> is an array
+        if !config["hooks"].get(hook_type).map(|v| v.is_array()).unwrap_or(false) {
+            config["hooks"][hook_type] = serde_json::json!([]);
+        }
+
+        let hooks_array = config["hooks"][hook_type].as_array_mut().unwrap();
+
+        // Claude Code hooks format:
+        // [{ "hooks": [{ "type": "command", "command": "..." }] }]
+        // Each entry is a matcher group with nested hooks array.
+        // Search for existing weplex entry by checking nested command paths.
+        let existing_idx = hooks_array.iter().position(|entry| {
+            entry.get("hooks")
+                .and_then(|h| h.as_array())
+                .map(|hooks| {
+                    hooks.iter().any(|hook| {
+                        hook.get("command")
+                            .and_then(|c| c.as_str())
+                            .map(|c| c.contains("weplex"))
+                            .unwrap_or(false)
+                    })
                 })
-            })
-            .unwrap_or(false)
-    });
+                .unwrap_or(false)
+        });
 
-    let hook_entry = serde_json::json!({
-        "hooks": [{
-            "type": "command",
-            "command": hook_command,
-            "timeout": 10
-        }]
-    });
+        let hook_entry = serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": command,
+                "timeout": 10
+            }]
+        });
 
-    if let Some(idx) = existing_idx {
-        stop_hooks[idx] = hook_entry;
-    } else {
-        stop_hooks.push(hook_entry);
+        if let Some(idx) = existing_idx {
+            hooks_array[idx] = hook_entry;
+        } else {
+            hooks_array.push(hook_entry);
+        }
     }
 
     // Ensure ~/.claude/ directory exists
@@ -1471,7 +1714,7 @@ fn register_hooks_in_claude() -> Result<(), String> {
     let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
 
-    eprintln!("[weplex] stop hook registered in ~/.claude/settings.json");
+    eprintln!("[weplex] hooks registered in ~/.claude/settings.json (PreToolUse, PostToolUse, Stop)");
     Ok(())
 }
 
@@ -1587,7 +1830,14 @@ fn main() {
             session_summary::ensure_summaries_dir();
             session_summary::cleanup_old_summaries();
 
-            // Register MCP server in ~/.claude.json and stop hook in ~/.claude/settings.json
+            // Start hook event listener (must be before hook registration)
+            let hook_handle = app.handle().clone();
+            match hook_server::start_hook_server(hook_handle) {
+                Ok(port) => eprintln!("[weplex] hook server started on port {}", port),
+                Err(e) => eprintln!("[weplex] failed to start hook server: {}", e),
+            }
+
+            // Register MCP server in ~/.claude.json and hooks in ~/.claude/settings.json
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let _ = do_register_mcp_in_claude(&handle);
@@ -1618,6 +1868,8 @@ fn main() {
             delete_pipeline,
             generate_pipeline_instructions,
             get_project_config,
+            inject_claude_md,
+            remove_claude_md_injection,
             list_skills,
             persist_store,
             load_store,
@@ -1659,6 +1911,9 @@ fn main() {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
                 pool.cleanup_all();
+
+                // Clean up hook server files
+                hook_server::cleanup_hook_files();
             }
         });
 }

@@ -21,6 +21,7 @@
   import ActivitySection from './ActivitySection.svelte';
   import SpaceChat from './SpaceChat.svelte';
   import { chatStore } from '../../stores/chatStore.svelte';
+  import { hookStore } from '../../stores/hookStore.svelte';
 
   let { session }: { session: Session | undefined } = $props();
   let showPipelineView = $derived(pipelineRunStore.activeRunId !== null);
@@ -72,9 +73,24 @@
     return shortPath(cwd);
   }
 
+  // Hook activity for current session
+  let hookActivity = $derived(session ? hookStore.getActivity(session.id) : undefined);
+  let hookConflicts = $derived(session ? hookStore.getConflictsForSession(session.id) : []);
+  let recentTools = $derived(
+    hookActivity?.toolUses.filter((t) => t.type === 'post').slice(-10).reverse() || [],
+  );
+
   function shellName(command: string | undefined): string {
     if (!command) return settingsStore.settings.defaultShell.split('/').pop() || 'shell';
     return command.split('/').pop()?.split(' ')[0] || command;
+  }
+
+  function toolIcon(name: string): string {
+    const icons: Record<string, string> = {
+      Write: '✎', Edit: '✎', Read: '◉', Bash: '▸',
+      Glob: '◎', Grep: '⌕', Agent: '◈', WebFetch: '↗',
+    };
+    return icons[name] || '•';
   }
 </script>
 
@@ -260,6 +276,50 @@
           </div>
         {/if}
       </section>
+
+      <!-- Live tool activity from hooks -->
+      {#if hookActivity && hookActivity.totalToolCalls > 0}
+        <section class="section">
+          <h3 class="section-title">LIVE ACTIVITY</h3>
+          <div class="field">
+            <span class="field-label">Tool calls</span>
+            <span class="field-value">{hookActivity.totalToolCalls}</span>
+          </div>
+          {#if hookActivity.filesTouched.length > 0}
+            <div class="field">
+              <span class="field-label">Files touched</span>
+              <span class="field-value">{hookActivity.filesTouched.length}</span>
+            </div>
+          {/if}
+          {#if recentTools.length > 0}
+            <div class="tool-feed">
+              {#each recentTools as tool}
+                <div class="tool-entry">
+                  <span class="tool-icon">{toolIcon(tool.toolName)}</span>
+                  <span class="tool-name">{tool.toolName}</span>
+                  {#if tool.filePath}
+                    <span class="tool-file">{tool.filePath.split('/').pop()}</span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {/if}
+
+      <!-- Conflict warnings -->
+      {#if hookConflicts.length > 0}
+        <section class="section">
+          <h3 class="section-title conflict-title">CONFLICTS</h3>
+          {#each hookConflicts as conflict}
+            <div class="conflict-entry">
+              <span class="conflict-icon">⚠</span>
+              <span class="conflict-file">{conflict.filePath.split('/').pop()}</span>
+              <span class="conflict-info">+{conflict.otherSessions.length} session{conflict.otherSessions.length > 1 ? 's' : ''}</span>
+            </div>
+          {/each}
+        </section>
+      {/if}
 
       <!-- Activity notes from agent (polled every 10s) -->
       <ActivitySection sessionId={session.id} />
@@ -557,6 +617,73 @@
   .tab-btn.active {
     color: var(--weplex-text);
     border-bottom-color: var(--weplex-accent);
+  }
+
+  .tool-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 6px;
+  }
+
+  .tool-entry {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--weplex-text-xs);
+    padding: 2px 0;
+  }
+
+  .tool-icon {
+    width: 14px;
+    text-align: center;
+    color: var(--weplex-text-muted);
+    flex-shrink: 0;
+  }
+
+  .tool-name {
+    color: var(--weplex-accent);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+
+  .tool-file {
+    color: var(--weplex-text-secondary);
+    font-family: var(--weplex-font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conflict-title {
+    color: var(--weplex-warning) !important;
+  }
+
+  .conflict-entry {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--weplex-text-xs);
+    padding: 2px 0;
+  }
+
+  .conflict-icon {
+    color: var(--weplex-warning);
+    flex-shrink: 0;
+  }
+
+  .conflict-file {
+    color: var(--weplex-text);
+    font-family: var(--weplex-font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conflict-info {
+    color: var(--weplex-text-muted);
+    font-size: 10px;
+    flex-shrink: 0;
   }
 
   .unread-badge {
