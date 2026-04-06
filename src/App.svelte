@@ -28,6 +28,7 @@
   import { HYPERSPACE_ID } from './lib/types';
   import { handleGlobalKeydown } from './lib/utils/shortcuts';
   import { checkForUpdates } from './lib/utils/updater';
+  import { initNotifications } from './lib/services/notificationService';
   import { invoke } from '@tauri-apps/api/core';
 
   onMount(() => {
@@ -37,6 +38,9 @@
 
     // Initialize auth (load tokens, fetch profile, sync) — silent on failure
     authStore.init().catch((e) => console.error('[Weplex] Auth init failed:', e));
+
+    // Initialize OS notifications (request permission, track focus, listen to hooks)
+    initNotifications().catch((e) => console.warn('[Weplex] Notifications init:', e));
 
     // Initialize MCP event listener for pipeline stage completions
     pipelineRunStore.init();

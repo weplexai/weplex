@@ -253,7 +253,7 @@
   {/if}
   <span
     class="dot"
-    class:pulse={effectiveStatus === 'active'}
+    class:pulse={effectiveStatus === 'active' || effectiveStatus === 'thinking'}
     style="background: {STATUS_COLORS[effectiveStatus]}"
   ></span>
   {#if renaming}

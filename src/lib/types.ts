@@ -1,6 +1,6 @@
 export type SessionType = 'terminal' | 'agent' | 'ssh' | 'dashboard' | 'spectator';
 export type AgentType = 'claude' | 'opencode' | 'aider' | 'gemini' | 'codex';
-export type SessionStatus = 'active' | 'waiting' | 'idle' | 'error' | 'new' | 'disconnected';
+export type SessionStatus = 'active' | 'thinking' | 'waiting' | 'idle' | 'error' | 'new' | 'disconnected';
 export type SidebarState = 'expanded' | 'collapsed' | 'overlay';
 export type OverlayType =
   | 'none'
@@ -294,6 +294,7 @@ export type HyperspaceGroupBy = 'space' | 'status' | 'project';
 
 export const STATUS_COLORS: Record<SessionStatus, string> = {
   active: 'var(--weplex-active)', // green pulsing  — executing a task
+  thinking: 'var(--weplex-accent)', // purple pulsing — agent processing, no output yet
   idle: 'var(--weplex-active)', // green solid    — done, ready for next prompt
   waiting: 'var(--weplex-warning)', // yellow         — needs user action (question/menu/permission)
   error: 'var(--weplex-error)', // red            — PTY failed

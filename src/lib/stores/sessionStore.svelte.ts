@@ -1,4 +1,4 @@
-import type { Session, SessionStatus, HyperspaceGroupBy } from '../types';
+import type { Session, SessionStatus, AgentType, HyperspaceGroupBy } from '../types';
 import { HYPERSPACE_ID } from '../types';
 import { detectAgentType, detectSessionType } from '../utils/detection';
 import { durableSave, durableRemove } from '../utils/durablePersist';
@@ -60,6 +60,19 @@ export interface SessionGroup {
   sessions: Session[];
 }
 
+/** Generate a meaningful session name from agent type and cwd. */
+function smartName(agentType: AgentType | undefined, cwd: string | undefined, id: number): string {
+  // Use last dir component from cwd if available
+  if (cwd && cwd !== '~') {
+    const dir = cwd.replace(/\/+$/, '').split('/').pop();
+    if (dir && dir !== '~') {
+      const prefix = agentType || 'session';
+      return `${prefix}: ${dir}`;
+    }
+  }
+  return agentType || `session-${id}`;
+}
+
 export const sessionStore = {
   get sessions() {
     return sessions;
@@ -99,7 +112,7 @@ export const sessionStore = {
 
     const session: Session = {
       id,
-      name: opts.name || (agentType ? agentType : `session-${id}`),
+      name: opts.name || smartName(agentType, opts.cwd, id),
       type,
       agentType,
       status: 'new',

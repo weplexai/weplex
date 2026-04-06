@@ -12,6 +12,7 @@
   import { pipelineInjectStore } from '../../stores/pipelineInjectStore.svelte';
   import { contextInjectionStore } from '../../stores/contextInjectionStore.svelte';
   import { pipelineWsService } from '../../services/pipelineWsService';
+  import { notifyWaitingForInput, notifyError } from '../../services/notificationService';
   import { terminalRegistry } from '../../stores/terminalRegistry';
 
   let { sessionId }: { sessionId: number } = $props();
@@ -61,36 +62,63 @@
   onMount(() => {
     const settings = settingsStore.settings;
 
+    const isLight = settings.theme === 'light';
+    const darkTheme = {
+      background: '#0a0a0f',
+      foreground: '#e8e8ed',
+      cursor: 'transparent',
+      cursorAccent: '#0a0a0f',
+      selectionBackground: 'rgba(139, 92, 246, 0.3)',
+      selectionForeground: '#e8e8ed',
+      black: '#1a1a25',
+      red: '#ef4444',
+      green: '#10b981',
+      yellow: '#f59e0b',
+      blue: '#3b82f6',
+      magenta: '#8b5cf6',
+      cyan: '#06b6d4',
+      white: '#e8e8ed',
+      brightBlack: '#6b6b80',
+      brightRed: '#f87171',
+      brightGreen: '#34d399',
+      brightYellow: '#fbbf24',
+      brightBlue: '#60a5fa',
+      brightMagenta: '#a78bfa',
+      brightCyan: '#22d3ee',
+      brightWhite: '#f9fafb',
+    };
+    const lightTheme = {
+      background: '#fafafa',
+      foreground: '#1a1a1f',
+      cursor: 'transparent',
+      cursorAccent: '#fafafa',
+      selectionBackground: 'rgba(124, 58, 237, 0.2)',
+      selectionForeground: '#1a1a1f',
+      black: '#1a1a1f',
+      red: '#dc2626',
+      green: '#059669',
+      yellow: '#d97706',
+      blue: '#2563eb',
+      magenta: '#7c3aed',
+      cyan: '#0891b2',
+      white: '#f5f5f5',
+      brightBlack: '#9898a8',
+      brightRed: '#ef4444',
+      brightGreen: '#10b981',
+      brightYellow: '#f59e0b',
+      brightBlue: '#3b82f6',
+      brightMagenta: '#8b5cf6',
+      brightCyan: '#06b6d4',
+      brightWhite: '#ffffff',
+    };
+
     term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
       scrollback: 5000,
       fontSize: settings.fontSize,
       fontFamily: settings.fontFamily,
-      theme: {
-        background: '#0a0a0f',
-        foreground: '#e8e8ed',
-        cursor: 'transparent',
-        cursorAccent: '#0a0a0f',
-        selectionBackground: 'rgba(139, 92, 246, 0.3)',
-        selectionForeground: '#e8e8ed',
-        black: '#1a1a25',
-        red: '#ef4444',
-        green: '#10b981',
-        yellow: '#f59e0b',
-        blue: '#3b82f6',
-        magenta: '#8b5cf6',
-        cyan: '#06b6d4',
-        white: '#e8e8ed',
-        brightBlack: '#6b6b80',
-        brightRed: '#f87171',
-        brightGreen: '#34d399',
-        brightYellow: '#fbbf24',
-        brightBlue: '#60a5fa',
-        brightMagenta: '#a78bfa',
-        brightCyan: '#22d3ee',
-        brightWhite: '#f9fafb',
-      },
+      theme: isLight ? lightTheme : darkTheme,
       allowProposedApi: true,
     });
 
@@ -124,10 +152,14 @@
     disposables.push(
       term.onData((data) => {
         if (ptyWriter) ptyWriter(data);
-        // Agent: user input is the reliable signal that work was requested
+        // Agent: user input → set "thinking" (agent will process)
+        // When PTY output arrives, status changes to "active"
         if (isAgentMode && scheduleTransition) {
           lastUserInputAt = Date.now();
-          sessionStore.updateStatus(sessionId, 'active');
+          // Enter key or multi-char paste = likely a prompt submission
+          if (data.includes('\r') || data.includes('\n') || data.length > 5) {
+            sessionStore.updateStatus(sessionId, 'thinking');
+          }
           scheduleTransition();
         }
       }),
@@ -419,6 +451,10 @@
       const agentNeedsInputRe =
         /Enter\s*to\s*select|↑.{0,3}↓|Tab\s*to\s*amend|Do you want to proceed|Esc\s*to\s*cancel|ctrl\+g.*edit|\[y\/n\]|\[Y\/n\]|\[yes\/no\]|\(y\)es\/\(n\)o|\? $/m;
 
+      // Agent error patterns — fatal errors that stop the agent
+      const agentErrorRe =
+        /Error:|FATAL|panic:|Traceback|ENOENT|EACCES|Permission denied|Command failed|Process exited with code [1-9]|API error|rate limit|exceeded your|quota exceeded/im;
+
       // For Claude: poll JSONL to detect when Claude finishes its turn (reliable).
       // For other agents: fall back to timeout.
       function scheduleStatusTransition() {
@@ -498,11 +534,16 @@
         // Decode to string only for pattern/session-ID matching.
         const text = textDecoder.decode(bytes, { stream: true });
 
-        // Terminal: any output = active. Agent: only user input sets active (see onData).
+        // Terminal: any output = active. Agent: thinking → active on first output.
         if (!isAgentSession) {
           sessionStore.updateStatus(sessionId, 'active');
           scheduleStatusTransition();
         } else {
+          // Agent output received — if was thinking, now active
+          const currentStatus = sessionStore.sessions.find((s) => s.id === sessionId)?.status;
+          if (currentStatus === 'thinking') {
+            sessionStore.updateStatus(sessionId, 'active');
+          }
           // Agent: detect when it needs user action (question / menu / permission).
           // Use a rolling buffer so patterns split across chunks are still caught.
           const stripped = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
@@ -511,6 +552,13 @@
             outputTail = ''; // consume — don't re-trigger on next chunk
             resetStatusTimers();
             sessionStore.updateStatus(sessionId, 'waiting');
+            notifyWaitingForInput(session?.name || `session-${sessionId}`);
+          }
+
+          // Detect agent errors in output
+          if (agentErrorRe.test(outputTail)) {
+            sessionStore.updateStatus(sessionId, 'error');
+            notifyError(session?.name || `session-${sessionId}`);
           }
         }
 
