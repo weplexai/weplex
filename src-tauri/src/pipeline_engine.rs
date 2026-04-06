@@ -64,6 +64,8 @@ pub enum RunStatus {
 }
 
 /// A single pipeline execution with its stages, status, and timing.
+/// A run is always bound to a single profile — all stages share the same
+/// profile environment.  This is enforced at creation time.
 #[derive(Debug, Clone, Serialize)]
 pub struct PipelineRun {
     pub id: String,
@@ -71,6 +73,8 @@ pub struct PipelineRun {
     pub pipeline_file: String,
     pub task: String,
     pub cwd: String,
+    /// Profile used for this run (all stages inherit it).
+    pub profile_name: String,
     pub status: RunStatus,
     pub stages: Vec<StageRunInfo>,
     pub started_at: Option<u64>,
@@ -169,6 +173,7 @@ impl PipelineEngine {
         pipeline_file: &str,
         task: &str,
         cwd: &str,
+        profile_name: &str,
         profile_env: HashMap<String, String>,
         app: &AppHandle,
     ) -> Result<PreparedRun, String> {
@@ -193,6 +198,7 @@ impl PipelineEngine {
             pipeline_file: pipeline_file.to_string(),
             task: task.to_string(),
             cwd: resolve_cwd(cwd),
+            profile_name: profile_name.to_string(),
             status: RunStatus::Running,
             stages,
             started_at: Some(now_ms),

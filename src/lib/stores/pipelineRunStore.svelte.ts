@@ -23,6 +23,8 @@ interface InteractiveRun {
   pipelineFile: string;
   task: string;
   cwd: string;
+  /** Profile bound to this run — all stages use the same profile. */
+  profileName: string;
   envVars: Record<string, string>;
   status: PipelineRunStatus;
   stages: InteractiveStage[];
@@ -547,8 +549,11 @@ export const pipelineRunStore = {
     pipelineFile: string,
     task: string,
     cwd: string,
+    profileName?: string,
     envVars?: Record<string, string>,
   ): Promise<string> {
+    const profile = profileName || 'Default';
+
     // Load pipeline config
     const pipelines = await invoke<PipelineConfig[]>('list_pipelines');
     const config = pipelines.find((p) => p.file_path === pipelineFile);
@@ -572,6 +577,7 @@ export const pipelineRunStore = {
       pipelineFile: pipelineFile,
       task,
       cwd: cwd.replace(/\/+$/, '') || '~',
+      profileName: profile,
       envVars: envVars || {},
       status: 'running',
       stages,

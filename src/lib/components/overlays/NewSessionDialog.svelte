@@ -216,6 +216,7 @@
         selectedPipeline.file_path,
         taskDescription.trim(),
         cwd,
+        profile?.name || 'Default',
         envVars,
       );
       uiStore.closeOverlay();

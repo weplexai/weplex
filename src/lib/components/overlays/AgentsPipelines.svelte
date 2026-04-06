@@ -352,7 +352,7 @@
         );
       } else {
         // Solo pipeline run
-        await pipelineRunStore.startRun(selectedPipeline.file_path, runPipelineTask, runPipelineCwd);
+        await pipelineRunStore.startRun(selectedPipeline.file_path, runPipelineTask, runPipelineCwd, undefined, undefined);
       }
       editMode = 'view';
       close();
