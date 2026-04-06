@@ -8,6 +8,7 @@
   import OrchestrationDashboard from './lib/components/dashboard/OrchestrationDashboard.svelte';
   import ProjectDashboard from './lib/components/dashboard/ProjectDashboard.svelte';
   import SpaceDashboard from './lib/components/dashboard/SpaceDashboard.svelte';
+  import SpectatorView from './lib/components/terminal/SpectatorView.svelte';
   import DetailPanel from './lib/components/detail/DetailPanel.svelte';
   import SpaceChat from './lib/components/detail/SpaceChat.svelte';
 
@@ -247,6 +248,13 @@
         <ProjectDashboard sessionId={session.id} />
       {:else if session.type === 'dashboard' && session.dashboardType === 'space'}
         <SpaceDashboard sessionId={session.id} />
+      {:else if session.type === 'spectator' && session.spectateSpaceId && session.spectateSessionName}
+        <SpectatorView
+          spaceId={session.spectateSpaceId}
+          sessionName={session.spectateSessionName}
+          ownerName={session.spectateOwnerName || 'Unknown'}
+          sessionId={session.id}
+        />
       {:else}
         <TerminalView sessionId={session.id} />
       {/if}

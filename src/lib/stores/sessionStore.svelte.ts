@@ -469,6 +469,36 @@ export const sessionStore = {
     return session;
   },
 
+  /** Create a spectator session to watch a remote session. */
+  createSpectatorSession(
+    spaceId: string,
+    spectateSpaceId: string,
+    sessionName: string,
+    ownerName: string,
+  ): Session {
+    const id = nextId++;
+    const now = Date.now();
+    const session: Session = {
+      id,
+      name: `Spectating: ${sessionName}`,
+      type: 'spectator',
+      status: 'active',
+      spaceId,
+      pinned: false,
+      order: now,
+      createdAt: now,
+      lastActivity: now,
+      spectateSpaceId,
+      spectateSessionName: sessionName,
+      spectateOwnerName: ownerName,
+    };
+
+    sessions.push(session);
+    activeSessionId = id;
+    persist();
+    return session;
+  },
+
   /** Get child sessions of a parent. */
   getChildren(parentId: number): Session[] {
     return sessions.filter((s) => s.parentId === parentId);

@@ -311,6 +311,68 @@ export const pipelineWsService = {
     };
   },
 
+  // ── Session Spectating ─────────────────────────────────────────────────
+
+  /** Offer a session for spectating (owner). */
+  spectateOffer(spaceId: string, sessionName: string): void {
+    socket?.emit('spectate-offer', { spaceId, sessionName });
+  },
+
+  /** Stream PTY output chunk to spectators (owner). */
+  sendPtyStream(spaceId: string, sessionName: string, chunk: string): void {
+    socket?.emit('pty-stream', { spaceId, sessionName, chunk });
+  },
+
+  /** Stop offering a session for spectating (owner). */
+  spectateStop(spaceId: string, sessionName: string): void {
+    socket?.emit('spectate-stop', { spaceId, sessionName });
+  },
+
+  /** Join as spectator to watch a session. */
+  spectateJoin(spaceId: string, sessionName: string): void {
+    socket?.emit('spectate-join', { spaceId, sessionName });
+  },
+
+  /** Leave spectating a session. */
+  spectateLeave(spaceId: string, sessionName: string): void {
+    socket?.emit('spectate-leave', { spaceId, sessionName });
+  },
+
+  /** Subscribe to PTY stream chunks (spectator). */
+  onPtyStream(cb: (data: { spaceId: string; sessionName: string; chunk: string }) => void): () => void {
+    if (!socket) return () => {};
+    socket.on('pty-stream', cb);
+    return () => { socket?.off('pty-stream', cb); };
+  },
+
+  /** Subscribe to scrollback on spectate join. */
+  onSpectateScrollback(cb: (data: { spaceId: string; sessionName: string; lines: string[] }) => void): () => void {
+    if (!socket) return () => {};
+    socket.on('spectate-scrollback', cb);
+    return () => { socket?.off('spectate-scrollback', cb); };
+  },
+
+  /** Subscribe to spectator count updates (owner). */
+  onSpectateCount(cb: (data: { spaceId: string; sessionName: string; count: number }) => void): () => void {
+    if (!socket) return () => {};
+    socket.on('spectate-count', cb);
+    return () => { socket?.off('spectate-count', cb); };
+  },
+
+  /** Subscribe to spectate session list (available sessions). */
+  onSpectateList(cb: (data: { spaceId: string; sessions: { sessionName: string; ownerName: string }[] }) => void): () => void {
+    if (!socket) return () => {};
+    socket.on('spectate-list', cb);
+    return () => { socket?.off('spectate-list', cb); };
+  },
+
+  /** Subscribe to spectate ended (session owner stopped sharing). */
+  onSpectateEnded(cb: (data: { spaceId: string; sessionName: string }) => void): () => void {
+    if (!socket) return () => {};
+    socket.on('spectate-ended', cb);
+    return () => { socket?.off('spectate-ended', cb); };
+  },
+
   /** Check current connection state. */
   isConnected(): boolean {
     return socket?.connected ?? false;

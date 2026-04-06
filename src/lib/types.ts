@@ -1,4 +1,4 @@
-export type SessionType = 'terminal' | 'agent' | 'ssh' | 'dashboard';
+export type SessionType = 'terminal' | 'agent' | 'ssh' | 'dashboard' | 'spectator';
 export type AgentType = 'claude' | 'opencode' | 'aider' | 'gemini' | 'codex';
 export type SessionStatus = 'active' | 'waiting' | 'idle' | 'error' | 'new' | 'disconnected';
 export type SidebarState = 'expanded' | 'collapsed' | 'overlay';
@@ -81,6 +81,16 @@ export interface Session {
   dashboardType?: 'orchestration' | 'project' | 'space';
   /** Session ID this dashboard is attached to (orchestration dashboard). */
   orchestratorId?: number;
+
+  // Spectating
+  /** Number of spectators watching this session (owner side). */
+  spectatorCount?: number;
+  /** Server space ID for spectating relay. */
+  spectateSpaceId?: string;
+  /** Session name being spectated. */
+  spectateSessionName?: string;
+  /** Owner's display name. */
+  spectateOwnerName?: string;
 }
 
 export interface Note {
@@ -233,6 +243,7 @@ export const SESSION_TYPE_ICONS: Record<SessionType, string> = {
   ssh: '↗',
   terminal: '>_',
   dashboard: '▦',
+  spectator: '👁',
 };
 
 // ── Pipeline Run types ──────────────────────────────────────────────────────

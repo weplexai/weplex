@@ -1,7 +1,20 @@
 <script lang="ts">
   import { presenceStore } from '../../stores/presenceStore.svelte';
+  import { sessionStore } from '../../stores/sessionStore';
+  import { spaceStore } from '../../stores/spaceStore';
   import { Users } from 'lucide-svelte';
   import type { MemberPresence, SessionRecord } from '../../types';
+
+  function spectateSession(member: MemberPresence, sessionLabel: string) {
+    const activeSpace = spaceStore.activeSpace;
+    if (!activeSpace?.serverId) return;
+    sessionStore.createSpectatorSession(
+      activeSpace.id,
+      activeSpace.serverId,
+      sessionLabel,
+      member.displayName,
+    );
+  }
 
   interface Props {
     serverId: string;
@@ -107,7 +120,11 @@
             <span class="member-status">{isActive ? 'active' : 'idle'}</span>
           </div>
           {#each member.sessions.filter((s) => s.status !== 'closed') as session (session.id)}
-            <div class="member-session">
+            <button
+              class="member-session spectatable"
+              onclick={() => spectateSession(member, session.label || session.agentType || 'session')}
+              title="Spectate this session"
+            >
               <span class="session-agent">{session.agentType || 'terminal'}</span>
               {#if session.cwd}
                 <span class="session-cwd">{session.cwd.split('/').pop()}</span>
@@ -115,7 +132,8 @@
               {#if session.gitBranch}
                 <span class="session-branch">{session.gitBranch}</span>
               {/if}
-            </div>
+              <span class="spectate-icon">👁</span>
+            </button>
             {#if session.summary}
               <div class="session-summary">"{session.summary}"</div>
             {/if}
@@ -252,6 +270,30 @@
     padding: 1px 0 1px 12px;
     font-size: var(--weplex-text-xs);
     color: var(--weplex-text-secondary);
+  }
+
+  .member-session.spectatable {
+    background: none;
+    border: none;
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+    border-radius: var(--weplex-radius-sm);
+  }
+
+  .member-session.spectatable:hover {
+    background: var(--weplex-surface-hover);
+  }
+
+  .spectate-icon {
+    margin-left: auto;
+    opacity: 0;
+    font-size: 10px;
+    transition: opacity 0.15s;
+  }
+
+  .member-session.spectatable:hover .spectate-icon {
+    opacity: 0.7;
   }
 
   .session-agent {

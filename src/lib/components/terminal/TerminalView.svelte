@@ -11,6 +11,7 @@
   import { splitStore } from '../../stores/splitStore';
   import { pipelineInjectStore } from '../../stores/pipelineInjectStore.svelte';
   import { contextInjectionStore } from '../../stores/contextInjectionStore.svelte';
+  import { pipelineWsService } from '../../services/pipelineWsService';
   import { terminalRegistry } from '../../stores/terminalRegistry';
 
   let { sessionId }: { sessionId: number } = $props();
@@ -25,6 +26,13 @@
   let unlisten: (() => void) | null = null;
   let unlistenDrop: (() => void) | null = null;
   let unlistenHook: (() => void) | null = null;
+
+  // Spectating state (owner side)
+  let isSharedSession = false;
+  let spectateActive = false;
+  let spectateSpaceId = '';
+  let spectateName = '';
+  const textDecoder4relay = new TextDecoder();
   let disposables: { dispose(): void }[] = [];
   let pendingTimers: ReturnType<typeof setTimeout>[] = [];
   let destroyed = false;
@@ -174,6 +182,10 @@
     unlisten?.();
     unlistenDrop?.();
     unlistenHook?.();
+    if (spectateActive) {
+      pipelineWsService.spectateStop(spectateSpaceId, spectateName);
+      spectateActive = false;
+    }
     term?.dispose();
     terminalRegistry.unregister(sessionId);
   });
@@ -340,6 +352,25 @@
       // Terminal sessions start as 'active' (shell is booting up)
       sessionStore.updateStatus(sessionId, isAgentSession ? 'idle' : 'active');
 
+      // Start spectating offer for shared/team sessions
+      if (session && space && (space.shared || space.type === 'team') && space.serverId) {
+        isSharedSession = true;
+        spectateSpaceId = space.serverId;
+        spectateName = session.name;
+        spectateActive = true;
+        pipelineWsService.spectateOffer(spectateSpaceId, spectateName);
+
+        // Listen for spectator count updates — store on session for UI display
+        const unsubCount = pipelineWsService.onSpectateCount((data) => {
+          if (data.spaceId === spectateSpaceId && data.sessionName === spectateName) {
+            sessionStore.update(sessionId, { spectatorCount: data.count });
+          }
+        });
+        // Add cleanup
+        const prevDestroy = unlistenHook;
+        unlistenHook = () => { prevDestroy?.(); unsubCount(); };
+      }
+
       // Fetch git info for the session's working directory
       if (session?.cwd) {
         fetchGitInfo(sessionId, session.cwd);
@@ -458,6 +489,12 @@
           term.options.theme = { ...term.options.theme, cursor: '#8b5cf6' };
         }
         term.write(bytes);
+
+        // Stream to relay for spectators (shared/team sessions only)
+        if (isSharedSession && spectateActive) {
+          const text4relay = textDecoder4relay.decode(bytes, { stream: true });
+          pipelineWsService.sendPtyStream(spectateSpaceId, spectateName, text4relay);
+        }
 
         // Decode to string only for pattern/session-ID matching.
         const text = textDecoder.decode(bytes, { stream: true });

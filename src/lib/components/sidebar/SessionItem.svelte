@@ -280,6 +280,10 @@
     <span class="name">{session.name}</span>
   {/if}
 
+  {#if session.spectatorCount && session.spectatorCount > 0}
+    <span class="spectator-badge">👁 {session.spectatorCount}</span>
+  {/if}
+
   {#if badgeLetter && badgeColor}
     <SpaceBadge letter={badgeLetter} color={badgeColor} />
   {/if}
@@ -489,6 +493,13 @@
     justify-content: center;
     color: var(--weplex-text-muted);
     flex-shrink: 0;
+  }
+
+  .spectator-badge {
+    font-size: 9px;
+    color: var(--weplex-text-muted);
+    flex-shrink: 0;
+    margin-left: 2px;
   }
 
   .collapse-toggle {
