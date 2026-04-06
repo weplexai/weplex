@@ -547,17 +547,23 @@ fn execute_parallel(
 }
 
 /// Load skill markdown contents by name from ~/.weplex/skills/ and ~/.claude/skills/.
+/// Per-skill limit: 512KB. Total limit: 2MB.
 fn load_skill_contents(skill_names: &[String]) -> Vec<String> {
     if skill_names.is_empty() {
         return Vec::new();
     }
 
+    const MAX_SKILL_SIZE: usize = 512 * 1024; // 512KB per skill
+    const MAX_TOTAL_SIZE: usize = 2 * 1024 * 1024; // 2MB total
+
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let mut contents = Vec::new();
+    let mut total_size = 0usize;
 
     for name in skill_names {
         // Validate name
         if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            eprintln!("[weplex] skipping skill '{}': invalid name", name);
             continue;
         }
 
@@ -567,11 +573,28 @@ fn load_skill_contents(skill_names: &[String]) -> Vec<String> {
             format!("{}/.claude/skills/{}/SKILL.md", home, name),
         ];
 
+        let mut found = false;
         for path in &paths {
             if let Ok(content) = std::fs::read_to_string(path) {
+                if content.len() > MAX_SKILL_SIZE {
+                    eprintln!("[weplex] skipping skill '{}': exceeds 512KB limit ({}KB)", name, content.len() / 1024);
+                    found = true;
+                    break;
+                }
+                if total_size + content.len() > MAX_TOTAL_SIZE {
+                    eprintln!("[weplex] skipping skill '{}': total skills exceed 2MB limit", name);
+                    found = true;
+                    break;
+                }
+                total_size += content.len();
                 contents.push(content);
+                found = true;
                 break;
             }
+        }
+
+        if !found {
+            eprintln!("[weplex] skill '{}' not found in ~/.weplex/skills/ or ~/.claude/skills/", name);
         }
     }
 

@@ -1267,12 +1267,12 @@ fn read_skills_from_dir(dir_path: &str) -> Vec<SkillInfo> {
 #[tauri::command]
 fn list_skills() -> Vec<SkillInfo> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let mut skills = read_skills_from_dir(&format!("{}/.claude/skills", home));
-    // Add Weplex skills (override Claude skills with same name)
-    let weplex_skills = read_skills_from_dir(&format!("{}/.weplex/skills", home));
-    for ws in weplex_skills {
-        if !skills.iter().any(|s| s.name == ws.name) {
-            skills.push(ws);
+    // Weplex skills first (higher priority), then Claude skills
+    let mut skills = read_skills_from_dir(&format!("{}/.weplex/skills", home));
+    let claude_skills = read_skills_from_dir(&format!("{}/.claude/skills", home));
+    for cs in claude_skills {
+        if !skills.iter().any(|s| s.name == cs.name) {
+            skills.push(cs);
         }
     }
     skills.sort_by(|a, b| a.name.cmp(&b.name));
