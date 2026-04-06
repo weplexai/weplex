@@ -390,6 +390,9 @@ fn orchestrate(
             update_stage_state(&run, &stage_name, StageState::Running);
             emit_stage_changed(&app, &run_id, &stage_name, StageState::Running);
 
+            // Load skill contents for this stage
+            let skill_contents = load_skill_contents(&stage_def.skills);
+
             match execute_stage(
                 &run_id,
                 &stage_name,
@@ -399,6 +402,7 @@ fn orchestrate(
                 &context,
                 &cwd,
                 &agents,
+                &skill_contents,
                 &profile_env,
                 &cancel_flag,
                 &app,
@@ -483,6 +487,7 @@ fn execute_parallel(
             let role = sub.role.clone().unwrap_or_default();
             let optional = sub.optional == Some(true);
             let context = gather_artifacts(&sub.receives, artifacts);
+            let skill_contents = load_skill_contents(&sub.skills);
             let results = Arc::clone(&results);
 
             update_stage_state(run, &stage_name, StageState::Running);
@@ -498,6 +503,7 @@ fn execute_parallel(
                     &context,
                     cwd,
                     agents,
+                    &skill_contents,
                     profile_env,
                     cancel_flag,
                     app,
@@ -540,6 +546,38 @@ fn execute_parallel(
     }
 }
 
+/// Load skill markdown contents by name from ~/.weplex/skills/ and ~/.claude/skills/.
+fn load_skill_contents(skill_names: &[String]) -> Vec<String> {
+    if skill_names.is_empty() {
+        return Vec::new();
+    }
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let mut contents = Vec::new();
+
+    for name in skill_names {
+        // Validate name
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            continue;
+        }
+
+        // Check Weplex skills first, then Claude skills
+        let paths = [
+            format!("{}/.weplex/skills/{}/SKILL.md", home, name),
+            format!("{}/.claude/skills/{}/SKILL.md", home, name),
+        ];
+
+        for path in &paths {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                contents.push(content);
+                break;
+            }
+        }
+    }
+
+    contents
+}
+
 // ── Single stage execution ──────────────────────────────────────────────────
 
 fn execute_stage(
@@ -551,6 +589,7 @@ fn execute_stage(
     artifacts_context: &str,
     cwd: &str,
     agents: &HashMap<String, weplex_agents::WeplexAgent>,
+    stage_skills: &[String],
     profile_env: &HashMap<String, String>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
     app: &AppHandle,
@@ -567,7 +606,7 @@ fn execute_stage(
     })?;
 
     let (binary, args, prompt) =
-        weplex_agents::resolve_command(agent, role, task, artifacts_context);
+        weplex_agents::resolve_command(agent, role, task, artifacts_context, stage_skills);
 
     // Reject untrusted binaries
     if !weplex_agents::is_trusted_binary(&binary) {

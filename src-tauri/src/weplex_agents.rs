@@ -146,6 +146,7 @@ pub fn resolve_command(
     role: &str,
     task: &str,
     artifacts: &str,
+    skill_contents: &[String],
 ) -> (String, Vec<String>, String) {
     // Build the full prompt
     let mut prompt = String::new();
@@ -153,6 +154,15 @@ pub fn resolve_command(
     if !agent.prompt.is_empty() {
         prompt.push_str(&agent.prompt);
         prompt.push_str("\n\n");
+    }
+
+    // Inject skill knowledge into prompt
+    if !skill_contents.is_empty() {
+        prompt.push_str("## Skills & Knowledge\n\n");
+        for content in skill_contents {
+            prompt.push_str(content);
+            prompt.push_str("\n\n---\n\n");
+        }
     }
 
     if !artifacts.is_empty() {

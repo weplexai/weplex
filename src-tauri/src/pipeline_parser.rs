@@ -26,6 +26,9 @@ pub struct PipelineStage {
     /// Owner (team member email) for collaborative pipeline delegation
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// Skills to inject into this stage's agent context
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
 }
 
 /// Visual layout positions (optional, for canvas editor).

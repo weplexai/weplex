@@ -68,13 +68,22 @@
       if (!res.ok) throw new Error('Install failed');
       const data = await res.json();
 
-      // Save YAML to local agents/pipelines directory
-      const dir = data.type === 'agent' ? 'agents' : 'pipelines';
-      await invoke('save_marketplace_package', {
-        dir,
-        name: data.name,
-        content: data.content,
-      });
+      // Save to local directory
+      const dir = data.type === 'skill' ? 'skills' : data.type === 'agent' ? 'agents' : 'pipelines';
+
+      if (data.type === 'skill') {
+        // Skills use subdirectory structure: skills/<name>/SKILL.md
+        await invoke('save_marketplace_skill', {
+          name: data.name,
+          content: data.content,
+        });
+      } else {
+        await invoke('save_marketplace_package', {
+          dir,
+          name: data.name,
+          content: data.content,
+        });
+      }
 
       installSuccess = pkg.id;
       setTimeout(() => { installSuccess = null; }, 3000);
@@ -126,6 +135,7 @@
       <option value="">All types</option>
       <option value="agent">Agents</option>
       <option value="pipeline">Pipelines</option>
+      <option value="skill">Skills</option>
     </select>
     <select class="mp-filter" bind:value={category} onchange={() => search()}>
       {#each categories as cat}

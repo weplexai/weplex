@@ -1223,18 +1223,14 @@ struct SkillInfo {
     description: String,
 }
 
-/// List available skills from ~/.claude/skills/
-#[tauri::command]
-fn list_skills() -> Vec<SkillInfo> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let skills_dir = format!("{}/.claude/skills", home);
-
-    let dir = match std::fs::read_dir(&skills_dir) {
+/// Read skills from a directory (each subdirectory with SKILL.md is a skill).
+fn read_skills_from_dir(dir_path: &str) -> Vec<SkillInfo> {
+    let dir = match std::fs::read_dir(dir_path) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
 
-    let mut skills: Vec<SkillInfo> = Vec::new();
+    let mut skills = Vec::new();
     for entry in dir.flatten() {
         if !entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
             continue;
@@ -1243,12 +1239,10 @@ fn list_skills() -> Vec<SkillInfo> {
             Ok(n) => n,
             Err(_) => continue,
         };
-        // Try to read SKILL.md description
-        let skill_md = format!("{}/{}/SKILL.md", skills_dir, name);
+        let skill_md = format!("{}/{}/SKILL.md", dir_path, name);
         let description = std::fs::read_to_string(&skill_md)
             .ok()
             .and_then(|c| {
-                // Try to extract description from frontmatter
                 if let Some(rest) = c.strip_prefix("---")
                     && let Some(end) = rest.find("\n---")
                 {
@@ -1266,9 +1260,46 @@ fn list_skills() -> Vec<SkillInfo> {
             .unwrap_or_default();
         skills.push(SkillInfo { name, description });
     }
+    skills
+}
 
+/// List available skills from both ~/.claude/skills/ and ~/.weplex/skills/.
+#[tauri::command]
+fn list_skills() -> Vec<SkillInfo> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let mut skills = read_skills_from_dir(&format!("{}/.claude/skills", home));
+    // Add Weplex skills (override Claude skills with same name)
+    let weplex_skills = read_skills_from_dir(&format!("{}/.weplex/skills", home));
+    for ws in weplex_skills {
+        if !skills.iter().any(|s| s.name == ws.name) {
+            skills.push(ws);
+        }
+    }
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills
+}
+
+/// Read the full content of a skill's SKILL.md for injection into agent prompts.
+#[tauri::command]
+fn read_skill_content(name: String) -> Result<String, String> {
+    // Validate name to prevent path traversal
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err("Invalid skill name".to_string());
+    }
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+
+    // Check Weplex skills first, then Claude skills
+    for dir in &[
+        format!("{}/.weplex/skills/{}/SKILL.md", home, name),
+        format!("{}/.claude/skills/{}/SKILL.md", home, name),
+    ] {
+        if let Ok(content) = std::fs::read_to_string(dir) {
+            return Ok(content);
+        }
+    }
+
+    Err(format!("Skill '{}' not found", name))
 }
 
 /// Validate store key: only alphanumeric, underscore, hyphen allowed.
@@ -1496,8 +1527,8 @@ fn get_stage_artifact(
 #[tauri::command]
 fn save_marketplace_package(dir: String, name: String, content: String) -> Result<(), String> {
     // Whitelist dir to prevent path traversal
-    if dir != "agents" && dir != "pipelines" {
-        return Err("Invalid directory: must be 'agents' or 'pipelines'".to_string());
+    if dir != "agents" && dir != "pipelines" && dir != "skills" {
+        return Err("Invalid directory: must be 'agents', 'pipelines', or 'skills'".to_string());
     }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
@@ -1518,6 +1549,27 @@ fn save_marketplace_package(dir: String, name: String, content: String) -> Resul
         .map_err(|e| format!("Failed to write package: {}", e))?;
 
     eprintln!("[weplex] marketplace package saved: {}", path);
+    Ok(())
+}
+
+/// Save a marketplace skill to ~/.weplex/skills/<name>/SKILL.md.
+#[tauri::command]
+fn save_marketplace_skill(name: String, content: String) -> Result<(), String> {
+    let safe_name: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let skill_dir = format!("{}/.weplex/skills/{}", home, safe_name);
+    std::fs::create_dir_all(&skill_dir)
+        .map_err(|e| format!("Failed to create skill directory: {}", e))?;
+
+    let path = format!("{}/SKILL.md", skill_dir);
+    std::fs::write(&path, &content)
+        .map_err(|e| format!("Failed to write skill: {}", e))?;
+
+    eprintln!("[weplex] marketplace skill saved: {}", path);
     Ok(())
 }
 
@@ -2120,6 +2172,7 @@ fn main() {
             inject_claude_md,
             remove_claude_md_injection,
             list_skills,
+            read_skill_content,
             persist_store,
             load_store,
             list_weplex_agents,
@@ -2133,6 +2186,7 @@ fn main() {
             oauth_server::start_oauth_server,
             open_url,
             save_marketplace_package,
+            save_marketplace_skill,
             keychain::keychain_save,
             keychain::keychain_load,
             keychain::keychain_delete,
