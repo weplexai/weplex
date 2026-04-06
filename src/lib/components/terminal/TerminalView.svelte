@@ -24,6 +24,7 @@
   let ptyWriter: ((data: string) => void) | null = null;
   let unlisten: (() => void) | null = null;
   let unlistenDrop: (() => void) | null = null;
+  let unlistenHook: (() => void) | null = null;
   let disposables: { dispose(): void }[] = [];
   let pendingTimers: ReturnType<typeof setTimeout>[] = [];
   let destroyed = false;
@@ -172,6 +173,7 @@
     resizeObserver?.disconnect();
     unlisten?.();
     unlistenDrop?.();
+    unlistenHook?.();
     term?.dispose();
     terminalRegistry.unregister(sessionId);
   });
@@ -246,6 +248,26 @@
     pendingTimers.push(t);
   }
 
+  /** Fetch git branch and status for a session's cwd, update session store. */
+  async function fetchGitInfo(sid: number, cwd: string) {
+    if (destroyed) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const [branch, gitFiles] = await Promise.all([
+        invoke<string | null>('get_git_branch', { cwd }),
+        invoke<{ path: string; status: string }[]>('get_git_status', { cwd }),
+      ]);
+      if (destroyed) return;
+      // Always update — clear stale data when git info is empty
+      sessionStore.update(sid, {
+        branch: branch ?? undefined,
+        gitFiles: gitFiles && gitFiles.length > 0 ? gitFiles : undefined,
+      });
+    } catch {
+      // Git not available or not a repo — silently skip
+    }
+  }
+
   async function connectPty() {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -317,6 +339,28 @@
       // Agent sessions start as 'idle' (green, ready for first prompt)
       // Terminal sessions start as 'active' (shell is booting up)
       sessionStore.updateStatus(sessionId, isAgentSession ? 'idle' : 'active');
+
+      // Fetch git info for the session's working directory
+      if (session?.cwd) {
+        fetchGitInfo(sessionId, session.cwd);
+
+        // Clean up previous hook listener on reconnection
+        unlistenHook?.();
+        unlistenHook = null;
+
+        // Listen for hook events to refresh git status after file modifications
+        const sessionCwd = session.cwd;
+        const { listen: listenEvent } = await import('@tauri-apps/api/event');
+        unlistenHook = (await listenEvent<{ event_type: string; session_id: number; tool_name?: string }>('hook-event', (evt) => {
+          if (evt.payload.session_id !== sessionId) return;
+          if (evt.payload.event_type !== 'post_tool_use') return;
+          const tool = evt.payload.tool_name;
+          if (!tool || !['Write', 'Edit', 'MultiEdit', 'Bash'].includes(tool)) return;
+          // Debounce: refresh git status 2s after last file-modifying tool use
+          const t = setTimeout(() => fetchGitInfo(sessionId, sessionCwd), 2000);
+          pendingTimers.push(t);
+        })) as unknown as () => void;
+      }
 
       const { listen } = await import('@tauri-apps/api/event');
       const claudeResumeRe =
