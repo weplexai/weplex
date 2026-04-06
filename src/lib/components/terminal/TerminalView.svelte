@@ -366,9 +366,8 @@
             sessionStore.update(sessionId, { spectatorCount: data.count });
           }
         });
-        // Add cleanup
-        const prevDestroy = unlistenHook;
-        unlistenHook = () => { prevDestroy?.(); unsubCount(); };
+        // Add cleanup via disposables (survives git hook setup that reassigns unlistenHook)
+        disposables.push({ dispose: unsubCount });
       }
 
       // Fetch git info for the session's working directory
