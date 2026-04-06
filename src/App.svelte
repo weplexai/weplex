@@ -6,6 +6,8 @@
   import SplitContainer from './lib/components/terminal/SplitContainer.svelte';
   import TerminalView from './lib/components/terminal/TerminalView.svelte';
   import OrchestrationDashboard from './lib/components/dashboard/OrchestrationDashboard.svelte';
+  import ProjectDashboard from './lib/components/dashboard/ProjectDashboard.svelte';
+  import SpaceDashboard from './lib/components/dashboard/SpaceDashboard.svelte';
   import DetailPanel from './lib/components/detail/DetailPanel.svelte';
   import SpaceChat from './lib/components/detail/SpaceChat.svelte';
 
@@ -241,6 +243,10 @@
     {#each sessionStore.sessions as session (session.id)}
       {#if session.type === 'dashboard' && session.dashboardType === 'orchestration'}
         <OrchestrationDashboard sessionId={session.id} orchestratorId={session.orchestratorId} />
+      {:else if session.type === 'dashboard' && session.dashboardType === 'project'}
+        <ProjectDashboard sessionId={session.id} />
+      {:else if session.type === 'dashboard' && session.dashboardType === 'space'}
+        <SpaceDashboard sessionId={session.id} />
       {:else}
         <TerminalView sessionId={session.id} />
       {/if}

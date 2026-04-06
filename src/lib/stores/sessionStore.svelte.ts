@@ -420,6 +420,55 @@ export const sessionStore = {
     return session;
   },
 
+  /** Create a project dashboard for a specific cwd. */
+  createProjectDashboard(cwd: string, spaceId: string): Session {
+    const id = nextId++;
+    const now = Date.now();
+    const short = cwd.split('/').pop() || cwd;
+    const session: Session = {
+      id,
+      name: `Project: ${short}`,
+      type: 'dashboard',
+      status: 'active',
+      spaceId,
+      pinned: false,
+      order: now,
+      createdAt: now,
+      lastActivity: now,
+      cwd,
+      dashboardType: 'project',
+    };
+
+    sessions.push(session);
+    activeSessionId = id;
+    persist();
+    return session;
+  },
+
+  /** Create a space dashboard for the current space. */
+  createSpaceDashboard(spaceId: string): Session {
+    const id = nextId++;
+    const now = Date.now();
+    const space = spaceStore.spaces.find((s) => s.id === spaceId);
+    const session: Session = {
+      id,
+      name: `Dashboard: ${space?.name || 'Space'}`,
+      type: 'dashboard',
+      status: 'active',
+      spaceId,
+      pinned: false,
+      order: now,
+      createdAt: now,
+      lastActivity: now,
+      dashboardType: 'space',
+    };
+
+    sessions.push(session);
+    activeSessionId = id;
+    persist();
+    return session;
+  },
+
   /** Get child sessions of a parent. */
   getChildren(parentId: number): Session[] {
     return sessions.filter((s) => s.parentId === parentId);
