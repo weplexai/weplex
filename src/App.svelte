@@ -5,6 +5,7 @@
 
   import SplitContainer from './lib/components/terminal/SplitContainer.svelte';
   import TerminalView from './lib/components/terminal/TerminalView.svelte';
+  import OrchestrationDashboard from './lib/components/dashboard/OrchestrationDashboard.svelte';
   import DetailPanel from './lib/components/detail/DetailPanel.svelte';
   import SpaceChat from './lib/components/detail/SpaceChat.svelte';
 
@@ -238,7 +239,11 @@
        (AgentsPipelines replaces the {:else} block, which would destroy all terminals) -->
   <div id="terminal-host">
     {#each sessionStore.sessions as session (session.id)}
-      <TerminalView sessionId={session.id} />
+      {#if session.type === 'dashboard' && session.dashboardType === 'orchestration'}
+        <OrchestrationDashboard sessionId={session.id} orchestratorId={session.orchestratorId} />
+      {:else}
+        <TerminalView sessionId={session.id} />
+      {/if}
     {/each}
   </div>
 </div>

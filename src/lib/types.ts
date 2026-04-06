@@ -1,4 +1,4 @@
-export type SessionType = 'terminal' | 'agent' | 'ssh';
+export type SessionType = 'terminal' | 'agent' | 'ssh' | 'dashboard';
 export type AgentType = 'claude' | 'opencode' | 'aider' | 'gemini' | 'codex';
 export type SessionStatus = 'active' | 'waiting' | 'idle' | 'error' | 'new' | 'disconnected';
 export type SidebarState = 'expanded' | 'collapsed' | 'overlay';
@@ -76,6 +76,11 @@ export interface Session {
   // Session hierarchy
   parentId?: number;
   childCollapsed?: boolean;
+
+  // Dashboard
+  dashboardType?: 'orchestration' | 'project' | 'space';
+  /** Session ID this dashboard is attached to (orchestration dashboard). */
+  orchestratorId?: number;
 }
 
 export interface Note {
@@ -227,6 +232,7 @@ export const SESSION_TYPE_ICONS: Record<SessionType, string> = {
   agent: '⚡',
   ssh: '↗',
   terminal: '>_',
+  dashboard: '▦',
 };
 
 // ── Pipeline Run types ──────────────────────────────────────────────────────

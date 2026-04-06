@@ -392,6 +392,34 @@ export const sessionStore = {
     return { active, waiting, idle, total: sessions.length, totalCost };
   },
 
+  /** Create an orchestration dashboard session for a parent session. */
+  createDashboard(orchestratorId: number): Session | null {
+    const orchestrator = sessions.find((s) => s.id === orchestratorId);
+    if (!orchestrator) return null;
+
+    const id = nextId++;
+    const now = Date.now();
+    const session: Session = {
+      id,
+      name: `Dashboard: ${orchestrator.name}`,
+      type: 'dashboard',
+      status: 'active',
+      spaceId: orchestrator.spaceId,
+      pinned: false,
+      order: now,
+      createdAt: now,
+      lastActivity: now,
+      cwd: orchestrator.cwd,
+      dashboardType: 'orchestration',
+      orchestratorId,
+    };
+
+    sessions.push(session);
+    activeSessionId = id;
+    persist();
+    return session;
+  },
+
   /** Get child sessions of a parent. */
   getChildren(parentId: number): Session[] {
     return sessions.filter((s) => s.parentId === parentId);
