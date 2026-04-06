@@ -1665,11 +1665,63 @@ exit 2
         preamble
     );
 
+    // ── SubagentStart hook ──
+    let subagent_start_script = format!(
+        r#"{}
+PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "subagent_start" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
+  '{{
+    event_type: $evt,
+    session_id: ($sid | tonumber),
+    cwd: $cwd,
+    agent_type: (.agent_type // null),
+    agent_id: (.agent_id // null)
+  }}' 2>/dev/null)
+
+if [ -z "$PAYLOAD" ]; then exit 0; fi
+
+curl -s -X POST "http://127.0.0.1:$PORT/hook" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "$PAYLOAD" \
+  --max-time 2 > /dev/null 2>&1
+
+exit 0
+"#,
+        preamble
+    );
+
+    // ── SubagentStop hook ──
+    let subagent_stop_script = format!(
+        r#"{}
+PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "subagent_stop" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
+  '{{
+    event_type: $evt,
+    session_id: ($sid | tonumber),
+    cwd: $cwd,
+    agent_type: (.agent_type // null),
+    agent_id: (.agent_id // null)
+  }}' 2>/dev/null)
+
+if [ -z "$PAYLOAD" ]; then exit 0; fi
+
+curl -s -X POST "http://127.0.0.1:$PORT/hook" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "$PAYLOAD" \
+  --max-time 2 > /dev/null 2>&1
+
+exit 0
+"#,
+        preamble
+    );
+
     // Write all scripts
     let scripts = [
         ("pre-tool-use.sh", pre_tool_script),
         ("post-tool-use.sh", post_tool_script),
         ("stop-hook.sh", stop_script),
+        ("subagent-start.sh", subagent_start_script),
+        ("subagent-stop.sh", subagent_stop_script),
     ];
 
     for (name, content) in &scripts {
@@ -1713,6 +1765,8 @@ fn register_hooks_in_claude() -> Result<(), String> {
         ("PreToolUse", format!("{}/pre-tool-use.sh", hooks_dir)),
         ("PostToolUse", format!("{}/post-tool-use.sh", hooks_dir)),
         ("Stop", format!("{}/stop-hook.sh", hooks_dir)),
+        ("SubagentStart", format!("{}/subagent-start.sh", hooks_dir)),
+        ("SubagentStop", format!("{}/subagent-stop.sh", hooks_dir)),
     ];
 
     for (hook_type, command) in &hook_types {

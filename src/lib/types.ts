@@ -465,7 +465,7 @@ export interface SessionRecord {
 
 // ── Hook Events ──────────────────────────────────────────────────────────────
 
-export type HookEventType = 'pre_tool_use' | 'post_tool_use' | 'stop';
+export type HookEventType = 'pre_tool_use' | 'post_tool_use' | 'stop' | 'subagent_start' | 'subagent_stop';
 
 export interface HookEventPayload {
   event_type: HookEventType;
@@ -475,6 +475,8 @@ export interface HookEventPayload {
   cwd?: string;
   tool_input?: string;
   tool_output?: string;
+  agent_type?: string;
+  agent_id?: string;
   timestamp: number;
 }
 
@@ -493,4 +495,14 @@ export interface ToolUseEntry {
   filePath?: string;
   timestamp: number;
   type: 'pre' | 'post';
+}
+
+/** A sub-agent spawned by Claude during a session. */
+export interface SubAgent {
+  agentId: string;
+  agentType: string;
+  sessionId: number;
+  startedAt: number;
+  finishedAt?: number;
+  status: 'running' | 'completed' | 'unknown';
 }

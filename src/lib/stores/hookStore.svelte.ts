@@ -8,6 +8,7 @@ import type {
   HookEventPayload,
   SessionActivity,
   ToolUseEntry,
+  SubAgent,
 } from '../types';
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -24,10 +25,17 @@ let conflicts = $state<Map<string, number[]>>(new Map());
 /** Last hook event (for detail panel) */
 let lastEvent = $state<HookEventPayload | null>(null);
 
+/** Sub-agents per session: session_id → SubAgent[] */
+let subAgents = $state<Map<number, SubAgent[]>>(new Map());
+
+/** Sessions that have received native SubagentStart/Stop events (skip PreToolUse fallback) */
+const nativeSubagentSessions = new Set<number>();
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_TOOL_USES = 50;
 const MAX_FILES_TOUCHED = 200;
+const MAX_SUB_AGENTS = 100;
 const CONFLICT_WINDOW_MS = 60_000; // 1 minute window for conflict detection
 const CLEANUP_INTERVAL_MS = 5 * 60_000; // 5 minutes
 
@@ -86,9 +94,109 @@ function processEvent(event: HookEventPayload) {
   }
 
   if (event.event_type === 'stop') {
-    // Session stopped — could update session status via sessionStore
-    // For now just record it
+    // Parent session stopped — mark all running sub-agents as completed
+    const sessionSubs = subAgents.get(event.session_id);
+    if (sessionSubs) {
+      let changed = false;
+      for (const sub of sessionSubs) {
+        if (sub.status === 'running') {
+          sub.status = 'completed';
+          sub.finishedAt = event.timestamp;
+          changed = true;
+        }
+      }
+      if (changed) subAgents = new Map(subAgents);
+    }
     activities = new Map(activities);
+  }
+
+  // ── Sub-agent tracking ──
+  // Uses SubagentStart/SubagentStop hooks as primary source.
+  // Falls back to PreToolUse(Agent) only if no native subagent events seen.
+
+  if (event.event_type === 'subagent_start' && event.agent_id) {
+    const sessionSubs = subAgents.get(event.session_id) || [];
+    // Mark session as having native subagent tracking
+    nativeSubagentSessions.add(event.session_id);
+    // Check for existing entry (stop arrived before start — race condition fix)
+    const existing = sessionSubs.find((s) => s.agentId === event.agent_id);
+    if (existing) {
+      // Stop arrived first — just update the type if needed
+      if (existing.agentType === 'unknown' && event.agent_type) {
+        existing.agentType = event.agent_type;
+      }
+    } else {
+      sessionSubs.push({
+        agentId: event.agent_id,
+        agentType: event.agent_type || 'unknown',
+        sessionId: event.session_id,
+        startedAt: event.timestamp,
+        status: 'running',
+      });
+    }
+    capSubAgents(sessionSubs);
+    subAgents.set(event.session_id, sessionSubs);
+    subAgents = new Map(subAgents);
+  }
+
+  if (event.event_type === 'subagent_stop' && event.agent_id) {
+    nativeSubagentSessions.add(event.session_id);
+    const sessionSubs = subAgents.get(event.session_id) || [];
+    const agent = sessionSubs.find((s) => s.agentId === event.agent_id);
+    if (agent) {
+      agent.finishedAt = event.timestamp;
+      agent.status = 'completed';
+    } else {
+      // Stop arrived before start — create completed entry
+      sessionSubs.push({
+        agentId: event.agent_id,
+        agentType: event.agent_type || 'unknown',
+        sessionId: event.session_id,
+        startedAt: event.timestamp,
+        finishedAt: event.timestamp,
+        status: 'completed',
+      });
+      capSubAgents(sessionSubs);
+    }
+    subAgents.set(event.session_id, sessionSubs);
+    subAgents = new Map(subAgents);
+  }
+
+  // Fallback: detect sub-agents from PreToolUse with tool_name="Agent"
+  // Only if this session hasn't received native SubagentStart/Stop events
+  if (event.tool_name === 'Agent' && event.event_type === 'pre_tool_use'
+      && !nativeSubagentSessions.has(event.session_id)) {
+    let agentType = 'Agent';
+    if (event.tool_input) {
+      try {
+        const input = JSON.parse(event.tool_input);
+        if (input.subagent_type) agentType = input.subagent_type;
+        else if (input.description) agentType = `Agent: ${input.description.slice(0, 30)}`;
+      } catch { /* ignore parse errors */ }
+    }
+    const sessionSubs = subAgents.get(event.session_id) || [];
+    sessionSubs.push({
+      agentId: `tool-${event.timestamp}`,
+      agentType,
+      sessionId: event.session_id,
+      startedAt: event.timestamp,
+      status: 'running',
+    });
+    capSubAgents(sessionSubs);
+    subAgents.set(event.session_id, sessionSubs);
+    subAgents = new Map(subAgents);
+  }
+}
+
+/** Cap sub-agents list: remove oldest completed entries when over limit. */
+function capSubAgents(subs: SubAgent[]) {
+  while (subs.length > MAX_SUB_AGENTS) {
+    const oldestCompleted = subs.findIndex((s) => s.status !== 'running');
+    if (oldestCompleted >= 0) {
+      subs.splice(oldestCompleted, 1);
+    } else {
+      break; // all running — don't evict
+    }
   }
 }
 
@@ -205,9 +313,22 @@ export const hookStore = {
     return result;
   },
 
+  /** Get sub-agents for a session. */
+  getSubAgents(sessionId: number): SubAgent[] {
+    return subAgents.get(sessionId) || [];
+  },
+
+  /** Get currently running sub-agents for a session. */
+  getRunningSubAgents(sessionId: number): SubAgent[] {
+    return (subAgents.get(sessionId) || []).filter((s) => s.status === 'running');
+  },
+
   /** Clear activity for a closed session. */
   clearSession(sessionId: number) {
     activities.delete(sessionId);
+    subAgents.delete(sessionId);
+    nativeSubagentSessions.delete(sessionId);
     activities = new Map(activities);
+    subAgents = new Map(subAgents);
   },
 };

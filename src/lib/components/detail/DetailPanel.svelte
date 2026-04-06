@@ -79,6 +79,9 @@
   let recentTools = $derived(
     hookActivity?.toolUses.filter((t) => t.type === 'post').slice(-10).reverse() || [],
   );
+  let sessionSubAgents = $derived(session ? hookStore.getSubAgents(session.id) : []);
+  let runningSubAgents = $derived(sessionSubAgents.filter((s) => s.status === 'running'));
+  let completedSubAgents = $derived(sessionSubAgents.filter((s) => s.status === 'completed'));
 
   function shellName(command: string | undefined): string {
     if (!command) return settingsStore.settings.defaultShell.split('/').pop() || 'shell';
@@ -276,6 +279,24 @@
           </div>
         {/if}
       </section>
+
+      <!-- Sub-agents spawned by this session -->
+      {#if sessionSubAgents.length > 0}
+        <section class="section">
+          <h3 class="section-title">SUB-AGENTS {#if runningSubAgents.length > 0}<span class="running-badge">{runningSubAgents.length} running</span>{/if}</h3>
+          <div class="subagent-list">
+            {#each sessionSubAgents as sub}
+              <div class="subagent-entry" class:running={sub.status === 'running'}>
+                <span class="subagent-dot" class:active={sub.status === 'running'}></span>
+                <span class="subagent-type">{sub.agentType}</span>
+                {#if sub.status === 'completed' && sub.finishedAt && sub.startedAt}
+                  <span class="subagent-duration">{Math.round((sub.finishedAt - sub.startedAt) / 1000)}s</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/if}
 
       <!-- Live tool activity from hooks -->
       {#if hookActivity && hookActivity.totalToolCalls > 0}
@@ -617,6 +638,53 @@
   .tab-btn.active {
     color: var(--weplex-text);
     border-bottom-color: var(--weplex-accent);
+  }
+
+  .subagent-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .subagent-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--weplex-text-xs);
+    padding: 3px 0;
+  }
+
+  .subagent-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--weplex-text-muted);
+    flex-shrink: 0;
+  }
+
+  .subagent-dot.active {
+    background: var(--weplex-active);
+    animation: dot-pulse 1.4s ease-in-out infinite;
+  }
+
+  .subagent-type {
+    color: var(--weplex-accent);
+    font-weight: 500;
+  }
+
+  .subagent-duration {
+    color: var(--weplex-text-muted);
+    margin-left: auto;
+    font-family: var(--weplex-font-mono);
+  }
+
+  .running-badge {
+    font-size: 9px;
+    color: var(--weplex-active);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    margin-left: 4px;
   }
 
   .tool-feed {
