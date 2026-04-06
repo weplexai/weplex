@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use tauri::{Manager, State};
 
 struct AppState {
-    pty_manager: Mutex<PtyManager>,
+    pty_manager: std::sync::Arc<Mutex<PtyManager>>,
     pipeline_engine: std::sync::Arc<Mutex<PipelineEngine>>,
     ipc_pool: Mutex<ipc_server::IpcSocketPool>,
 }
@@ -2026,7 +2026,7 @@ fn set_traffic_lights_visible(app: tauri::AppHandle, visible: bool) {
 fn main() {
     tauri::Builder::default()
         .manage(AppState {
-            pty_manager: Mutex::new(PtyManager::new()),
+            pty_manager: std::sync::Arc::new(Mutex::new(PtyManager::new())),
             pipeline_engine: std::sync::Arc::new(Mutex::new(PipelineEngine::new())),
             ipc_pool: Mutex::new(ipc_server::IpcSocketPool::new()),
         })
@@ -2037,6 +2037,18 @@ fn main() {
             // Ensure summaries directory exists and clean up old files
             session_summary::ensure_summaries_dir();
             session_summary::cleanup_old_summaries();
+
+            // Start global MCP socket for cross-session tools (MCP v2)
+            {
+                let state: tauri::State<AppState> = app.state();
+                let pty_arc = std::sync::Arc::clone(&state.pty_manager);
+                let app_handle = app.handle().clone();
+                let mut pool = state.ipc_pool.lock().unwrap_or_else(|p| p.into_inner());
+                match pool.start_global_socket(pty_arc, app_handle) {
+                    Ok(path) => eprintln!("[weplex] global MCP socket started: {}", path),
+                    Err(e) => eprintln!("[weplex] failed to start global MCP socket: {}", e),
+                }
+            }
 
             // Start hook event listener (must be before hook registration)
             let hook_handle = app.handle().clone();

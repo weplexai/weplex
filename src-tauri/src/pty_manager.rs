@@ -6,11 +6,41 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
+/// Ring buffer for recent PTY output (per session).
+const OUTPUT_BUFFER_LINES: usize = 500;
+
+struct OutputBuffer {
+    lines: std::collections::VecDeque<String>,
+}
+
+impl OutputBuffer {
+    fn new() -> Self {
+        Self {
+            lines: std::collections::VecDeque::with_capacity(OUTPUT_BUFFER_LINES),
+        }
+    }
+
+    fn push(&mut self, text: &str) {
+        for line in text.lines() {
+            if self.lines.len() >= OUTPUT_BUFFER_LINES {
+                self.lines.pop_front();
+            }
+            self.lines.push_back(line.to_string());
+        }
+    }
+
+    fn last_n(&self, n: usize) -> Vec<String> {
+        let start = if self.lines.len() > n { self.lines.len() - n } else { 0 };
+        self.lines.iter().skip(start).cloned().collect()
+    }
+}
+
 /// A single PTY session with its writer, master handle, and liveness flag.
 pub struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     alive: Arc<AtomicBool>,
+    output: Arc<std::sync::Mutex<OutputBuffer>>,
 }
 
 /// Manages all PTY sessions, keyed by session ID.
@@ -107,6 +137,8 @@ impl PtyManager {
         let event_name = format!("pty-output-{}", session_id);
         let alive = Arc::new(AtomicBool::new(true));
         let alive_clone = alive.clone();
+        let output_buf = Arc::new(std::sync::Mutex::new(OutputBuffer::new()));
+        let output_buf_clone = Arc::clone(&output_buf);
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -121,6 +153,15 @@ impl PtyManager {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Store in ring buffer for deck_read_output
+                        // Use lossy conversion to handle binary data gracefully
+                        {
+                            let text = String::from_utf8_lossy(&buf[..n]);
+                            if let Ok(mut ob) = output_buf_clone.lock() {
+                                ob.push(&text);
+                            }
+                        }
+
                         // Send raw bytes as base64. The JS side decodes this into
                         // a Uint8Array and calls term.write(bytes), which lets
                         // xterm.js handle UTF-8 decoding with its own stateful
@@ -147,6 +188,7 @@ impl PtyManager {
                 writer,
                 master: pair.master,
                 alive,
+                output: output_buf,
             },
         );
 
@@ -180,6 +222,26 @@ impl PtyManager {
             pixel_height: 0,
         })?;
         Ok(())
+    }
+
+    /// Read last N lines of output from a session's ring buffer.
+    pub fn read_output(&self, session_id: u32, last_n: usize) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let session = self.sessions.get(&session_id).ok_or("Session not found")?;
+        let ob = session.output.lock().map_err(|_| "Lock poisoned")?;
+        Ok(ob.last_n(last_n.min(OUTPUT_BUFFER_LINES)))
+    }
+
+    /// List all active session IDs.
+    pub fn list_session_ids(&self) -> Vec<u32> {
+        self.sessions.keys().copied().collect()
+    }
+
+    /// Check if a session exists and is alive.
+    pub fn is_alive(&self, session_id: u32) -> bool {
+        self.sessions
+            .get(&session_id)
+            .map(|s| s.alive.load(Ordering::Relaxed))
+            .unwrap_or(false)
     }
 
     pub fn kill(&mut self, session_id: u32) -> Result<(), Box<dyn std::error::Error>> {

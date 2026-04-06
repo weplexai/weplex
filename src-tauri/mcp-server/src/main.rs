@@ -13,27 +13,26 @@ fn main() {
     let socket_path = std::env::var("WEPLEX_MCP_SOCKET").unwrap_or_default();
     let session_id = std::env::var("WEPLEX_SESSION_ID").unwrap_or_default();
 
+    // Global socket path for MCP v2 cross-session tools
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let global_socket_path = format!("{}/.weplex/ipc/global.sock", home);
+    let global_exists = std::path::Path::new(&global_socket_path).exists();
+
     eprintln!(
-        "[weplex-mcp] starting (run_id={}, stage={}, socket={}, session={})",
+        "[weplex-mcp] starting (run_id={}, stage={}, socket={}, session={}, global={})",
         if run_id.is_empty() { "<none>" } else { &run_id },
-        if stage_name.is_empty() {
-            "<none>"
-        } else {
-            &stage_name
-        },
-        if socket_path.is_empty() {
-            "<none>"
-        } else {
-            &socket_path
-        },
-        if session_id.is_empty() {
-            "<none>"
-        } else {
-            &session_id
-        },
+        if stage_name.is_empty() { "<none>" } else { &stage_name },
+        if socket_path.is_empty() { "<none>" } else { &socket_path },
+        if session_id.is_empty() { "<none>" } else { &session_id },
+        if global_exists { &global_socket_path } else { "<not found>" },
     );
 
     let mut ipc = IpcClient::new(socket_path.clone());
+    let mut global_ipc = if global_exists {
+        Some(IpcClient::new(global_socket_path.clone()))
+    } else {
+        None
+    };
 
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -67,7 +66,16 @@ fn main() {
             }
         };
 
-        let response = handle_request(&request, &run_id, &stage_name, &socket_path, &session_id, &mut ipc);
+        let response = handle_request(
+            &request,
+            &run_id,
+            &stage_name,
+            &socket_path,
+            &session_id,
+            &mut ipc,
+            if global_exists { &global_socket_path } else { "" },
+            &mut global_ipc,
+        );
 
         // Notifications (no id) don't get a response
         if let Some(resp) = response {
@@ -85,6 +93,8 @@ fn handle_request(
     socket_path: &str,
     session_id: &str,
     ipc: &mut IpcClient,
+    global_socket_path: &str,
+    global_ipc: &mut Option<IpcClient>,
 ) -> Option<JsonRpcResponse> {
     match request.method.as_str() {
         "initialize" => Some(JsonRpcResponse::success(
@@ -96,7 +106,7 @@ fn handle_request(
         "notifications/initialized" => None,
 
         "tools/list" => {
-            let tools = tools::list_tools(socket_path);
+            let tools = tools::list_tools(socket_path, global_socket_path);
             Some(JsonRpcResponse::success(request.id.clone(), tools))
         }
 
@@ -111,7 +121,9 @@ fn handle_request(
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
 
-            match tools::call_tool(tool_name, &arguments, run_id, stage_name, session_id, ipc) {
+            match tools::call_tool(
+                tool_name, &arguments, run_id, stage_name, session_id, ipc, global_ipc,
+            ) {
                 Ok(result) => Some(JsonRpcResponse::success(request.id.clone(), result)),
                 Err(msg) => {
                     // Return error as tool result content (not JSON-RPC error)
