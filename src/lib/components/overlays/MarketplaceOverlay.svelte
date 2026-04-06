@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { uiStore } from '../../stores/uiStore';
   import { authStore } from '../../stores/authStore.svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { Modal } from '../ui';
+  import { getBaseUrl } from '../../services/apiClient';
 
   interface MarketplacePackage {
     id: string;
@@ -84,7 +86,13 @@
   }
 
   function getApiBase(): string {
-    return 'https://api.weplex.ai';
+    return getBaseUrl();
+  }
+
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  function debouncedSearch() {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => search(), 300);
   }
 
   function formatRating(rating: number): string {
@@ -101,9 +109,7 @@
   }
 
   // Initial search on mount
-  $effect(() => {
-    search();
-  });
+  onMount(() => { search(); });
 </script>
 
 <Modal onclose={close} title="Marketplace" width="720px">
@@ -114,7 +120,7 @@
       type="text"
       placeholder="Search agents & pipelines..."
       bind:value={query}
-      oninput={() => search()}
+      oninput={() => debouncedSearch()}
     />
     <select class="mp-filter" bind:value={type} onchange={() => search()}>
       <option value="">All types</option>

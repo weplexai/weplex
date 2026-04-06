@@ -1492,11 +1492,14 @@ fn get_stage_artifact(
     Ok(engine.get_artifact(&run_id, &stage_name))
 }
 
-/// Open a URL in the system default browser.
-/// Only allows https:// and http://localhost URLs to prevent command injection.
-#[tauri::command]
 /// Save a marketplace package (agent/pipeline YAML) to local filesystem.
+#[tauri::command]
 fn save_marketplace_package(dir: String, name: String, content: String) -> Result<(), String> {
+    // Whitelist dir to prevent path traversal
+    if dir != "agents" && dir != "pipelines" {
+        return Err("Invalid directory: must be 'agents' or 'pipelines'".to_string());
+    }
+
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let target_dir = format!("{}/.weplex/{}", home, dir);
     std::fs::create_dir_all(&target_dir)
@@ -1508,7 +1511,7 @@ fn save_marketplace_package(dir: String, name: String, content: String) -> Resul
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
         .collect();
 
-    let ext = if dir == "agents" { "yaml" } else { "yaml" };
+    let ext = "yaml";
     let path = format!("{}/{}.{}", target_dir, safe_name, ext);
 
     std::fs::write(&path, &content)
