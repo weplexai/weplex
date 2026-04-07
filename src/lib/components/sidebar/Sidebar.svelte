@@ -77,6 +77,7 @@
   import PipelineGroup from './PipelineGroup.svelte';
   import CollabPipelineList from './CollabPipelineList.svelte';
   import TeamPresence from './TeamPresence.svelte';
+  import PluginTray from './PluginTray.svelte';
   import { presenceStore } from '../../stores/presenceStore.svelte';
   import { splitStore } from '../../stores/splitStore';
   import { findNode } from '../../utils/splitTree';
@@ -742,6 +743,8 @@
     {/if}
 
     <SpaceSwitcher />
+
+    <PluginTray />
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div

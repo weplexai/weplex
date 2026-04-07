@@ -4,6 +4,8 @@
 
 mod hook_server;
 mod ipc_server;
+mod plugin_host;
+mod plugins;
 mod keychain;
 mod oauth_server;
 mod pipeline_engine;
@@ -1552,6 +1554,37 @@ fn save_marketplace_package(dir: String, name: String, content: String) -> Resul
     Ok(())
 }
 
+// ── Plugin Management ──────────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_installed_plugins() -> Vec<plugin_host::PluginInfo> {
+    plugin_host::list_plugins()
+}
+
+#[tauri::command]
+fn activate_plugin(plugin_id: String) -> Result<(), String> {
+    plugin_host::activate_plugin(&plugin_id)
+}
+
+#[tauri::command]
+fn deactivate_plugin(plugin_id: String) -> Result<(), String> {
+    plugin_host::deactivate_plugin(&plugin_id)
+}
+
+// ── Browser Plugin Commands ────────────────────────────────────────────────
+
+#[tauri::command]
+fn browser_detect() -> Vec<plugins::browser::BrowserInfo> {
+    plugins::browser::detect_browsers()
+}
+
+#[tauri::command]
+fn browser_launch(browser: String, url: String) -> Result<serde_json::Value, String> {
+    let port = plugins::browser::next_cdp_port();
+    let pid = plugins::browser::launch_browser(&browser, port, &url)?;
+    Ok(serde_json::json!({ "pid": pid, "port": port }))
+}
+
 /// Save a marketplace skill to ~/.weplex/skills/<name>/SKILL.md.
 #[tauri::command]
 fn save_marketplace_skill(name: String, content: String) -> Result<(), String> {
@@ -2187,6 +2220,11 @@ fn main() {
             open_url,
             save_marketplace_package,
             save_marketplace_skill,
+            list_installed_plugins,
+            activate_plugin,
+            deactivate_plugin,
+            browser_detect,
+            browser_launch,
             keychain::keychain_save,
             keychain::keychain_load,
             keychain::keychain_delete,

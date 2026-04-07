@@ -10,6 +10,7 @@
   import SpaceDashboard from './lib/components/dashboard/SpaceDashboard.svelte';
   import SpectatorView from './lib/components/terminal/SpectatorView.svelte';
   import MarketplaceOverlay from './lib/components/overlays/MarketplaceOverlay.svelte';
+  import PluginView from './lib/components/terminal/PluginView.svelte';
   import DetailPanel from './lib/components/detail/DetailPanel.svelte';
   import SpaceChat from './lib/components/detail/SpaceChat.svelte';
 
@@ -30,6 +31,8 @@
   import { handleGlobalKeydown } from './lib/utils/shortcuts';
   import { checkForUpdates } from './lib/utils/updater';
   import { initNotifications } from './lib/services/notificationService';
+  import { pluginStore } from './lib/stores/pluginStore.svelte';
+  import { loadActivePlugins } from './lib/services/pluginLoader';
   import { invoke } from '@tauri-apps/api/core';
 
   onMount(() => {
@@ -42,6 +45,9 @@
 
     // Initialize OS notifications (request permission, track focus, listen to hooks)
     initNotifications().catch((e) => console.warn('[Weplex] Notifications init:', e));
+
+    // Load installed plugins and activate
+    pluginStore.refresh().then(() => loadActivePlugins());
 
     // Initialize MCP event listener for pipeline stage completions
     pipelineRunStore.init();
@@ -253,6 +259,8 @@
         <ProjectDashboard sessionId={session.id} />
       {:else if session.type === 'dashboard' && session.dashboardType === 'space'}
         <SpaceDashboard sessionId={session.id} />
+      {:else if session.type === 'plugin' && session.pluginId}
+        <PluginView sessionId={session.id} pluginId={session.pluginId} />
       {:else if session.type === 'spectator' && session.spectateSpaceId && session.spectateSessionName}
         <SpectatorView
           spaceId={session.spectateSpaceId}

@@ -1,4 +1,4 @@
-export type SessionType = 'terminal' | 'agent' | 'ssh' | 'dashboard' | 'spectator';
+export type SessionType = 'terminal' | 'agent' | 'ssh' | 'dashboard' | 'spectator' | 'plugin';
 export type AgentType = 'claude' | 'opencode' | 'aider' | 'gemini' | 'codex';
 export type SessionStatus = 'active' | 'thinking' | 'waiting' | 'idle' | 'error' | 'new' | 'disconnected';
 export type SidebarState = 'expanded' | 'collapsed' | 'overlay';
@@ -92,6 +92,10 @@ export interface Session {
   spectateSessionName?: string;
   /** Owner's display name. */
   spectateOwnerName?: string;
+
+  // Plugin
+  /** Plugin ID for plugin-type sessions. */
+  pluginId?: string;
 }
 
 export interface Note {
@@ -245,6 +249,7 @@ export const SESSION_TYPE_ICONS: Record<SessionType, string> = {
   terminal: '>_',
   dashboard: '▦',
   spectator: '👁',
+  plugin: '🧩',
 };
 
 // ── Pipeline Run types ──────────────────────────────────────────────────────
