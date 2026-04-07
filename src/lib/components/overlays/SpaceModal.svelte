@@ -50,6 +50,11 @@
   let color = $state(SPACE_COLORS[0]);
   let bgColor = $state<string | null>(null);
   let grain = $state(0);
+  let bgMode = $state<'dark' | 'light'>('dark');
+
+  // Base color for mixing depends on mode
+  let mixBase = $derived(bgMode === 'light' ? '#e8e8ee' : '#12121a');
+  let mixBaseVar = $derived(bgMode === 'light' ? 'var(--weplex-bg)' : 'var(--weplex-sidebar-bg)');
 
   // HSB picker state — derived from bgColor
   let pickerHue = $state(0);
@@ -226,6 +231,7 @@
           bgColor = space.bgColor || null;
           syncPickerFromBgColor(bgColor);
           grain = space.grain ?? 0;
+          bgMode = space.bgMode ?? 'dark';
           profileId = space.profileId || 'default';
           directory = space.directory || '';
           spaceType = space.type ?? 'personal';
@@ -238,6 +244,7 @@
         color = SPACE_COLORS[spaceStore.spaces.length % SPACE_COLORS.length];
         bgColor = null;
         grain = 0;
+        bgMode = 'dark';
         profileId = 'default';
         directory = '';
         spaceType = 'personal';
@@ -264,6 +271,7 @@
         color,
         bgColor: bgColor || undefined,
         grain: grain > 0 ? grain : undefined,
+        bgMode: bgMode !== 'dark' ? bgMode : undefined,
         profileId: profileId === 'default' ? undefined : profileId,
         directory: trimmedDir,
         type: spaceType,
@@ -293,6 +301,7 @@
       // Apply grain/gradient/sharing fields
       const extraPatch: Record<string, unknown> = {};
       if (grain > 0) extraPatch.grain = grain;
+      if (bgMode !== 'dark') extraPatch.bgMode = bgMode;
       if (shared && selectedTeamId) {
         extraPatch.shared = shared;
         extraPatch.teamId = selectedTeamId;
@@ -386,7 +395,7 @@
       <div
         class="space-preview"
         class:has-color={!!bgColor}
-        style="--picker-hue: {pureHueHex}; --preview-grain: {grain}"
+        style="--picker-hue: {pureHueHex}; --preview-grain: {grain}; --mix-base: {mixBaseVar}"
         onpointerdown={onPickerPointerDown}
         onpointermove={onPickerPointerMove}
         onpointerup={onPickerPointerUp}
@@ -424,7 +433,7 @@
       </div>
     </div>
 
-    <!-- Hue -->
+    <!-- Controls row: none + mode toggle + hue -->
     <div class="slider-row">
       <button
         class="picker-none-btn"
@@ -436,6 +445,23 @@
           <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1" opacity="0.5" />
           <line x1="3" y1="13" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
         </svg>
+      </button>
+      <!-- Dark / Light toggle -->
+      <button
+        class="mode-toggle"
+        onclick={() => { bgMode = bgMode === 'dark' ? 'light' : 'dark'; }}
+        title={bgMode === 'dark' ? 'Dark mode' : 'Light mode'}
+      >
+        {#if bgMode === 'dark'}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M8 1a7 7 0 1 0 0 14A5 5 0 0 1 8 1z" fill="currentColor" />
+          </svg>
+        {:else}
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="4" fill="currentColor" />
+            <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+          </svg>
+        {/if}
       </button>
       <input
         type="range"
@@ -627,7 +653,7 @@
   }
 
   .space-preview.has-color {
-    background: var(--weplex-sidebar-bg);
+    background: var(--mix-base);
     cursor: crosshair;
   }
 
@@ -635,8 +661,8 @@
     position: absolute;
     inset: 0;
     background: linear-gradient(to right,
-      color-mix(in srgb, #fff 35%, var(--weplex-sidebar-bg)),
-      color-mix(in srgb, var(--picker-hue) 35%, var(--weplex-sidebar-bg))
+      color-mix(in srgb, #fff 35%, var(--mix-base)),
+      color-mix(in srgb, var(--picker-hue) 35%, var(--mix-base))
     );
   }
 
@@ -671,12 +697,12 @@
   .preview-grain {
     position: absolute;
     inset: 0;
-    opacity: var(--preview-grain);
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+    opacity: calc(var(--preview-grain) * 1.5);
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     background-repeat: repeat;
-    background-size: 128px 128px;
+    background-size: 200px 200px;
     pointer-events: none;
-    mix-blend-mode: overlay;
+    mix-blend-mode: soft-light;
   }
 
   /* ── Layout ── */
@@ -774,6 +800,27 @@
 
   .picker-none-btn.active {
     border-color: var(--weplex-accent);
+  }
+
+  .mode-toggle {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid var(--weplex-border);
+    background: var(--weplex-bg);
+    color: var(--weplex-text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all var(--weplex-duration-fast) var(--weplex-easing);
+  }
+
+  .mode-toggle:hover {
+    border-color: var(--weplex-text-muted);
+    color: var(--weplex-text);
   }
 
   .hue-slider {

@@ -493,7 +493,7 @@
     class="sidebar"
     class:resizing={isResizing}
     style="width: {uiStore.sidebarWidth}px; min-width: {uiStore.sidebarWidth}px{activeBgColor
-      ? `; background: color-mix(in srgb, ${activeBgColor} 35%, var(--weplex-sidebar-bg))`
+      ? '; background: transparent'
       : ''}"
   >
     <div class="traffic-light-area" data-tauri-drag-region>

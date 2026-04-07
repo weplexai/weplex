@@ -73,6 +73,8 @@
   let activeSession = $derived(sessionStore.activeSession);
   let spaceBgColor = $derived(spaceStore.activeSpace.bgColor || null);
   let spaceGrain = $derived(spaceStore.activeSpace.grain ?? 0);
+  let spaceBgMode = $derived(spaceStore.activeSpace.bgMode ?? 'dark');
+  let spaceMixBase = $derived(spaceBgMode === 'light' ? 'var(--weplex-bg)' : 'var(--weplex-sidebar-bg)');
   let activeSpaceId = $derived(spaceStore.activeSpaceId);
   let chatServerId = $derived(spaceStore.activeSpace?.serverId ?? null);
   // Ensure layout exists (mutation — must be in $effect, not $derived)
@@ -118,11 +120,11 @@
 <div
   class="app"
   style={spaceBgColor
-    ? `background: color-mix(in srgb, ${spaceBgColor} 35%, var(--weplex-sidebar-bg))`
+    ? `background: color-mix(in srgb, ${spaceBgColor} 35%, ${spaceMixBase})`
     : ''}
 >
   {#if spaceGrain > 0}
-    <div class="app-grain" style="opacity: {spaceGrain}"></div>
+    <div class="app-grain" style="opacity: {Math.min(spaceGrain * 1.5, 1)}"></div>
   {/if}
   {#if uiStore.activeOverlay === 'agents'}
     <AgentsPipelines />
@@ -313,10 +315,10 @@
     inset: 0;
     z-index: 0;
     pointer-events: none;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     background-repeat: repeat;
-    background-size: 128px 128px;
-    mix-blend-mode: overlay;
+    background-size: 200px 200px;
+    mix-blend-mode: soft-light;
     transition: opacity 0.3s ease;
   }
 
