@@ -23,9 +23,6 @@ pub struct PluginManifest {
     /// Relative path to compiled JS entry point
     #[serde(default = "default_entry")]
     pub entry: String,
-    /// Optional Rust plugin binary (dylib)
-    #[serde(default)]
-    pub rust_plugin: Option<String>,
     /// Required permissions
     #[serde(default)]
     pub permissions: Vec<String>,
@@ -154,7 +151,9 @@ fn load_plugin_state() -> HashMap<String, bool> {
 /// Save activation state to disk.
 fn save_plugin_state(state: &HashMap<String, bool>) -> Result<(), String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let path = format!("{}/.weplex/plugin-state.json", home);
+    let dir = format!("{}/.weplex", home);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = format!("{}/plugin-state.json", dir);
     let content = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }

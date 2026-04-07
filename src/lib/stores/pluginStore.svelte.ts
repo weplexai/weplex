@@ -78,20 +78,26 @@ export const pluginStore = {
     }
   },
 
-  /** Deactivate a plugin. */
+  /** Deactivate a plugin — calls onDeactivate lifecycle hook. */
   async deactivate(pluginId: string): Promise<void> {
     try {
+      // Call onDeactivate lifecycle hook before deactivating
+      const module = loadedPlugins.get(pluginId);
+      if (module?.onDeactivate) {
+        try { await module.onDeactivate(); } catch (e) {
+          console.error(`[Weplex] Plugin ${pluginId} onDeactivate error:`, e);
+        }
+      }
+
       await invoke('deactivate_plugin', { pluginId });
       const idx = plugins.findIndex((p) => p.manifest.id === pluginId);
       if (idx !== -1) {
         plugins[idx] = { ...plugins[idx], active: false };
         plugins = [...plugins];
       }
-      // Close panel if this plugin's panel was open
       if (activePanelId === pluginId) {
         activePanelId = null;
       }
-      // Remove from loaded plugins
       loadedPlugins.delete(pluginId);
       loadedPlugins = new Map(loadedPlugins);
     } catch (e) {

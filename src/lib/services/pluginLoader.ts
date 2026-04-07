@@ -1,6 +1,11 @@
 /**
  * Plugin Loader — dynamically loads plugin JS bundles and manages lifecycle.
  *
+ * SECURITY NOTE (alpha): Plugins run unsandboxed in the same JS context as
+ * Weplex core. They have full access to the Tauri API (window.__TAURI__),
+ * localStorage, and all IPC commands. This is a known limitation.
+ * Post-alpha: plugins should run in iframe sandbox with postMessage API.
+ *
  * Plugins are pre-compiled JS modules in ~/.weplex/plugins/<id>/dist/index.js.
  * They export a DeckPlugin interface that registers session types, tray panels,
  * and pane headers.
@@ -80,10 +85,8 @@ export async function unloadPlugin(pluginId: string): Promise<void> {
   }
 }
 
-/** Load all active plugins on startup. */
+/** Load all active plugins on startup (parallel). */
 export async function loadActivePlugins(): Promise<void> {
   const activePlugins = pluginStore.activePlugins;
-  for (const plugin of activePlugins) {
-    await loadPlugin(plugin);
-  }
+  await Promise.allSettled(activePlugins.map((p) => loadPlugin(p)));
 }
