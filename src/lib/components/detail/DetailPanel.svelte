@@ -443,7 +443,7 @@
   .detail-panel {
     width: var(--weplex-detail-width);
     min-width: var(--weplex-detail-width);
-    margin: 6px 6px 6px 3px;
+    margin: 9px 9px 9px 3px;
     border-radius: 10px;
     box-shadow:
       0 0 0 1px rgba(0, 0, 0, 0.4),

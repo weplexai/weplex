@@ -6,16 +6,143 @@
   import { teamStore } from '../../stores/teamStore.svelte';
   import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
-  import { SPACE_COLORS, SPACE_BG_COLORS } from '../../types';
+  import { SPACE_COLORS } from '../../types';
   import type { SpaceType } from '../../types';
   import { Button, Modal, Input } from '../ui';
   import { Eye, Users } from 'lucide-svelte';
+
+  // ── HSB ↔ Hex conversion ──
+  function hexToHsb(hex: string): [number, number, number] {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+      if (max === r) h = ((g - b) / d + 6) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+    }
+    const s = max === 0 ? 0 : d / max;
+    return [h, s, max];
+  }
+
+  function hsbToHex(h: number, s: number, b: number): string {
+    const c = b * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = b - c;
+    let r = 0, g = 0, bl = 0;
+    if (h < 60) { r = c; g = x; }
+    else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; bl = x; }
+    else if (h < 240) { g = x; bl = c; }
+    else if (h < 300) { r = x; bl = c; }
+    else { r = c; bl = x; }
+    const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(bl)}`;
+  }
 
   // If editing, spaceStore sets this before opening modal
   let editingId = $state<string | null>(null);
   let name = $state('');
   let color = $state(SPACE_COLORS[0]);
   let bgColor = $state<string | null>(null);
+  let grain = $state(0);
+
+  // HSB picker state — derived from bgColor
+  let pickerHue = $state(0);
+  let pickerSat = $state(0.8);
+  let pickerBri = $state(0.7);
+  let pickerDragging = $state(false);
+
+  function syncPickerFromBgColor(hex: string | null, pick = false) {
+    if (!hex) return;
+    const [h, s, b] = hexToHsb(hex);
+    pickerHue = h;
+    pickerSat = s;
+    pickerBri = b;
+    if (pick) autoPickColor();
+  }
+
+  function syncBgColorFromPicker() {
+    bgColor = hsbToHex(pickerHue, pickerSat, pickerBri);
+    autoPickColor();
+  }
+
+  // Auto-pick best accent color for contrast against bgColor mixed with sidebar bg
+  function relativeLuminance(hex: string): number {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    const toLinear = (c: number) => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+  }
+
+  function contrastRatio(hex1: string, hex2: string): number {
+    const l1 = relativeLuminance(hex1);
+    const l2 = relativeLuminance(hex2);
+    const lighter = Math.max(l1, l2);
+    const darker = Math.min(l1, l2);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  function autoPickColor() {
+    if (!bgColor) return;
+    const [bgHue] = hexToHsb(bgColor);
+    // Pick SPACE_COLOR closest in hue to bgColor (monochromatic harmony)
+    let bestColor = SPACE_COLORS[0];
+    let bestDist = 999;
+    for (const c of SPACE_COLORS) {
+      const [cHue] = hexToHsb(c);
+      const dist = Math.min(Math.abs(cHue - bgHue), 360 - Math.abs(cHue - bgHue));
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestColor = c;
+      }
+    }
+    color = bestColor;
+  }
+
+  function mixColors(fg: string, bg: string, amount: number): string {
+    const fr = parseInt(fg.slice(1, 3), 16);
+    const fg_ = parseInt(fg.slice(3, 5), 16);
+    const fb = parseInt(fg.slice(5, 7), 16);
+    const br = parseInt(bg.slice(1, 3), 16);
+    const bg_ = parseInt(bg.slice(3, 5), 16);
+    const bb = parseInt(bg.slice(5, 7), 16);
+    const r = Math.round(fr * amount + br * (1 - amount));
+    const g = Math.round(fg_ * amount + bg_ * (1 - amount));
+    const b = Math.round(fb * amount + bb * (1 - amount));
+    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+  }
+
+  // Pure hue color for picker background
+  let pureHueHex = $derived(hsbToHex(pickerHue, 1, 1));
+
+  function onPickerPointerDown(e: PointerEvent) {
+    if (!bgColor) return;
+    pickerDragging = true;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    updatePickerFromEvent(e);
+  }
+
+  function onPickerPointerMove(e: PointerEvent) {
+    if (!pickerDragging) return;
+    updatePickerFromEvent(e);
+  }
+
+  function onPickerPointerUp() {
+    pickerDragging = false;
+  }
+
+  function updatePickerFromEvent(e: PointerEvent) {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    pickerSat = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    pickerBri = Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height));
+    syncBgColorFromPicker();
+  }
   let profileId = $state('default');
   let directory = $state('');
   let showProfileDropdown = $state(false);
@@ -97,6 +224,8 @@
           name = space.name;
           color = space.color;
           bgColor = space.bgColor || null;
+          syncPickerFromBgColor(bgColor);
+          grain = space.grain ?? 0;
           profileId = space.profileId || 'default';
           directory = space.directory || '';
           spaceType = space.type ?? 'personal';
@@ -108,6 +237,7 @@
         name = '';
         color = SPACE_COLORS[spaceStore.spaces.length % SPACE_COLORS.length];
         bgColor = null;
+        grain = 0;
         profileId = 'default';
         directory = '';
         spaceType = 'personal';
@@ -133,6 +263,7 @@
         name: name.trim(),
         color,
         bgColor: bgColor || undefined,
+        grain: grain > 0 ? grain : undefined,
         profileId: profileId === 'default' ? undefined : profileId,
         directory: trimmedDir,
         type: spaceType,
@@ -159,9 +290,15 @@
         bgColor || undefined,
         trimmedDir,
       );
-      // Update sharing fields if applicable
+      // Apply grain/gradient/sharing fields
+      const extraPatch: Record<string, unknown> = {};
+      if (grain > 0) extraPatch.grain = grain;
       if (shared && selectedTeamId) {
-        spaceStore.update(space.id, { shared, teamId: selectedTeamId });
+        extraPatch.shared = shared;
+        extraPatch.teamId = selectedTeamId;
+      }
+      if (Object.keys(extraPatch).length > 0) {
+        spaceStore.update(space.id, extraPatch);
       }
     }
     close();
@@ -241,33 +378,74 @@
     </div>
 
     <span class="field-label">Background</span>
-    <div class="bg-picker">
-      <button
-        class="bg-swatch bg-swatch-none"
-        class:active={!bgColor}
-        onclick={() => (bgColor = null)}
-        title="Default"
+
+    <!-- Picker + vertical grain -->
+    <div class="picker-row">
+      <!-- HSB picker -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="space-preview"
+        class:has-color={!!bgColor}
+        style="--picker-hue: {pureHueHex}; --preview-grain: {grain}"
+        onpointerdown={onPickerPointerDown}
+        onpointermove={onPickerPointerMove}
+        onpointerup={onPickerPointerUp}
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <line
-            x1="2"
-            y1="14"
-            x2="14"
-            y2="2"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-          />
+        {#if bgColor}
+          <div class="picker-saturation"></div>
+          <div class="picker-brightness"></div>
+          <div
+            class="picker-thumb"
+            style="left: {pickerSat * 100}%; top: {(1 - pickerBri) * 100}%; background: {bgColor}"
+          ></div>
+        {:else}
+          <div class="picker-empty">
+            <span>Select a color below</span>
+          </div>
+        {/if}
+        {#if grain > 0}
+          <div class="preview-grain"></div>
+        {/if}
+      </div>
+
+      <!-- Vertical grain slider with noise gradient -->
+      <div class="grain-wrap" style="--grain-bg: {bgColor || 'var(--weplex-text-muted)'}">
+        <div class="grain-track">
+          <div class="grain-track-dots"></div>
+        </div>
+        <input
+          type="range"
+          class="grain-slider"
+          min="0"
+          max="1"
+          step="0.05"
+          bind:value={grain}
+        />
+      </div>
+    </div>
+
+    <!-- Hue -->
+    <div class="slider-row">
+      <button
+        class="picker-none-btn"
+        class:active={!bgColor}
+        onclick={() => { bgColor = null; }}
+        title="No background"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1" opacity="0.5" />
+          <line x1="3" y1="13" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
         </svg>
       </button>
-      {#each SPACE_BG_COLORS as bg}
-        <button
-          class="bg-swatch"
-          class:active={bgColor === bg}
-          style="--swatch-bg: {bg}"
-          onclick={() => (bgColor = bg)}
-        ></button>
-      {/each}
+      <input
+        type="range"
+        class="hue-slider"
+        min="0"
+        max="360"
+        step="1"
+        bind:value={pickerHue}
+        oninput={() => { if (bgColor) syncBgColorFromPicker(); else { bgColor = hsbToHex(pickerHue, 0.7, 0.7); pickerSat = 0.7; pickerBri = 0.7; autoPickColor(); } }}
+      />
     </div>
 
     <span class="field-label">Profile</span>
@@ -435,51 +613,198 @@
     opacity: 1;
   }
 
-  .bg-picker {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-top: 4px;
+  /* ── HSB Color Picker ── */
+
+  .space-preview {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    height: 110px;
+    border-radius: var(--weplex-radius-lg);
+    background: var(--weplex-bg);
+    overflow: hidden;
+    border: 1px solid var(--weplex-border);
   }
 
-  .bg-swatch {
-    width: 28px;
-    height: 28px;
+  .space-preview.has-color {
+    background: var(--weplex-sidebar-bg);
+    cursor: crosshair;
+  }
+
+  .picker-saturation {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to right,
+      color-mix(in srgb, #fff 35%, var(--weplex-sidebar-bg)),
+      color-mix(in srgb, var(--picker-hue) 35%, var(--weplex-sidebar-bg))
+    );
+  }
+
+  .picker-brightness {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, transparent, #000);
+  }
+
+  .picker-thumb {
+    position: absolute;
+    width: 16px;
+    height: 16px;
     border-radius: 50%;
-    border: 2px solid transparent;
-    background: color-mix(in srgb, var(--swatch-bg) 60%, var(--weplex-surface));
-    cursor: pointer;
-    transition: all var(--weplex-duration-fast) var(--weplex-easing);
-    padding: 0;
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.4);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .picker-empty {
     display: flex;
     align-items: center;
     justify-content: center;
-  }
-
-  .bg-swatch:hover {
-    background: color-mix(in srgb, var(--swatch-bg) 75%, var(--weplex-surface));
-  }
-
-  .bg-swatch.active {
-    border-color: var(--swatch-bg);
-    background: color-mix(in srgb, var(--swatch-bg) 75%, var(--weplex-surface));
-    box-shadow: 0 0 8px color-mix(in srgb, var(--swatch-bg) 40%, transparent);
-  }
-
-  .bg-swatch-none {
-    background: var(--weplex-bg) !important;
+    height: 100%;
     color: var(--weplex-text-muted);
+    font-size: var(--weplex-text-sm);
+    opacity: 0.5;
   }
 
-  .bg-swatch-none:hover {
-    background: var(--weplex-surface-hover) !important;
+  .preview-grain {
+    position: absolute;
+    inset: 0;
+    opacity: var(--preview-grain);
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 128px 128px;
+    pointer-events: none;
+    mix-blend-mode: overlay;
   }
 
-  .bg-swatch-none.active {
+  /* ── Layout ── */
+
+  .picker-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  /* ── Grain (vertical) ── */
+
+  .grain-wrap {
+    position: relative;
+    width: 24px;
+    flex-shrink: 0;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .grain-track {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--grain-bg) 30%, var(--weplex-surface));
+    border: 1px solid var(--weplex-border);
+    border-radius: 12px;
+  }
+
+  .grain-track-dots {
+    position: absolute;
+    inset: 0;
+    /* Multi-layer dot pattern for noise effect */
+    background:
+      radial-gradient(circle, rgba(255,255,255,0.5) 0.5px, transparent 0.5px),
+      radial-gradient(circle, rgba(255,255,255,0.35) 0.5px, transparent 0.5px),
+      radial-gradient(circle, rgba(255,255,255,0.2) 0.7px, transparent 0.7px);
+    background-size: 4px 4px, 7px 5px, 3px 7px;
+    background-position: 0 0, 2px 3px, 1px 1px;
+    /* Visible at bottom, clean at top */
+    mask-image: linear-gradient(to top, transparent 5%, black 95%);
+    -webkit-mask-image: linear-gradient(to top, transparent 5%, black 95%);
+  }
+
+  .grain-slider {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    writing-mode: vertical-lr;
+    direction: rtl;
+  }
+
+  .grain-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 10px;
+    border-radius: 5px;
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+  }
+
+  .picker-none-btn {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid var(--weplex-border);
+    background: var(--weplex-bg);
+    color: var(--weplex-text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all var(--weplex-duration-fast) var(--weplex-easing);
+  }
+
+  .picker-none-btn:hover {
     border-color: var(--weplex-text-muted);
-    background: var(--weplex-bg) !important;
-    box-shadow: none;
   }
+
+  .picker-none-btn.active {
+    border-color: var(--weplex-accent);
+  }
+
+  .hue-slider {
+    flex: 1;
+    min-width: 0;
+    height: 16px;
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 8px;
+    cursor: pointer;
+    outline: none;
+    margin: 0;
+    background: linear-gradient(to right,
+      hsl(0, 100%, 50%), hsl(60, 100%, 50%), hsl(120, 100%, 50%),
+      hsl(180, 100%, 50%), hsl(240, 100%, 50%), hsl(300, 100%, 50%),
+      hsl(360, 100%, 50%)
+    );
+  }
+
+  .hue-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid rgba(0, 0, 0, 0.15);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+  }
+
+
 
   .custom-select {
     position: relative;

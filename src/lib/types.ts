@@ -136,6 +136,9 @@ export interface Space {
   order: number;
   profileId?: string; // references Profile.id, undefined = default profile
   bgColor?: string; // background tint color for the space chrome
+  grain?: number; // noise/grain intensity 0-1 (Arc-style)
+  gradientAngle?: number; // gradient rotation 0-360 degrees
+  gradientSpread?: number; // gradient spread/intensity 0-1
   directory?: string; // default working directory for new sessions in this space
   type: SpaceType; // default: 'personal'
   shared: boolean; // default: false — visible to team members

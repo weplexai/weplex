@@ -208,8 +208,8 @@
     height: 28px;
     border-radius: var(--weplex-radius-md);
     border: 2px solid transparent;
-    background: color-mix(in srgb, var(--space-color) 20%, transparent);
-    color: var(--space-color);
+    background: color-mix(in srgb, var(--space-color) 15%, transparent);
+    color: color-mix(in srgb, var(--space-color) 60%, var(--weplex-text-muted));
     font-size: var(--weplex-text-sm);
     font-weight: 600;
     display: flex;
@@ -219,12 +219,14 @@
   }
 
   .space-pill:hover {
-    background: color-mix(in srgb, var(--space-color) 30%, transparent);
+    background: color-mix(in srgb, var(--space-color) 22%, transparent);
+    color: color-mix(in srgb, var(--space-color) 75%, var(--weplex-text-muted));
   }
 
   .space-pill.active {
-    border-color: var(--space-color);
-    background: color-mix(in srgb, var(--space-color) 25%, transparent);
+    border-color: color-mix(in srgb, var(--space-color) 60%, transparent);
+    background: color-mix(in srgb, var(--space-color) 20%, transparent);
+    color: var(--space-color);
   }
 
   .space-pill {

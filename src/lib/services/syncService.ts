@@ -43,6 +43,9 @@ function extractSpaces(spaces: Space[]): Partial<Space>[] {
     order: s.order,
     profileId: s.profileId,
     bgColor: s.bgColor,
+    grain: s.grain,
+    gradientAngle: s.gradientAngle,
+    gradientSpread: s.gradientSpread,
     type: s.type,
     shared: s.shared,
     // directory intentionally excluded — local path
@@ -127,6 +130,9 @@ function applySyncBlob(blob: SyncBlob): void {
           name: remoteSpace.name || local.name,
           color: remoteSpace.color || local.color,
           bgColor: remoteSpace.bgColor,
+          grain: remoteSpace.grain,
+          gradientAngle: remoteSpace.gradientAngle,
+          gradientSpread: remoteSpace.gradientSpread,
           profileId: remoteSpace.profileId,
         });
       }

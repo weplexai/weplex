@@ -72,6 +72,7 @@
 
   let activeSession = $derived(sessionStore.activeSession);
   let spaceBgColor = $derived(spaceStore.activeSpace.bgColor || null);
+  let spaceGrain = $derived(spaceStore.activeSpace.grain ?? 0);
   let activeSpaceId = $derived(spaceStore.activeSpaceId);
   let chatServerId = $derived(spaceStore.activeSpace?.serverId ?? null);
   // Ensure layout exists (mutation — must be in $effect, not $derived)
@@ -117,9 +118,12 @@
 <div
   class="app"
   style={spaceBgColor
-    ? `background: color-mix(in srgb, ${spaceBgColor} 15%, var(--weplex-sidebar-bg))`
+    ? `background: color-mix(in srgb, ${spaceBgColor} 35%, var(--weplex-sidebar-bg))`
     : ''}
 >
+  {#if spaceGrain > 0}
+    <div class="app-grain" style="opacity: {spaceGrain}"></div>
+  {/if}
   {#if uiStore.activeOverlay === 'agents'}
     <AgentsPipelines />
   {:else}
@@ -303,6 +307,19 @@
     background: var(--weplex-sidebar-bg);
     transition: background 0.3s ease;
   }
+
+  .app-grain {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 128px 128px;
+    mix-blend-mode: overlay;
+    transition: opacity 0.3s ease;
+  }
+
 
   .main {
     flex: 1;
