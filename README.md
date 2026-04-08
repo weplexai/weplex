@@ -183,7 +183,7 @@ weplex/
 
 ## Backend
 
-The Weplex server ([weplex-api](https://github.com/weplexai/weplex-api)) handles authentication, config sync, teams, marketplace, and real-time collaboration via WebSocket.
+The Weplex backend (api.weplex.ai) handles authentication, config sync, teams, marketplace, and real-time collaboration via WebSocket.
 
 ## License
 
