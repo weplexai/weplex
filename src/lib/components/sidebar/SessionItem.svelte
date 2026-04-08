@@ -224,6 +224,7 @@
   bind:this={itemEl}
   class="session-item"
   class:active
+  class:has-error={effectiveStatus === 'error'}
   class:dragged={isDragged}
   class:drop-before={dropPos === 'before'}
   class:drop-after={dropPos === 'after'}
@@ -248,14 +249,14 @@
       onclick={(e) => { e.stopPropagation(); ontoggle?.(); }}
     >▸</span>
   {/if}
-  {#if session.icon}
-    <span class="icon"><SessionIcon icon={session.icon} /></span>
-  {/if}
   <span
     class="dot"
     class:pulse={effectiveStatus === 'active' || effectiveStatus === 'thinking'}
     style="background: {STATUS_COLORS[effectiveStatus]}"
   ></span>
+  {#if session.icon}
+    <span class="icon"><SessionIcon icon={session.icon} /></span>
+  {/if}
   {#if renaming}
     <input
       bind:this={renameInput}
@@ -277,7 +278,11 @@
       }}
     />
   {:else}
-    <span class="name">{session.name}</span>
+    <span class="name" class:name-error={effectiveStatus === 'error'}>{session.name}</span>
+  {/if}
+
+  {#if effectiveStatus === 'error' && session.lastError}
+    <span class="error-hint" title={session.lastError}>!</span>
   {/if}
 
   {#if session.spectatorCount && session.spectatorCount > 0}
@@ -470,6 +475,14 @@
     background: var(--weplex-surface-hover);
   }
 
+  .session-item.has-error {
+    background: rgba(239, 68, 68, 0.08);
+  }
+
+  .session-item.has-error:hover {
+    background: rgba(239, 68, 68, 0.12);
+  }
+
   .session-item.dragged {
     opacity: 0.4;
   }
@@ -551,6 +564,25 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+  }
+
+  .name-error {
+    color: var(--weplex-error);
+  }
+
+  .error-hint {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--weplex-error);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    cursor: help;
   }
 
   .rename-input {

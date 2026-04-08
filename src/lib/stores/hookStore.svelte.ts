@@ -10,6 +10,7 @@ import type {
   ToolUseEntry,
   SubAgent,
 } from '../types';
+import { sessionStore } from './sessionStore.svelte';
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,12 @@ function processEvent(event: HookEventPayload) {
       activity.totalToolCalls++;
     }
 
+    // Hook-driven status: agent is actively working when tools are being used
+    const currentStatus = sessionStore.sessions.find((s) => s.id === event.session_id)?.status;
+    if (event.event_type === 'pre_tool_use' && (currentStatus === 'idle' || currentStatus === 'thinking')) {
+      sessionStore.updateStatus(event.session_id, 'active');
+    }
+
     // Add to recent tool uses (ring buffer)
     activity.toolUses.push(entry);
     if (activity.toolUses.length > MAX_TOOL_USES) {
@@ -94,6 +101,9 @@ function processEvent(event: HookEventPayload) {
   }
 
   if (event.event_type === 'stop') {
+    // Agent session finished — set to idle
+    sessionStore.updateStatus(event.session_id, 'idle');
+
     // Parent session stopped — mark all running sub-agents as completed
     const sessionSubs = subAgents.get(event.session_id);
     if (sessionSubs) {
@@ -118,6 +128,11 @@ function processEvent(event: HookEventPayload) {
     const sessionSubs = subAgents.get(event.session_id) || [];
     // Mark session as having native subagent tracking
     nativeSubagentSessions.add(event.session_id);
+    // Parent is active while sub-agents run (don't override error)
+    const parentStatus = sessionStore.sessions.find((s) => s.id === event.session_id)?.status;
+    if (parentStatus !== 'error') {
+      sessionStore.updateStatus(event.session_id, 'active');
+    }
     // Check for existing entry (stop arrived before start — race condition fix)
     const existing = sessionSubs.find((s) => s.agentId === event.agent_id);
     if (existing) {
@@ -142,6 +157,15 @@ function processEvent(event: HookEventPayload) {
   if (event.event_type === 'subagent_stop' && event.agent_id) {
     nativeSubagentSessions.add(event.session_id);
     const sessionSubs = subAgents.get(event.session_id) || [];
+
+    // Check if all sub-agents are done after this stop
+    const willBeRunning = sessionSubs.filter(
+      (s) => s.status === 'running' && s.agentId !== event.agent_id
+    );
+    if (willBeRunning.length === 0) {
+      // All sub-agents finished — parent goes back to active (processing results)
+      sessionStore.updateStatus(event.session_id, 'active');
+    }
     const agent = sessionSubs.find((s) => s.agentId === event.agent_id);
     if (agent) {
       agent.finishedAt = event.timestamp;

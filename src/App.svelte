@@ -8,6 +8,7 @@
   import OrchestrationDashboard from './lib/components/dashboard/OrchestrationDashboard.svelte';
   import ProjectDashboard from './lib/components/dashboard/ProjectDashboard.svelte';
   import SpaceDashboard from './lib/components/dashboard/SpaceDashboard.svelte';
+  import PipelineDashboard from './lib/components/dashboard/PipelineDashboard.svelte';
   import SpectatorView from './lib/components/terminal/SpectatorView.svelte';
   import MarketplaceOverlay from './lib/components/overlays/MarketplaceOverlay.svelte';
   import PluginView from './lib/components/terminal/PluginView.svelte';
@@ -265,6 +266,8 @@
         <ProjectDashboard sessionId={session.id} />
       {:else if session.type === 'dashboard' && session.dashboardType === 'space'}
         <SpaceDashboard sessionId={session.id} />
+      {:else if session.type === 'dashboard' && session.dashboardType === 'pipeline'}
+        <PipelineDashboard sessionId={session.id} />
       {:else if session.type === 'plugin' && session.pluginId}
         <PluginView sessionId={session.id} pluginId={session.pluginId} />
       {:else if session.type === 'spectator' && session.spectateSpaceId && session.spectateSessionName}

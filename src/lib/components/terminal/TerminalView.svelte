@@ -12,7 +12,7 @@
   import { pipelineInjectStore } from '../../stores/pipelineInjectStore.svelte';
   import { contextInjectionStore } from '../../stores/contextInjectionStore.svelte';
   import { pipelineWsService } from '../../services/pipelineWsService';
-  import { notifyWaitingForInput, notifyError } from '../../services/notificationService';
+  import { notifyWaitingForInput, notifyError, trackSessionActivity, redactSecrets } from '../../services/notificationService';
   import { terminalRegistry } from '../../stores/terminalRegistry';
 
   let { sessionId }: { sessionId: number } = $props();
@@ -149,6 +149,9 @@
       fitAddon.fit();
     }
 
+    // Accumulate user input for smart naming (first prompt only)
+    let inputBuffer = '';
+
     disposables.push(
       term.onData((data) => {
         if (ptyWriter) ptyWriter(data);
@@ -159,6 +162,22 @@
           // Enter key or multi-char paste = likely a prompt submission
           if (data.includes('\r') || data.includes('\n') || data.length > 5) {
             sessionStore.updateStatus(sessionId, 'thinking');
+            // Auto-rename from first prompt input
+            if (inputBuffer.length > 0) {
+              sessionStore.autoRenameFromInput(sessionId, inputBuffer);
+              inputBuffer = '';
+            } else if (data.length > 5) {
+              // Pasted text with newline
+              sessionStore.autoRenameFromInput(sessionId, data.replace(/[\r\n]+/g, ' '));
+            }
+          } else {
+            // Accumulate typed characters (not Enter/control)
+            if (data.length === 1 && data.charCodeAt(0) >= 32) {
+              inputBuffer += data;
+            } else if (data.charCodeAt(0) === 127 || data.charCodeAt(0) === 8) {
+              // Backspace — remove last char
+              inputBuffer = inputBuffer.slice(0, -1);
+            }
           }
           scheduleTransition();
         }
@@ -555,6 +574,9 @@
         // Decode to string only for pattern/session-ID matching.
         const text = textDecoder.decode(bytes, { stream: true });
 
+        // Track activity for stuck detection
+        trackSessionActivity(sessionId);
+
         // Terminal: any output = active. Agent: thinking → active on first output.
         if (!isAgentSession) {
           sessionStore.updateStatus(sessionId, 'active');
@@ -577,10 +599,12 @@
           }
 
           // Detect agent errors in output
-          if (agentErrorRe.test(outputTail)) {
+          const errorMatch = outputTail.match(agentErrorRe);
+          if (errorMatch) {
+            const errorMsg = redactSecrets(errorMatch[0].trim().slice(0, 80));
             outputTail = ''; // consume — don't re-trigger
-            sessionStore.updateStatus(sessionId, 'error');
-            notifyError(session?.name || `session-${sessionId}`);
+            sessionStore.update(sessionId, { status: 'error', lastError: errorMsg, lastActivity: Date.now() });
+            notifyError(session?.name || `session-${sessionId}`, errorMsg);
           }
         }
 

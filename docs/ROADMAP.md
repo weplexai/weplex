@@ -5,7 +5,7 @@
 
 ---
 
-## Phase 0: MVP Terminal + Pipeline Engine `current`
+## Phase 0: MVP Terminal + Pipeline Engine `done`
 
 Ship the core product. Best terminal for AI coding agents + deterministic pipeline engine.
 
@@ -13,11 +13,11 @@ Ship the core product. Best terminal for AI coding agents + deterministic pipeli
 
 **Terminal** (done): Spaces, Profiles, Sessions, Agent detection, Usage panel, Notes, Command palette, Split views, Hyperspace, Agents panel. See [PROGRESS.md](./PROGRESS.md).
 
-**Pipeline Engine** (in progress):
+**Pipeline Engine** (done):
 - [x] Agent format, pipeline YAML, visual editor, stage UI, security
-- [ ] Weplex MCP Server — `deck_stage_complete()`, `deck_get_artifact()`, `deck_pipeline_info()`
-- [ ] Interactive pipeline sessions (each stage = full PTY, not headless)
-- [ ] Profile-aware stages (inherit CLAUDE_CONFIG_DIR, API keys)
+- [x] Weplex MCP Server — JSON-RPC over Unix sockets, `deck_stage_complete()`, `deck_get_artifact()`, `deck_pipeline_info()`
+- [x] Interactive pipeline sessions (each stage = full PTY session)
+- [x] Profile-aware stages (inherit CLAUDE_CONFIG_DIR, API keys)
 
 **Launch**: README, LICENSE, GitHub release, landing page (weplex.ai). See [LAUNCH.md](./LAUNCH.md).
 
@@ -25,7 +25,7 @@ Ship the core product. Best terminal for AI coding agents + deterministic pipeli
 
 ---
 
-## Phase 1: Polish & Awareness
+## Phase 1: Polish & Awareness `current`
 
 Make Weplex reliable and visible. The "it just works" phase.
 
@@ -58,7 +58,7 @@ Claude Code deep features + advanced orchestration. The "wow, it knows everythin
 - [x] Project Dashboard — cross-space cwd-based view, git status, conflicts
 - [x] Space Dashboard — visual overview, sessions grouped by project
 - [x] Unified agent resolution — `.claude/agents/*.md` + `~/.weplex/agents/*.yaml` (equal)
-- [ ] MCP Server v2 — cross-session communication (in progress)
+- [x] MCP Server v2 — cross-session communication via Unix socket pool (ipc_server.rs)
 
 See [DESIGN.md](./DESIGN.md) for detailed specs. See [PROGRESS.md](./PROGRESS.md) for implementation details.
 
@@ -82,10 +82,15 @@ Free accounts for sync/backup. Relay for collaboration. **All free during alpha*
 2. **Share** — boolean toggle per Space/Session. Shared = visible to team. Default: private.
 3. **Pipeline delegation** — stage `owner` field, artifact passing via relay.
 
-Everything else is derived: shared spaces = spaces with `shared: true`, team awareness = shared session metadata in sidebar, spectating (future) = natural extension of share toggle.
+Everything else is derived: shared spaces = spaces with `shared: true`, team awareness = shared session metadata in sidebar.
 
-- Weplex Relay (relay.weplex.ai) — WebSocket, sole transport
-- Context injection — CLAUDE.md prepend with artifacts from shared pipelines
+Implementation status:
+- [x] Spectating — SpectatorView.svelte (read-only terminal view)
+- [x] Pipeline relay events — spectating events on server (pipeline.gateway.ts)
+- [x] Notification service — OS notifications for agent events
+- [x] Presence store, chat store, team store — Svelte stores ready
+- [ ] Weplex Relay (relay.weplex.ai) — WebSocket server deployment
+- [ ] Context injection — CLAUDE.md prepend with artifacts from shared pipelines
 
 See [COLLABORATIVE.md](./COLLABORATIVE.md) for full design: auth, sharing model, relay, data model, UX flows, security, monetization.
 
@@ -99,16 +104,18 @@ Weplex becomes a platform with an ecosystem.
 
 **Goal**: community-driven growth, network effects.
 
-**Marketplace**:
-- Agent marketplace — browse, install community agents
-- Pipeline marketplace — browse, install community pipelines
-- GitHub-based distribution: `weplex install github.com/user/repo`
-- In-app marketplace with search, ratings
+**Marketplace** (backend done):
+- [x] Marketplace registry (NestJS) — CRUD, search, ratings, publishing
+- [ ] Agent marketplace — browse, install community agents (frontend)
+- [ ] Pipeline marketplace — browse, install community pipelines (frontend)
+- [ ] GitHub-based distribution: `weplex install github.com/user/repo`
 
-**Plugin system**:
-- Plugin API (session type, tray icon, tray panel, pane header)
-- Plugin Host — load/unload from ~/.weplex/plugins/
-- Browser plugin — first reference (Chrome via CDP)
+**Plugin system** (architecture done):
+- [x] Plugin API (session type, tray icon, tray panel, pane header)
+- [x] Plugin Host — load/unload from ~/.weplex/plugins/ (plugin_host.rs)
+- [x] Plugin loader — dynamic JS import (pluginLoader.ts)
+- [x] Browser plugin — Chrome via CDP (plugins/browser.rs)
+- [ ] More plugins from community
 
 See [PLUGINS.md](./PLUGINS.md) for plugin architecture. See [IDEAS.md](./IDEAS.md) for marketplace details.
 

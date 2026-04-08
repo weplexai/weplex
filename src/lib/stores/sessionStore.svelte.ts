@@ -60,18 +60,44 @@ export interface SessionGroup {
   sessions: Session[];
 }
 
-/** Generate a meaningful session name from agent type and cwd. */
-function smartName(agentType: AgentType | undefined, cwd: string | undefined, id: number): string {
-  // Use last dir component from cwd if available
+/** Extract prompt from -p flag in agent command. */
+function extractPrompt(command: string): string | undefined {
+  // Match: -p "some prompt" or -p 'some prompt' or --prompt "..."
+  const match = command.match(/(?:^|\s)(?:-p|--prompt)\s+(?:"([^"]+)"|'([^']+)')/);
+  if (match) {
+    const prompt = (match[1] || match[2]).trim();
+    // Truncate to first 40 chars, cut at word boundary
+    if (prompt.length <= 40) return prompt;
+    const truncated = prompt.slice(0, 40);
+    const lastSpace = truncated.lastIndexOf(' ');
+    return lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated;
+  }
+  return undefined;
+}
+
+/** Generate a meaningful session name from agent type, command, and cwd. */
+function smartName(agentType: AgentType | undefined, cwd: string | undefined, id: number, command?: string): string {
+  const prefix = agentType || 'session';
+
+  // Priority 1: extract task from -p flag
+  if (command) {
+    const prompt = extractPrompt(command);
+    if (prompt) return `${prefix}: ${prompt}`;
+  }
+
+  // Priority 2: use last dir component from cwd
   if (cwd && cwd !== '~') {
     const dir = cwd.replace(/\/+$/, '').split('/').pop();
     if (dir && dir !== '~') {
-      const prefix = agentType || 'session';
       return `${prefix}: ${dir}`;
     }
   }
+
   return agentType || `session-${id}`;
 }
+
+/** Set of sessions that have been auto-renamed from first input. */
+const autoNamedSessions = new Set<number>();
 
 export const sessionStore = {
   get sessions() {
@@ -112,7 +138,7 @@ export const sessionStore = {
 
     const session: Session = {
       id,
-      name: opts.name || smartName(agentType, opts.cwd, id),
+      name: opts.name || smartName(agentType, opts.cwd, id, opts.command),
       type,
       agentType,
       status: 'new',
@@ -213,6 +239,35 @@ export const sessionStore = {
     persist();
   },
 
+  /**
+   * Auto-rename from first user input in interactive agent sessions.
+   * Only fires once per session, and only if the session still has its default name.
+   */
+  autoRenameFromInput(id: number, userInput: string) {
+    if (autoNamedSessions.has(id)) return;
+    const session = sessions.find((s) => s.id === id);
+    if (!session || session.type !== 'agent' || !session.agentType) return;
+
+    // Only rename if current name is the default pattern (e.g., "claude: dirname")
+    const defaultName = smartName(session.agentType, session.cwd, id, session.command);
+    if (session.name !== defaultName) return; // user already renamed
+
+    // Check if it was created with -p flag (already has good name)
+    if (session.command && extractPrompt(session.command)) return;
+
+    // Clean up user input: trim, take first line, truncate
+    const cleaned = userInput.trim().split('\n')[0].replace(/\r/g, '').replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim();
+    if (cleaned.length < 3 || cleaned.length > 200) return;
+
+    const prefix = session.agentType;
+    const label = cleaned.length <= 40
+      ? cleaned
+      : cleaned.slice(0, 40).replace(/\s+\S*$/, '');
+
+    autoNamedSessions.add(id);
+    this.rename(id, `${prefix}: ${label}`);
+  },
+
   pin(id: number) {
     const s = sessions.find((s) => s.id === id);
     if (s) {
@@ -242,6 +297,13 @@ export const sessionStore = {
       .catch((e) => console.error(`[Weplex] Failed to load Tauri API for killing PTY ${id}:`, e));
 
     sessions.splice(idx, 1);
+
+    // Clean up tracking in other stores
+    try {
+      import('../services/notificationService').then(({ clearSessionTracking }) => {
+        clearSessionTracking(id);
+      });
+    } catch { /* ignore */ }
 
     if (activeSessionId === id) {
       activeSessionId = sessions.length > 0 ? sessions[sessions.length - 1].id : null;
@@ -474,6 +536,29 @@ export const sessionStore = {
       createdAt: now,
       lastActivity: now,
       dashboardType: 'space',
+    };
+
+    sessions.push(session);
+    activeSessionId = id;
+    persist();
+    return session;
+  },
+
+  /** Create a pipeline dashboard showing flow, cost, and timeline. */
+  createPipelineDashboard(spaceId: string): Session {
+    const id = nextId++;
+    const now = Date.now();
+    const session: Session = {
+      id,
+      name: 'Pipeline Dashboard',
+      type: 'dashboard',
+      status: 'active',
+      spaceId,
+      pinned: false,
+      order: now,
+      createdAt: now,
+      lastActivity: now,
+      dashboardType: 'pipeline',
     };
 
     sessions.push(session);

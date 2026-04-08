@@ -38,6 +38,9 @@ export interface Session {
   // Status before app restart (used to decide if resume is appropriate)
   previousStatus?: SessionStatus;
 
+  // Last error message (for sidebar display)
+  lastError?: string;
+
   // Agent metadata
   claudeSessionId?: string;
   model?: string;
@@ -79,7 +82,7 @@ export interface Session {
   childCollapsed?: boolean;
 
   // Dashboard
-  dashboardType?: 'orchestration' | 'project' | 'space';
+  dashboardType?: 'orchestration' | 'project' | 'space' | 'pipeline';
   /** Session ID this dashboard is attached to (orchestration dashboard). */
   orchestratorId?: number;
 
