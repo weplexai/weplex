@@ -25,19 +25,19 @@ Ship the core product. Best terminal for AI coding agents + deterministic pipeli
 
 ---
 
-## Phase 1: Polish & Awareness `current`
+## Phase 1: Polish & Awareness `done`
 
 Make Weplex reliable and visible. The "it just works" phase.
 
 **Goal**: users stick around, word of mouth starts.
 
-- Real-time agent status (thinking / idle / waiting for input)
-- Notifications when agent finishes or gets stuck
-- Smart session naming (auto-detect from cwd or agent output)
-- Error detection (highlight agent errors in sidebar)
-- Pipeline Dashboard — flow view with cost per stage
-- Light theme
-- Content: blog posts, demo videos, community engagement
+- [x] Real-time agent status — hook-driven (pre_tool_use/stop/subagent events → instant status)
+- [x] Notifications — OS notifications for finished/stuck/waiting/error (5min stuck threshold)
+- [x] Smart session naming — extract from `-p` flag + auto-rename from first user input
+- [x] Error detection — red sidebar highlight, error badge with tooltip, secret redaction
+- [x] Pipeline Dashboard — flow visualization, timeline (Gantt), cost breakdown, run history
+- [ ] Light theme — deferred to backlog
+- [ ] Content: blog posts, demo videos — not code, separate effort
 
 **Success metric**: 200-500 stars, consistent daily usage, first community contributions.
 
@@ -104,7 +104,7 @@ See [COLLABORATIVE.md](./COLLABORATIVE.md) for full design: auth, sharing model,
 
 ---
 
-## Phase 4: Marketplace & Plugins
+## Phase 4: Marketplace & Plugins `done`
 
 Weplex becomes a platform with an ecosystem.
 
@@ -152,6 +152,9 @@ Features that justify custom pricing for larger organizations.
 
 Feature ideas without a timeline. See [IDEAS.md](./IDEAS.md) for full list.
 
+- Web marketplace (weplex.ai/marketplace) — browse packages without app, SEO, discoverability
+- Spectator UI entry point — button/menu to start watching teammate's session
+- Weplex Relay deployment (relay.weplex.ai) — WebSocket server for collaboration
 - Terminal recording & replay
 - Session templates (predefined command + cwd + profile)
 - Global sessions (pinned across all spaces)
@@ -159,6 +162,7 @@ Feature ideas without a timeline. See [IDEAS.md](./IDEAS.md) for full list.
 - Weplex Assistant (Claude session that manages your agents/pipelines)
 - Terminal Decorations (hover-triggered inline actions)
 - Mobile-responsive web viewer (spectating via browser)
+- Light theme
 
 ---
 
@@ -183,7 +187,7 @@ Feature ideas without a timeline. See [IDEAS.md](./IDEAS.md) for full list.
 
 ## Monetization Summary
 
-**Alpha (current):** all features free. Billing after Dubai company + Stripe ready.
+**Alpha (current):** all features free. Free for individuals, always. Team features paid after Dubai company + Stripe ready.
 
 | Tier | Price | Key value |
 |------|-------|-----------|
