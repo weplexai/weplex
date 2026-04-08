@@ -66,7 +66,7 @@ See [DESIGN.md](./DESIGN.md) for detailed specs. See [PROGRESS.md](./PROGRESS.md
 
 ---
 
-## Phase 3: Accounts & Collaboration `monetization`
+## Phase 3: Accounts & Collaboration `done`
 
 Free accounts for sync/backup. Relay for collaboration. **All free during alpha** — billing after Dubai company + Stripe ready.
 
@@ -85,11 +85,17 @@ Free accounts for sync/backup. Relay for collaboration. **All free during alpha*
 Everything else is derived: shared spaces = spaces with `shared: true`, team awareness = shared session metadata in sidebar.
 
 Implementation status:
-- [x] Spectating — SpectatorView.svelte (read-only terminal view)
+- [x] Spectating — SpectatorView.svelte (read-only terminal), PTY relay with rate limiting
 - [x] Pipeline relay events — spectating events on server (pipeline.gateway.ts)
 - [x] Notification service — OS notifications for agent events
-- [x] Presence store, chat store, team store — Svelte stores ready
-- [ ] Weplex Relay (relay.weplex.ai) — WebSocket server deployment
+- [x] Team store — create/join/leave/manage teams, real-time WebSocket events
+- [x] Presence store — session sync (10s), member tracking, offline history
+- [x] Chat store — messaging, replies, edits, typing indicators, unread badges
+- [x] TeamPresence UI — online/offline members, session cards in sidebar
+- [x] SpaceChat UI — full chat with mentions, reply, edit, code blocks, pagination
+- [x] Collaborative pipelines — stage delegation, artifact passing, MCP integration
+- [ ] Spectator UI entry point — deferred to backlog (relay costs without billing)
+- [ ] Weplex Relay deployment — deferred (relay.weplex.ai not yet deployed)
 - [ ] Context injection — CLAUDE.md prepend with artifacts from shared pipelines
 
 See [COLLABORATIVE.md](./COLLABORATIVE.md) for full design: auth, sharing model, relay, data model, UX flows, security, monetization.
@@ -104,13 +110,15 @@ Weplex becomes a platform with an ecosystem.
 
 **Goal**: community-driven growth, network effects.
 
-**Marketplace** (backend done):
+**Marketplace** (done):
 - [x] Marketplace registry (NestJS) — CRUD, search, ratings, publishing
-- [ ] Agent marketplace — browse, install community agents (frontend)
-- [ ] Pipeline marketplace — browse, install community pipelines (frontend)
+- [x] Marketplace UI — search, filters, install, pagination, installed badge
+- [x] Rating UI — star rating with submission
+- [x] Publish UI — form for publishing agents/pipelines with YAML content
+- [x] AgentsPipelines integration — "Browse Marketplace" button
 - [ ] GitHub-based distribution: `weplex install github.com/user/repo`
 
-**Plugin system** (architecture done):
+**Plugin system** (done):
 - [x] Plugin API (session type, tray icon, tray panel, pane header)
 - [x] Plugin Host — load/unload from ~/.weplex/plugins/ (plugin_host.rs)
 - [x] Plugin loader — dynamic JS import (pluginLoader.ts)

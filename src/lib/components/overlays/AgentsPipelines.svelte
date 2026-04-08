@@ -423,6 +423,10 @@
     </button>
   </div>
 
+  <button class="ap-marketplace-btn" onclick={() => uiStore.openOverlay('marketplace')}>
+    Browse Marketplace
+  </button>
+
   <nav class="ap-nav">
     {#if loading}
       <div class="ap-loading">Loading...</div>
@@ -862,6 +866,23 @@
     padding: 0 8px;
     border-bottom: 1px solid var(--weplex-border);
     flex-shrink: 0;
+  }
+  .ap-marketplace-btn {
+    display: block;
+    width: calc(100% - 16px);
+    margin: 8px 8px;
+    padding: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--weplex-accent);
+    background: color-mix(in srgb, var(--weplex-accent) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--weplex-accent) 20%, transparent);
+    border-radius: var(--weplex-radius-sm);
+    cursor: pointer;
+    text-align: center;
+  }
+  .ap-marketplace-btn:hover {
+    background: color-mix(in srgb, var(--weplex-accent) 15%, transparent);
   }
   .ap-tab {
     display: flex;
