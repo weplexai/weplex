@@ -255,8 +255,16 @@ export const sessionStore = {
     // Check if it was created with -p flag (already has good name)
     if (session.command && extractPrompt(session.command)) return;
 
-    // Clean up user input: trim, take first line, truncate
-    const cleaned = userInput.trim().split('\n')[0].replace(/\r/g, '').replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim();
+    // Clean up user input: trim, take first line, strip ANSI escape sequences, truncate
+    const cleaned = userInput.trim().split('\n')[0]
+      .replace(/\r/g, '')
+      .replace(/\x1b\[[0-9;?>=!]*[\x40-\x7e]/g, '') // CSI sequences (e.g. \x1b[?1;2c)
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '') // OSC sequences
+      .replace(/\x1bP[^\x1b]*\x1b\\/g, '')       // DCS sequences
+      .replace(/\x1b[^[\]P]/g, '')                // other ESC sequences
+      .replace(/\[\?[0-9;]*[\x40-\x7e]/g, '')    // orphaned CSI (require ? — DA responses)
+      .replace(/[\x00-\x1f\x7f-\x9f]/g, '')
+      .trim();
     if (cleaned.length < 3 || cleaned.length > 200) return;
 
     const prefix = session.agentType;

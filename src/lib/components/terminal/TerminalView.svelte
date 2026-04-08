@@ -161,12 +161,16 @@
           lastUserInputAt = Date.now();
           // Enter key or multi-char paste = likely a prompt submission
           if (data.includes('\r') || data.includes('\n') || data.length > 5) {
-            sessionStore.updateStatus(sessionId, 'thinking');
+            // Skip terminal escape responses (e.g. DA response \x1b[?1;2c)
+            const isEscapeResponse = data.includes('\x1b[') || /^\[\?[0-9;]*[\x40-\x7e]/.test(data);
+            if (!isEscapeResponse) {
+              sessionStore.updateStatus(sessionId, 'thinking');
+            }
             // Auto-rename from first prompt input
             if (inputBuffer.length > 0) {
               sessionStore.autoRenameFromInput(sessionId, inputBuffer);
               inputBuffer = '';
-            } else if (data.length > 5) {
+            } else if (data.length > 5 && !isEscapeResponse) {
               // Pasted text with newline
               sessionStore.autoRenameFromInput(sessionId, data.replace(/[\r\n]+/g, ' '));
             }
