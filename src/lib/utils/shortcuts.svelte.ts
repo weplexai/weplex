@@ -68,7 +68,7 @@ const shortcuts: Shortcut[] = [
   {
     key: ',',
     meta: true,
-    action: () => uiStore.openOverlay('settings'),
+    action: () => uiStore.enterHubMode('settings'),
     label: 'Settings',
     category: 'navigation',
   },

@@ -86,7 +86,7 @@
         category: 'Settings',
         action: () => {
           blur();
-          uiStore.openOverlay('settings');
+          uiStore.enterHubMode('settings');
         },
       },
     ];

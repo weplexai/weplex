@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Select, Modal, Input, Tabs } from '../ui';
+  import { Select, Input, Tabs } from '../ui';
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { settingsStore } from '../../stores/settingsStore';
@@ -120,13 +120,12 @@
 
 </script>
 
-<Modal onclose={() => uiStore.closeOverlay()} position="center" label="Settings" class="settings">
-    <div class="settings-sidebar">
-      <h2 class="settings-title">Settings</h2>
-      <Tabs tabs={tabs} active={activeTab} onchange={(id) => (activeTab = id)} orientation="vertical" />
-    </div>
-
-    <div class="settings-content">
+<div class="settings-inner">
+  <div class="settings-sidebar">
+    <h2 class="settings-title">Settings</h2>
+    <Tabs tabs={tabs} active={activeTab} onchange={(id) => (activeTab = id)} orientation="vertical" />
+  </div>
+  <div class="settings-content">
       {#if activeTab === 'general'}
         <h3 class="section-title">General</h3>
         <div class="setting">
@@ -154,8 +153,10 @@
             onchange={(v) => settingsStore.update({ theme: v as 'dark' | 'light' })}
           />
         </div>
+
+        <h4 class="subsection-title">Terminal</h4>
         <div class="setting">
-          <label class="setting-label" for="set-font">Font family</label>
+          <label class="setting-label" for="set-font">Font</label>
           <Input
             id="set-font"
             class="setting-input"
@@ -342,26 +343,33 @@
           <span class="about-footer-copy">&copy; 2026</span>
         </footer>
       {/if}
-    </div>
-</Modal>
+  </div>
+</div>
 
 <style>
-  :global(.settings) {
-    width: 600px;
-    height: 420px;
-    background: var(--weplex-surface);
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-xl);
-    box-shadow: var(--weplex-shadow-overlay);
+  .settings-inner {
     display: flex;
+    width: 100%;
+    height: 100%;
+    background: var(--weplex-bg);
     overflow: hidden;
   }
 
   .settings-sidebar {
-    width: 160px;
+    width: 200px;
+    position: relative;
     background: var(--weplex-sidebar-bg);
     border-right: 1px solid var(--weplex-border);
     padding: 16px 8px;
+  }
+
+  .settings-sidebar::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.06) 0.5px, transparent 0.5px);
+    background-size: 12px 12px;
+    pointer-events: none;
   }
 
   .settings-title {
@@ -386,13 +394,24 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 16px;
     padding: 10px 0;
     border-bottom: 1px solid var(--weplex-border);
+  }
+
+  .subsection-title {
+    font-size: var(--weplex-text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--weplex-text-muted);
+    margin: 16px 0 4px;
   }
 
   .setting-label {
     font-size: var(--weplex-text-sm);
     color: var(--weplex-text-secondary);
+    white-space: nowrap;
   }
 
   :global(.setting-input) {

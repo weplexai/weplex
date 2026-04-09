@@ -1,7 +1,7 @@
 <script lang="ts">
   import { authStore } from '../../stores/authStore.svelte';
   import { uiStore } from '../../stores/uiStore';
-  import { Button, Modal, Input } from '../ui';
+  import { Button, Input } from '../ui';
 
   type AuthScreen =
     | 'sign-in'
@@ -217,7 +217,8 @@
   });
 </script>
 
-<Modal onclose={() => uiStore.closeOverlay()} position="center" label="Authentication" class="auth-card">
+<div class="auth-inner">
+  <div class="auth-card">
     {#if screen === 'sign-in'}
       <!-- ════════ Sign In ════════ -->
       <h2 class="auth-title">Sign In to Weplex</h2>
@@ -519,18 +520,20 @@
         <Button variant="danger" onclick={handleSignOut}>Sign Out</Button>
       </div>
     {/if}
-</Modal>
+  </div>
+</div>
 
 <style>
-  :global(.auth-card) {
-    width: 380px;
-    max-height: 90vh;
+  .auth-inner {
+    width: 100%;
+    height: 100%;
+    background: var(--weplex-bg);
     overflow-y: auto;
-    background: var(--weplex-surface);
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-xl);
-    box-shadow: var(--weplex-shadow-overlay);
-    padding: 28px 24px;
+  }
+
+  .auth-card {
+    max-width: 480px;
+    padding: 32px 40px;
   }
 
   .auth-title {

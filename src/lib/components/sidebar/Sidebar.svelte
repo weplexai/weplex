@@ -530,7 +530,7 @@
           ? authStore.user?.displayName || authStore.user?.email || 'Account'
           : 'Sign In'}
         onclick={() => {
-          uiStore.openAuth();
+          uiStore.enterHubMode('account');
         }}
       >
         {#if authStore.isAuthenticated}
@@ -544,7 +544,7 @@
       <button
         class="header-icon-btn"
         title="Settings"
-        onclick={() => uiStore.openOverlay('settings')}
+        onclick={() => uiStore.enterHubMode('settings')}
       >
         <Settings size={14} />
       </button>

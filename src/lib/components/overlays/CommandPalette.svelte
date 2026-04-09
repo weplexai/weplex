@@ -154,7 +154,7 @@
           category: 'Settings',
           action: () => {
             uiStore.closeOverlay();
-            uiStore.openOverlay('settings');
+            uiStore.enterHubMode('settings');
           },
         });
       }

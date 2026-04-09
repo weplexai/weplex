@@ -129,15 +129,18 @@
   {#if spaceGrain > 0}
     <div class="app-grain" style="opacity: {Math.min(spaceGrain * 1.5, 1)}"></div>
   {/if}
-  {#if uiStore.hubMode || uiStore.hubExiting}
-    <HubSidebar />
-    <HubContent />
-  {/if}
   {#if uiStore.activeOverlay === 'agents' && !uiStore.hubMode}
     <AgentsPipelines />
-  {/if}
-  <div class="work-layout" class:hidden={uiStore.hubMode || uiStore.hubExiting || uiStore.activeOverlay === 'agents'}>
+  {:else}
     <Sidebar />
+  {/if}
+
+  {#if uiStore.hubMode || uiStore.hubExiting}
+    <div class="hub-overlay">
+      <HubSidebar />
+      <HubContent />
+    </div>
+  {/if}
 
     {#if uiStore.sidebarHidden}
       <button class="sidebar-reveal" onclick={() => uiStore.showSidebar()}>
@@ -261,7 +264,6 @@
     {#if uiStore.detailPanelOpen}
       <DetailPanel session={activeSession} />
     {/if}
-  </div>
 
   <!-- Terminal instances live outside the conditional so they survive overlay switches
        (AgentsPipelines replaces the {:else} block, which would destroy all terminals) -->
@@ -300,10 +302,6 @@
   <NewSessionDialog />
 {:else if uiStore.activeOverlay === 'space-modal'}
   <SpaceModal />
-{:else if uiStore.activeOverlay === 'settings'}
-  <Settings />
-{:else if uiStore.activeOverlay === 'auth'}
-  <AuthOverlay />
 {:else if uiStore.activeOverlay === 'marketplace'}
   <MarketplaceOverlay />
 {:else if uiStore.activeOverlay === 'uikit'}
@@ -320,12 +318,11 @@
     transition: background 0.3s ease;
   }
 
-  .work-layout {
-    display: contents;
-  }
-
-  .work-layout.hidden {
-    display: none;
+  .hub-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    z-index: 50;
   }
 
   .app-grain {

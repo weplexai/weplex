@@ -154,10 +154,11 @@ export const uiStore = {
   exitHubMode() {
     hubExiting = true;
     hubExitAt = Date.now();
+    // Fade out hub (200ms), then brief overlap where both are hidden (50ms)
     setTimeout(() => {
       hubMode = false;
       hubExiting = false;
-    }, 200);
+    }, 250);
   },
 
   toggleHubMode() {

@@ -4,13 +4,7 @@
   import { authStore } from '../../stores/authStore.svelte';
 
   function openAccount() {
-    uiStore.openOverlay('settings');
-    // Settings overlay will need to switch to Account tab
-    // We use a small delay to let the overlay mount first
-    setTimeout(() => {
-      const accountTab = document.querySelector('[data-tab="account"]') as HTMLElement;
-      accountTab?.click();
-    }, 50);
+    uiStore.enterHubMode('account');
   }
 </script>
 
@@ -19,11 +13,11 @@
     <button
       class="icon-btn"
       title="Agents & Pipelines (⌘⇧A)"
-      onclick={() => uiStore.openOverlay('agents')}
+      onclick={() => uiStore.enterHubMode('agents')}
     >
       <Layers size={15} />
     </button>
-    <button class="icon-btn" title="Settings (⌘,)" onclick={() => uiStore.openOverlay('settings')}>
+    <button class="icon-btn" title="Settings (⌘,)" onclick={() => uiStore.enterHubMode('settings')}>
       <Settings size={15} />
     </button>
     <button

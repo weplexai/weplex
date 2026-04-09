@@ -5,26 +5,30 @@
     Workflow,
     Store,
     LayoutGrid,
-    Settings,
+    Settings as SettingsIcon,
     User,
   } from 'lucide-svelte';
+  import SettingsPanel from '../overlays/Settings.svelte';
+  import AuthPanel from '../overlays/AuthOverlay.svelte';
   import type { HubSection } from '../../types';
 
-  // Map section to icon + description for placeholder
-  const sectionMeta: Record<HubSection, { icon: typeof Bot; title: string; description: string }> = {
+  // Placeholder meta for sections not yet wired up
+  const placeholders: Partial<Record<HubSection, { icon: typeof Bot; title: string; description: string }>> = {
     agents: { icon: Bot, title: 'Agents', description: 'Browse and manage your AI coding agents' },
     pipelines: { icon: Workflow, title: 'Pipelines', description: 'Create and run automation pipelines' },
     marketplace: { icon: Store, title: 'Marketplace', description: 'Discover agents, pipelines, and plugins' },
     spaces: { icon: LayoutGrid, title: 'Spaces', description: 'Manage your workspaces' },
-    settings: { icon: Settings, title: 'Settings', description: 'Configure Weplex preferences' },
-    account: { icon: User, title: 'Account', description: 'Profile, billing, and team management' },
   };
 
-  let meta = $derived(sectionMeta[uiStore.hubSection]);
+  // Sections with real components
+  const liveComponents: Set<HubSection> = new Set(['settings', 'account']);
+
+  let isPlaceholder = $derived(!liveComponents.has(uiStore.hubSection));
+  let placeholder = $derived(placeholders[uiStore.hubSection]);
+
   let prevSection = $state(uiStore.hubSection);
   let slideKey = $state(0);
 
-  // Trigger slide animation on section change
   $effect(() => {
     if (uiStore.hubSection !== prevSection) {
       prevSection = uiStore.hubSection;
@@ -36,12 +40,18 @@
 <div class="hub-content" class:exiting={uiStore.hubExiting}>
   {#key slideKey}
     <div class="hub-section-view">
-      <div class="hub-placeholder">
-        <meta.icon size={48} strokeWidth={1.2} />
-        <h1>{meta.title}</h1>
-        <p>{meta.description}</p>
-        <span class="hub-placeholder-badge">Coming soon</span>
-      </div>
+      {#if uiStore.hubSection === 'settings'}
+        <SettingsPanel />
+      {:else if uiStore.hubSection === 'account'}
+        <AuthPanel />
+      {:else if isPlaceholder && placeholder}
+        <div class="hub-placeholder">
+          <placeholder.icon size={48} strokeWidth={1.2} />
+          <h1>{placeholder.title}</h1>
+          <p>{placeholder.description}</p>
+          <span class="hub-placeholder-badge">Coming soon</span>
+        </div>
+      {/if}
     </div>
   {/key}
 </div>
@@ -51,11 +61,8 @@
     flex: 1;
     min-width: 0;
     position: relative;
-    margin: 9px 9px 9px 0;
-    border-radius: 0 10px 10px 0;
-    box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.4),
-      0 2px 8px rgba(0, 0, 0, 0.3);
+    margin: 0;
+    border-radius: 0;
     background: var(--weplex-bg);
     overflow: hidden;
   }
