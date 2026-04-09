@@ -10,6 +10,7 @@
   } from 'lucide-svelte';
   import SettingsPanel from '../overlays/Settings.svelte';
   import AuthPanel from '../overlays/AuthOverlay.svelte';
+  import HubSpaces from './HubSpaces.svelte';
   import type { HubSection } from '../../types';
 
   // Placeholder meta for sections not yet wired up
@@ -17,11 +18,10 @@
     agents: { icon: Bot, title: 'Agents', description: 'Browse and manage your AI coding agents' },
     pipelines: { icon: Workflow, title: 'Pipelines', description: 'Create and run automation pipelines' },
     marketplace: { icon: Store, title: 'Marketplace', description: 'Discover agents, pipelines, and plugins' },
-    spaces: { icon: LayoutGrid, title: 'Spaces', description: 'Manage your workspaces' },
   };
 
   // Sections with real components
-  const liveComponents: Set<HubSection> = new Set(['settings', 'account']);
+  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces']);
 
   let isPlaceholder = $derived(!liveComponents.has(uiStore.hubSection));
   let placeholder = $derived(placeholders[uiStore.hubSection]);
@@ -44,6 +44,8 @@
         <SettingsPanel />
       {:else if uiStore.hubSection === 'account'}
         <AuthPanel />
+      {:else if uiStore.hubSection === 'spaces'}
+        <HubSpaces />
       {:else if isPlaceholder && placeholder}
         <div class="hub-placeholder">
           <placeholder.icon size={48} strokeWidth={1.2} />
