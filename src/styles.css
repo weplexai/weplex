@@ -57,8 +57,9 @@
   --weplex-idle: #6b7280;
   --weplex-error: #ef4444;
   --weplex-info: #3b82f6;
-  --weplex-accent: #8b5cf6;
-  --weplex-accent-hover: #7c3aed;
+  --weplex-accent: #fc5e44;
+  --weplex-accent-hover: #e04830;
+  --weplex-accent-subtle: #fc5e4433;
   --weplex-pink: #ec4899;
 
   /* Model colors */
@@ -127,8 +128,8 @@
   --weplex-text-secondary: #6b6b80;
   --weplex-text-muted: #9898a8;
   --weplex-text-inverse: #ffffff;
-  --weplex-accent: #7c3aed;
-  --weplex-accent-hover: #6d28d9;
+  --weplex-accent: #e04830;
+  --weplex-accent-hover: #c93d28;
   --weplex-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
   --weplex-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
   --weplex-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);

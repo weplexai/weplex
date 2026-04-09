@@ -41,7 +41,7 @@
         background: '#0a0a0f',
         foreground: '#e4e4ef',
         cursor: 'transparent', // Hidden cursor
-        selectionBackground: '#8b5cf644',
+        selectionBackground: '#fc5e4440',
       },
       scrollback: 1000,
       allowProposedApi: true,

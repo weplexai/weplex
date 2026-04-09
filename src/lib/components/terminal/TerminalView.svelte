@@ -68,7 +68,7 @@
       foreground: '#e8e8ed',
       cursor: 'transparent',
       cursorAccent: '#0a0a0f',
-      selectionBackground: 'rgba(139, 92, 246, 0.3)',
+      selectionBackground: 'rgba(252, 94, 68, 0.25)',
       selectionForeground: '#e8e8ed',
       black: '#1a1a25',
       red: '#ef4444',
@@ -92,7 +92,7 @@
       foreground: '#1a1a1f',
       cursor: 'transparent',
       cursorAccent: '#fafafa',
-      selectionBackground: 'rgba(124, 58, 237, 0.2)',
+      selectionBackground: 'rgba(224, 72, 48, 0.2)',
       selectionForeground: '#1a1a1f',
       black: '#1a1a1f',
       red: '#dc2626',
@@ -224,8 +224,8 @@
       const isLightNow = theme === 'light';
       term.options.theme = isLightNow
         ? {
-            background: '#fafafa', foreground: '#1a1a1f', cursor: '#7c3aed',
-            cursorAccent: '#fafafa', selectionBackground: 'rgba(124, 58, 237, 0.2)',
+            background: '#fafafa', foreground: '#1a1a1f', cursor: '#e04830',
+            cursorAccent: '#fafafa', selectionBackground: 'rgba(224, 72, 48, 0.2)',
             black: '#1a1a1f', red: '#dc2626', green: '#059669', yellow: '#d97706',
             blue: '#2563eb', magenta: '#7c3aed', cyan: '#0891b2', white: '#f5f5f5',
             brightBlack: '#9898a8', brightRed: '#ef4444', brightGreen: '#10b981',
@@ -233,8 +233,8 @@
             brightCyan: '#06b6d4', brightWhite: '#ffffff',
           }
         : {
-            background: '#0a0a0f', foreground: '#e8e8ed', cursor: '#8b5cf6',
-            cursorAccent: '#0a0a0f', selectionBackground: 'rgba(139, 92, 246, 0.3)',
+            background: '#0a0a0f', foreground: '#e8e8ed', cursor: '#fc5e44',
+            cursorAccent: '#0a0a0f', selectionBackground: 'rgba(252, 94, 68, 0.25)',
             black: '#1a1a25', red: '#ef4444', green: '#10b981', yellow: '#f59e0b',
             blue: '#3b82f6', magenta: '#8b5cf6', cyan: '#06b6d4', white: '#e8e8ed',
             brightBlack: '#6b6b80', brightRed: '#f87171', brightGreen: '#34d399',
@@ -565,7 +565,7 @@
         // Restore cursor color on first output
         if (!cursorRestored) {
           cursorRestored = true;
-          term.options.theme = { ...term.options.theme, cursor: '#8b5cf6' };
+          term.options.theme = { ...term.options.theme, cursor: '#fc5e44' };
         }
         term.write(bytes);
 
