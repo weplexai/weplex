@@ -217,7 +217,7 @@
   });
 </script>
 
-<div class="auth-inner">
+<div class="auth-inner" class:auth-centered={screen !== 'profile'}>
   <div class="auth-card">
     {#if screen === 'sign-in'}
       <!-- ════════ Sign In ════════ -->
@@ -413,7 +413,9 @@
       </div>
 
       <p class="auth-footer-text">
-        <Button variant="ghost" class="link-btn" onclick={() => switchScreen('sign-in')}>Back to Sign In</Button>
+        <Button variant="ghost" class="link-btn" onclick={() => switchScreen(authStore.isAuthenticated ? 'profile' : 'sign-in')}>
+          {authStore.isAuthenticated ? 'Back to Account' : 'Back to Sign In'}
+        </Button>
       </p>
     {:else if screen === 'reset-password'}
       <!-- ════════ Reset Password ════════ -->
@@ -455,7 +457,9 @@
       </div>
 
       <p class="auth-footer-text">
-        <Button variant="ghost" class="link-btn" onclick={() => switchScreen('sign-in')}>Back to Sign In</Button>
+        <Button variant="ghost" class="link-btn" onclick={() => switchScreen(authStore.isAuthenticated ? 'profile' : 'sign-in')}>
+          {authStore.isAuthenticated ? 'Back to Account' : 'Back to Sign In'}
+        </Button>
       </p>
     {:else if screen === 'profile'}
       <!-- ════════ Profile ════════ -->
@@ -565,11 +569,23 @@
     height: 100%;
     background: var(--weplex-bg);
     overflow-y: auto;
+    display: flex;
   }
 
   .auth-card {
-    max-width: 560px;
+    width: 100%;
+    max-width: 700px;
     padding: 32px 40px;
+  }
+
+  .auth-inner.auth-centered {
+    align-items: center;
+    justify-content: center;
+  }
+
+  .auth-inner.auth-centered > .auth-card {
+    max-width: 380px;
+    width: 380px;
   }
 
   .auth-title {
@@ -621,7 +637,7 @@
   }
 
   :global(.link-btn:hover) {
-    text-decoration: underline;
+    text-decoration: none;
   }
 
   :global(.link-btn:disabled) {
@@ -840,11 +856,6 @@
 
   :global(.profile-detail-value .link-btn) {
     font-size: var(--weplex-text-xs);
-    text-decoration: underline;
-  }
-
-  :global(.profile-detail-value .link-btn:hover) {
-    opacity: 0.8;
   }
 
   .sync-status {
