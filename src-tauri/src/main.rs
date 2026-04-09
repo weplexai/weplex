@@ -1089,9 +1089,9 @@ fn get_project_config(cwd: String) -> Result<ProjectConfig, String> {
     })
 }
 
-/// Inject a Weplex context block into the project's CLAUDE.md.
-/// Finds or creates .claude/CLAUDE.md, strips any existing Weplex block,
-/// and prepends the new context. Returns the path written.
+/// Inject Weplex workspace context into the project's CLAUDE.local.md.
+/// This file is gitignored by design (Claude Code convention), so it won't
+/// pollute the shared repo. Writes only when content has changed.
 #[tauri::command]
 fn inject_claude_md(cwd: String, context_block: String) -> Result<String, String> {
     let resolved = resolve_cwd(&cwd);
@@ -1104,119 +1104,70 @@ fn inject_claude_md(cwd: String, context_block: String) -> Result<String, String
     }
     let resolved = canonical.to_string_lossy().to_string();
 
-    // Prefer .claude/CLAUDE.md (project-scoped), fallback to root CLAUDE.md
-    let config_path = {
-        let dot_claude = format!("{}/.claude/CLAUDE.md", resolved);
-        let root = format!("{}/CLAUDE.md", resolved);
-        if std::path::Path::new(&dot_claude).exists() {
-            dot_claude
-        } else if std::path::Path::new(&root).exists() {
-            root
-        } else {
-            // Create .claude/ directory and CLAUDE.md
-            let dir = format!("{}/.claude", resolved);
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| format!("Failed to create .claude dir: {}", e))?;
-            dot_claude
+    let config_path = format!("{}/CLAUDE.local.md", resolved);
+
+    // Ensure CLAUDE.local.md is in .gitignore
+    let gitignore_path = format!("{}/.gitignore", resolved);
+    if std::path::Path::new(&gitignore_path).exists() {
+        let gitignore = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+        if !gitignore.lines().any(|l| l.trim() == "CLAUDE.local.md") {
+            let separator = if gitignore.ends_with('\n') || gitignore.is_empty() { "" } else { "\n" };
+            std::fs::write(&gitignore_path, format!("{}{}{}\n", gitignore, separator, "CLAUDE.local.md"))
+                .map_err(|e| format!("Failed to update .gitignore: {}", e))?;
+            eprintln!("[weplex] added CLAUDE.local.md to .gitignore");
         }
-    };
+    }
 
     // Read existing content
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
 
-    // Strip old Weplex block if present
-    let cleaned = strip_weplex_block(&existing);
-
-    // Prepend new context block
-    let new_content = if cleaned.trim().is_empty() {
-        context_block
+    let new_content = if let Some((before, after)) = strip_weplex_block(&existing) {
+        // Block exists — replace in place, preserve surrounding content
+        match (before.is_empty(), after.is_empty()) {
+            (true, true) => context_block.clone(),
+            (true, false) => format!("{}\n\n{}", context_block, after),
+            (false, true) => format!("{}\n\n{}", before, context_block),
+            (false, false) => format!("{}\n\n{}\n\n{}", before, context_block, after),
+        }
+    } else if existing.trim().is_empty() {
+        // New file — just the block
+        context_block.clone()
     } else {
-        format!("{}\n\n{}", context_block, cleaned)
+        // File exists but no block — prepend
+        format!("{}\n\n{}", context_block, existing)
     };
 
+    // Skip write if content unchanged
+    if existing == new_content {
+        return Ok(config_path);
+    }
+
     std::fs::write(&config_path, &new_content)
-        .map_err(|e| format!("Failed to write CLAUDE.md: {}", e))?;
+        .map_err(|e| format!("Failed to write CLAUDE.local.md: {}", e))?;
 
     eprintln!("[weplex] injected context into {}", config_path);
     Ok(config_path)
 }
 
-/// Remove a previously injected Weplex context block from CLAUDE.md.
-#[tauri::command]
-fn remove_claude_md_injection(cwd: String) -> Result<(), String> {
-    let resolved = resolve_cwd(&cwd);
+/// Find and strip the Weplex context block delimited by HTML comments.
+/// Returns Some((before, after)) with trimmed surrounding content, or None if no block found.
+fn strip_weplex_block(content: &str) -> Option<(String, String)> {
+    let start_marker = "<!-- wplx-ctx";
+    let end_marker = "<!-- /wplx-ctx -->";
 
-    // Path validation: must be an existing directory
-    let canonical = std::fs::canonicalize(&resolved)
-        .map_err(|_| format!("Invalid project directory: {}", resolved))?;
-    if !canonical.is_dir() {
-        return Err(format!("Not a directory: {}", resolved));
-    }
-    let resolved = canonical.to_string_lossy().to_string();
+    let start = content.find(start_marker)?;
 
-    for path_suffix in &[".claude/CLAUDE.md", "CLAUDE.md"] {
-        let config_path = format!("{}/{}", resolved, path_suffix);
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
-            if content.contains("<!-- Injected by Weplex") {
-                let cleaned = strip_weplex_block(&content);
-                std::fs::write(&config_path, cleaned.trim_start())
-                    .map_err(|e| format!("Failed to clean CLAUDE.md: {}", e))?;
-                eprintln!("[weplex] removed injection from {}", config_path);
-            }
-        }
-    }
+    let after_start = &content[start..];
+    let end = if let Some(rel_end) = after_start.find(end_marker) {
+        start + rel_end + end_marker.len()
+    } else {
+        // Missing end marker — strip from start to end of file
+        content.len()
+    };
 
-    Ok(())
-}
-
-/// Strip the Weplex context block delimited by HTML comments.
-/// Handles edge cases: missing end marker, end before start.
-fn strip_weplex_block(content: &str) -> String {
-    let start_marker = "<!-- Injected by Weplex";
-    let end_marker = "<!-- End Weplex block -->";
-
-    if let Some(start) = content.find(start_marker) {
-        // Search for end marker AFTER start position only
-        let after_start = &content[start..];
-        let end = if let Some(rel_end) = after_start.find(end_marker) {
-            start + rel_end + end_marker.len()
-        } else {
-            // Missing end marker — strip from start to end of line (or end of file)
-            if let Some(next_newline) = content[start..].find('\n') {
-                // Find the next blank line or non-Weplex content
-                let mut pos = start + next_newline + 1;
-                while pos < content.len() {
-                    if content[pos..].starts_with("<!-- End Weplex") {
-                        pos += end_marker.len();
-                        break;
-                    }
-                    if let Some(nl) = content[pos..].find('\n') {
-                        pos += nl + 1;
-                    } else {
-                        pos = content.len();
-                        break;
-                    }
-                }
-                pos
-            } else {
-                content.len()
-            }
-        };
-
-        let before = &content[..start];
-        let after = &content[end..];
-        let mut result = before.trim_end().to_string();
-        let after_trimmed = after.trim_start();
-        if !after_trimmed.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n\n");
-            }
-            result.push_str(after_trimmed);
-        }
-        return result;
-    }
-
-    content.to_string()
+    let before = content[..start].trim_end().to_string();
+    let after = content[end..].trim_start().to_string();
+    Some((before, after))
 }
 
 #[derive(serde::Serialize)]
@@ -2203,7 +2154,6 @@ fn main() {
             get_git_branch,
             get_git_status,
             inject_claude_md,
-            remove_claude_md_injection,
             list_skills,
             read_skill_content,
             persist_store,
