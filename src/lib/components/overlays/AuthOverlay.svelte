@@ -459,39 +459,46 @@
       </p>
     {:else if screen === 'profile'}
       <!-- ════════ Profile ════════ -->
-      <h2 class="auth-title">Account</h2>
-
       {#if authStore.error}
         <div class="auth-error">{authStore.error}</div>
       {/if}
 
-      <div class="profile-section">
-        <span class="profile-email">{authStore.user?.email}</span>
-
-        <div class="profile-row">
-          {#if editingName}
-            <div class="inline-edit">
-              <Input
-                class="auth-input"
-                type="text"
-                bind:value={editDisplayName}
-                placeholder="Display name"
-                size="sm"
-                onkeydown={(e) => e.key === 'Enter' && saveDisplayName()}
-              />
-              <Button variant="primary" size="sm" onclick={saveDisplayName}>Save</Button>
-              <Button variant="secondary" size="sm" onclick={() => (editingName = false)}>Cancel</Button>
-            </div>
-          {:else}
-            <span class="profile-name" onclick={startEditName}>
-              {authStore.user?.displayName || 'Set display name'}
-            </span>
-          {/if}
+      <!-- Avatar + Name -->
+      <div class="profile-header">
+        <div class="profile-avatar">
+          {(authStore.user?.displayName || authStore.user?.email || '?')[0].toUpperCase()}
         </div>
+        <div class="profile-header-info">
+          <div class="profile-row">
+            {#if editingName}
+              <div class="inline-edit">
+                <Input
+                  class="auth-input"
+                  type="text"
+                  bind:value={editDisplayName}
+                  placeholder="Display name"
+                  size="sm"
+                  onkeydown={(e) => e.key === 'Enter' && saveDisplayName()}
+                />
+                <Button variant="primary" size="sm" onclick={saveDisplayName}>Save</Button>
+                <Button variant="secondary" size="sm" onclick={() => (editingName = false)}>Cancel</Button>
+              </div>
+            {:else}
+              <span class="profile-name" onclick={startEditName}>
+                {authStore.user?.displayName || 'Set display name'}
+              </span>
+            {/if}
+          </div>
+          <span class="profile-email">{authStore.user?.email}</span>
+        </div>
+      </div>
 
+      <!-- Account Details -->
+      <div class="profile-group">
+        <h4 class="profile-group-title">Account</h4>
         <div class="profile-meta-row">
-          <span class="profile-detail">
-            Email:
+          <span class="profile-detail-label">Email</span>
+          <span class="profile-detail-value">
             {#if authStore.user?.emailVerified}
               <span class="badge badge-green">Verified</span>
             {:else}
@@ -500,24 +507,53 @@
             {/if}
           </span>
         </div>
-
         <div class="profile-meta-row">
-          <span class="profile-detail">
-            Plan: <span class="badge">{authStore.user?.plan || 'Free'}</span>
+          <span class="profile-detail-label">Plan</span>
+          <span class="profile-detail-value">
+            <span class="badge">{authStore.user?.plan || 'Free'}</span>
           </span>
         </div>
-
         <div class="profile-meta-row">
-          <span class="profile-detail">
-            Sync: <span class="sync-status" class:sync-error={authStore.syncStatus === 'error'}>
+          <span class="profile-detail-label">Sync</span>
+          <span class="profile-detail-value">
+            <span class="sync-status" class:sync-error={authStore.syncStatus === 'error'}>
               {authStore.syncStatus}
             </span>
           </span>
         </div>
       </div>
 
-      <div class="profile-actions">
-        <Button variant="danger" onclick={handleSignOut}>Sign Out</Button>
+      <!-- Connected Accounts -->
+      <div class="profile-group">
+        <h4 class="profile-group-title">Connected Accounts</h4>
+        <div class="profile-meta-row">
+          <span class="profile-detail-label">GitHub</span>
+          <span class="profile-detail-value">
+            {#if authStore.user?.githubId}
+              <span class="badge badge-green">Connected</span>
+            {:else}
+              <button class="connect-btn" onclick={() => authStore.oauthLogin('github')}>Connect</button>
+            {/if}
+          </span>
+        </div>
+        <div class="profile-meta-row">
+          <span class="profile-detail-label">Google</span>
+          <span class="profile-detail-value">
+            {#if authStore.user?.googleId}
+              <span class="badge badge-green">Connected</span>
+            {:else}
+              <button class="connect-btn" onclick={() => authStore.oauthLogin('google')}>Connect</button>
+            {/if}
+          </span>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="profile-group profile-group-danger">
+        <div class="profile-actions-row">
+          <Button variant="secondary" size="sm" onclick={() => switchScreen('forgot-password')}>Change Password</Button>
+          <Button variant="danger" size="sm" onclick={handleSignOut}>Sign Out</Button>
+        </div>
       </div>
     {/if}
   </div>
@@ -532,7 +568,7 @@
   }
 
   .auth-card {
-    max-width: 480px;
+    max-width: 560px;
     padding: 32px 40px;
   }
 
@@ -672,11 +708,33 @@
   }
 
   /* ═══ Profile screen ═══ */
-  .profile-section {
-    margin-top: 16px;
+  .profile-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .profile-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--weplex-accent) 25%, transparent);
+    border: 2px solid color-mix(in srgb, var(--weplex-accent) 40%, transparent);
+    color: var(--weplex-accent);
+    font-size: 22px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .profile-header-info {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 4px;
+    min-width: 0;
   }
 
   .profile-email {
@@ -691,8 +749,8 @@
   }
 
   .profile-name {
-    font-size: var(--weplex-text-sm);
-    font-weight: 500;
+    font-size: var(--weplex-text-md);
+    font-weight: 600;
     cursor: pointer;
   }
 
@@ -711,14 +769,54 @@
     flex: 1;
   }
 
+  .profile-group {
+    margin-bottom: 24px;
+  }
+
+  .profile-group-title {
+    font-size: var(--weplex-text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--weplex-text-muted);
+    margin: 0 0 10px;
+  }
+
+  .profile-group-danger {
+    margin-top: 32px;
+    padding-top: 20px;
+    border-top: 1px solid var(--weplex-border);
+  }
+
   .profile-meta-row {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--weplex-border);
   }
 
-  .profile-detail {
+  .profile-detail-label {
     font-size: var(--weplex-text-sm);
     color: var(--weplex-text-secondary);
+  }
+
+  .profile-detail-value {
+    font-size: var(--weplex-text-sm);
+    color: var(--weplex-text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .profile-detail-muted {
+    font-size: var(--weplex-text-sm);
+    color: var(--weplex-text-muted);
+  }
+
+  .profile-detail-mono {
+    font-family: var(--weplex-font-mono);
+    color: var(--weplex-text-muted);
   }
 
   .badge {
@@ -740,13 +838,12 @@
     color: #f59e0b;
   }
 
-  :global(.profile-detail .link-btn) {
+  :global(.profile-detail-value .link-btn) {
     font-size: var(--weplex-text-xs);
-    margin-left: 8px;
     text-decoration: underline;
   }
 
-  :global(.profile-detail .link-btn:hover) {
+  :global(.profile-detail-value .link-btn:hover) {
     opacity: 0.8;
   }
 
@@ -761,7 +858,25 @@
     color: var(--weplex-error);
   }
 
-  .profile-actions {
-    margin-top: 20px;
+  .connect-btn {
+    font-size: var(--weplex-text-xs);
+    padding: 3px 10px;
+    border-radius: var(--weplex-radius-sm);
+    border: 1px solid var(--weplex-border);
+    background: transparent;
+    color: var(--weplex-text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .connect-btn:hover {
+    border-color: var(--weplex-accent);
+    color: var(--weplex-accent);
+  }
+
+  .profile-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
 </style>
