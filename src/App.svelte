@@ -22,6 +22,8 @@
   import AuthOverlay from './lib/components/overlays/AuthOverlay.svelte';
   import AgentsPipelines from './lib/components/overlays/AgentsPipelines.svelte';
   import UIKit from './lib/components/overlays/UIKit.svelte';
+  import HubSidebar from './lib/components/hub/HubSidebar.svelte';
+  import HubContent from './lib/components/hub/HubContent.svelte';
   import { sessionStore } from './lib/stores/sessionStore';
   import { spaceStore } from './lib/stores/spaceStore';
   import { uiStore } from './lib/stores/uiStore';
@@ -127,9 +129,14 @@
   {#if spaceGrain > 0}
     <div class="app-grain" style="opacity: {Math.min(spaceGrain * 1.5, 1)}"></div>
   {/if}
-  {#if uiStore.activeOverlay === 'agents'}
+  {#if uiStore.hubMode || uiStore.hubExiting}
+    <HubSidebar />
+    <HubContent />
+  {/if}
+  {#if uiStore.activeOverlay === 'agents' && !uiStore.hubMode}
     <AgentsPipelines />
-  {:else}
+  {/if}
+  <div class="work-layout" class:hidden={uiStore.hubMode || uiStore.hubExiting || uiStore.activeOverlay === 'agents'}>
     <Sidebar />
 
     {#if uiStore.sidebarHidden}
@@ -254,7 +261,7 @@
     {#if uiStore.detailPanelOpen}
       <DetailPanel session={activeSession} />
     {/if}
-  {/if}
+  </div>
 
   <!-- Terminal instances live outside the conditional so they survive overlay switches
        (AgentsPipelines replaces the {:else} block, which would destroy all terminals) -->
@@ -311,6 +318,14 @@
     position: relative;
     background: var(--weplex-sidebar-bg);
     transition: background 0.3s ease;
+  }
+
+  .work-layout {
+    display: contents;
+  }
+
+  .work-layout.hidden {
+    display: none;
   }
 
   .app-grain {

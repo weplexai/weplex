@@ -90,14 +90,21 @@
   );
   let folders = $derived(folderStore.getBySpace(spaceId));
 
+  // Filter out shared/team spaces when not authenticated (same as SpaceSwitcher)
+  let visibleSpaces = $derived(
+    authStore.isAuthenticated
+      ? spaceStore.spaces
+      : spaceStore.spaces.filter(s => !s.shared && s.type !== 'team')
+  );
+
   // Slider: active index + swipe offset
-  // Hyperspace is at index 0, regular spaces start at index 1
+  // Hub preview at index 0, Hyperspace at index 1, regular spaces start at index 2
   let activeIdx = $derived(
     spaceStore.activeSpaceId === HYPERSPACE_ID
-      ? 0
-      : spaceStore.spaces.findIndex((s) => s.id === spaceStore.activeSpaceId) + 1,
+      ? 1
+      : visibleSpaces.findIndex((s) => s.id === spaceStore.activeSpaceId) + 2,
   );
-  let totalSlides = $derived(spaceStore.spaces.length + 1); // +1 for Hyperspace
+  let totalSlides = $derived(visibleSpaces.length + 2); // +1 Hyperspace +1 Hub preview
   let swipeOffset = $state(0);
   let snapping = $state(false);
 
@@ -406,16 +413,34 @@
   }
 
   // Swipe gesture for space switching
+  // One swipe = one space switch. Gap between events detects new gesture.
   let gestureEndTimer: ReturnType<typeof setTimeout>;
   let viewportEl = $state<HTMLElement>();
-  let ignoreUntil = 0;
+  let switched = false;
+  let lastEventTime = 0;
 
   function handleSwipeWheel(e: WheelEvent) {
     if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
     if (Math.abs(e.deltaX) < 2) return;
-    if (Date.now() < ignoreUntil) {
-      // Keep extending cooldown while inertia events arrive
-      ignoreUntil = Math.max(ignoreUntil, Date.now() + 5);
+
+    const now = Date.now();
+
+    // While hub is open or just closed, eat swipe events and mark as switched
+    // so the gap-based logic catches remaining inertia after hub fully closes
+    if (uiStore.hubMode || uiStore.hubExiting || (uiStore.hubExitAt && now - uiStore.hubExitAt < 300)) {
+      swipeOffset = 0;
+      switched = true;
+      lastEventTime = now;
+      return;
+    }
+    if (now - lastEventTime > 25) {
+      switched = false;
+    }
+    lastEventTime = now;
+
+    if (switched) {
+      clearTimeout(gestureEndTimer);
+      swipeOffset = 0;
       return;
     }
 
@@ -432,29 +457,30 @@
 
     swipeOffset += delta;
 
-    // Switch at 40% threshold — transition handles the rest
+    // Switch at 40% threshold
     if (swipeOffset < -w * 0.4 && canNext) {
       clearTimeout(gestureEndTimer);
       snapping = true;
+      switched = true;
       spaceStore.switchToNext();
       sessionStore.activateForSpace(spaceStore.activeSpaceId);
       swipeOffset = 0;
-      ignoreUntil = Date.now() + 600;
-      setTimeout(() => {
-        snapping = false;
-      }, 300);
+      setTimeout(() => { snapping = false; }, 300);
       return;
     }
     if (swipeOffset > w * 0.4 && canPrev) {
       clearTimeout(gestureEndTimer);
       snapping = true;
-      spaceStore.switchToPrevious();
-      sessionStore.activateForSpace(spaceStore.activeSpaceId);
+      switched = true;
       swipeOffset = 0;
-      ignoreUntil = Date.now() + 600;
-      setTimeout(() => {
-        snapping = false;
-      }, 300);
+      if (activeIdx === 1) {
+        // Hyperspace → Hub preview: enter hub mode
+        uiStore.enterHubMode();
+      } else {
+        spaceStore.switchToPrevious();
+        sessionStore.activateForSpace(spaceStore.activeSpaceId);
+      }
+      setTimeout(() => { snapping = false; }, 300);
       return;
     }
 
@@ -536,13 +562,26 @@
         oncontextmenu={handleBgContext}
         onclick={() => (showBgMenu = false)}
       >
-        <!-- Hyperspace slide (always first) -->
+        <!-- Hub preview slide (visible during swipe, triggers hub mode) -->
+        <div class="slider-slide hub-preview-slide">
+          <div class="hub-preview-nav">
+            <div class="hub-preview-item">Agents</div>
+            <div class="hub-preview-item">Pipelines</div>
+            <div class="hub-preview-item">Marketplace</div>
+            <div class="hub-preview-item">Spaces</div>
+            <div class="hub-preview-divider"></div>
+            <div class="hub-preview-item">Settings</div>
+            <div class="hub-preview-item">Account</div>
+          </div>
+        </div>
+
+        <!-- Hyperspace slide -->
         <div class="slider-slide">
           <HyperspaceView />
         </div>
 
         <!-- Regular space slides -->
-        {#each spaceStore.spaces as space (space.id)}
+        {#each visibleSpaces as space (space.id)}
           {@const spaceFolders = folderStore.getBySpace(space.id)}
           {@const spacePinned = sessionStore.getPinnedStandalone(space.id)}
           {@const spaceUnpinned = sessionStore.getUnpinned(space.id)}
@@ -1045,5 +1084,26 @@
   .new-session-btn.active-chat {
     color: var(--weplex-accent);
     background: color-mix(in srgb, var(--weplex-accent) 10%, transparent);
+  }
+
+  .hub-preview-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 12px;
+  }
+
+  .hub-preview-item {
+    padding: 8px 12px;
+    border-radius: var(--weplex-radius-md);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: var(--weplex-text-sm);
+    font-weight: 500;
+  }
+
+  .hub-preview-divider {
+    height: 1px;
+    margin: 8px 12px;
+    background: rgba(255, 255, 255, 0.06);
   }
 </style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Layers, Eye, Users } from 'lucide-svelte';
+  import { Layers, Eye, Users, Compass } from 'lucide-svelte';
   import { HYPERSPACE_ID } from '../../types';
   import { spaceStore } from '../../stores/spaceStore';
   import { sessionStore } from '../../stores/sessionStore';
@@ -117,56 +117,68 @@
 </script>
 
 <div class="spaces">
-  <!-- Hyperspace pill (always first) -->
+  <!-- Hub toggle — pinned left (Arc-style) -->
   <button
-    class="space-pill hyperspace"
-    class:active={spaceStore.activeSpaceId === HYPERSPACE_ID}
-    onclick={() => {
-      spaceStore.activate(HYPERSPACE_ID);
-      sessionStore.activateForSpace(HYPERSPACE_ID);
-    }}
-    title="All Spaces"
+    class="space-pill hub-pill"
+    onclick={() => uiStore.enterHubMode()}
+    title="Hub (⌘⇧H)"
   >
-    <Layers size={14} />
+    <Compass size={14} />
   </button>
 
-  {#each visibleSpaces as space, i (space.id)}
-    {#if isDragging && dropIndex === i && dragIndex !== i}
+  <!-- Center group: Hyperspace + Space pills -->
+  <div class="spaces-center">
+    <button
+      class="space-pill hyperspace"
+      class:active={spaceStore.activeSpaceId === HYPERSPACE_ID}
+      onclick={() => {
+        spaceStore.activate(HYPERSPACE_ID);
+        sessionStore.activateForSpace(HYPERSPACE_ID);
+      }}
+      title="All Spaces"
+    >
+      <Layers size={14} />
+    </button>
+
+    {#each visibleSpaces as space, i (space.id)}
+      {#if isDragging && dropIndex === i && dragIndex !== i}
+        <div class="drop-indicator"></div>
+      {/if}
+      <button
+        class="space-pill"
+        class:active={space.id === spaceStore.activeSpaceId}
+        class:drag-source={isDragging && dragIndex === i}
+        style="--space-color: {space.color}"
+        onclick={() => {
+          if (!suppressClick) {
+            spaceStore.activate(space.id);
+            sessionStore.activateForSpace(space.id);
+          }
+        }}
+        oncontextmenu={(e) => {
+          e.preventDefault();
+          handleEditSpace(space.id);
+        }}
+        onpointerdown={(e) => handlePillPointerDown(e, i)}
+        onpointermove={handlePillPointerMove}
+        onpointerup={handlePillPointerUp}
+        onpointercancel={handlePillPointerUp}
+        title={space.name}
+      >
+        <span class="pill-letter">{space.name[0].toUpperCase()}</span>
+        {#if space.type === 'team'}
+          <span class="pill-badge"><Users size={8} /></span>
+        {:else if space.shared}
+          <span class="pill-badge"><Eye size={8} /></span>
+        {/if}
+      </button>
+    {/each}
+    {#if isDragging && dropIndex === spaceStore.spaces.length}
       <div class="drop-indicator"></div>
     {/if}
-    <button
-      class="space-pill"
-      class:active={space.id === spaceStore.activeSpaceId}
-      class:drag-source={isDragging && dragIndex === i}
-      style="--space-color: {space.color}"
-      onclick={() => {
-        if (!suppressClick) {
-          spaceStore.activate(space.id);
-          sessionStore.activateForSpace(space.id);
-        }
-      }}
-      oncontextmenu={(e) => {
-        e.preventDefault();
-        handleEditSpace(space.id);
-      }}
-      onpointerdown={(e) => handlePillPointerDown(e, i)}
-      onpointermove={handlePillPointerMove}
-      onpointerup={handlePillPointerUp}
-      onpointercancel={handlePillPointerUp}
-      title={space.name}
-    >
-      <span class="pill-letter">{space.name[0].toUpperCase()}</span>
-      {#if space.type === 'team'}
-        <span class="pill-badge"><Users size={8} /></span>
-      {:else if space.shared}
-        <span class="pill-badge"><Eye size={8} /></span>
-      {/if}
-    </button>
-  {/each}
-  {#if isDragging && dropIndex === spaceStore.spaces.length}
-    <div class="drop-indicator"></div>
-  {/if}
+  </div>
 
+  <!-- Add button — pinned right (Arc-style) -->
   <div
     class="add-wrapper"
     onfocusout={(e) => {
@@ -201,6 +213,21 @@
     gap: 6px;
     padding: 8px 12px 18px;
     position: relative;
+  }
+
+  .spaces-center {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding-left: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .spaces-center::-webkit-scrollbar {
+    display: none;
   }
 
   .space-pill {
@@ -283,27 +310,55 @@
     --space-color: var(--weplex-text-secondary);
   }
 
+  .hub-pill {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.5);
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-right: 6px;
+  }
+
+  .hub-pill:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  /* Subtle separator between hub and spaces */
+  .hub-pill::after {
+    content: '';
+    position: absolute;
+    right: -5px;
+    top: 6px;
+    bottom: 6px;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
   .add-wrapper {
     position: relative;
+    flex-shrink: 0;
   }
 
   .space-add {
     width: 28px;
     height: 28px;
     border-radius: var(--weplex-radius-md);
-    border: 1px dashed var(--weplex-border);
+    border: none;
     background: transparent;
-    color: var(--weplex-text-muted);
-    font-size: var(--weplex-text-md);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 18px;
+    font-weight: 300;
     display: flex;
     align-items: center;
     justify-content: center;
+    cursor: pointer;
     transition: all var(--weplex-duration-fast) var(--weplex-easing);
   }
 
   .space-add:hover {
-    border-color: var(--weplex-accent);
-    color: var(--weplex-accent);
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.9);
   }
 
   .add-menu {

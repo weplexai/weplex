@@ -1,0 +1,138 @@
+<script lang="ts">
+  import { uiStore } from '../../stores/uiStore';
+  import {
+    Bot,
+    Workflow,
+    Store,
+    LayoutGrid,
+    Settings,
+    User,
+  } from 'lucide-svelte';
+  import type { HubSection } from '../../types';
+
+  // Map section to icon + description for placeholder
+  const sectionMeta: Record<HubSection, { icon: typeof Bot; title: string; description: string }> = {
+    agents: { icon: Bot, title: 'Agents', description: 'Browse and manage your AI coding agents' },
+    pipelines: { icon: Workflow, title: 'Pipelines', description: 'Create and run automation pipelines' },
+    marketplace: { icon: Store, title: 'Marketplace', description: 'Discover agents, pipelines, and plugins' },
+    spaces: { icon: LayoutGrid, title: 'Spaces', description: 'Manage your workspaces' },
+    settings: { icon: Settings, title: 'Settings', description: 'Configure Weplex preferences' },
+    account: { icon: User, title: 'Account', description: 'Profile, billing, and team management' },
+  };
+
+  let meta = $derived(sectionMeta[uiStore.hubSection]);
+  let prevSection = $state(uiStore.hubSection);
+  let slideKey = $state(0);
+
+  // Trigger slide animation on section change
+  $effect(() => {
+    if (uiStore.hubSection !== prevSection) {
+      prevSection = uiStore.hubSection;
+      slideKey++;
+    }
+  });
+</script>
+
+<div class="hub-content" class:exiting={uiStore.hubExiting}>
+  {#key slideKey}
+    <div class="hub-section-view">
+      <div class="hub-placeholder">
+        <meta.icon size={48} strokeWidth={1.2} />
+        <h1>{meta.title}</h1>
+        <p>{meta.description}</p>
+        <span class="hub-placeholder-badge">Coming soon</span>
+      </div>
+    </div>
+  {/key}
+</div>
+
+<style>
+  .hub-content {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+    margin: 9px 9px 9px 0;
+    border-radius: 0 10px 10px 0;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.4),
+      0 2px 8px rgba(0, 0, 0, 0.3);
+    background: var(--weplex-bg);
+    overflow: hidden;
+  }
+
+  .hub-section-view {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: hub-slide-in 0.2s ease-out;
+  }
+
+  .hub-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    color: var(--weplex-text-muted);
+    text-align: center;
+    animation: hub-placeholder-in 0.3s ease-out;
+  }
+
+  .hub-placeholder h1 {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--weplex-text);
+    margin: 0;
+  }
+
+  .hub-placeholder p {
+    font-size: var(--weplex-text-sm);
+    margin: 0;
+    max-width: 300px;
+    line-height: 1.5;
+  }
+
+  .hub-placeholder-badge {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 4px 12px;
+    border-radius: var(--weplex-radius-full, 999px);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--weplex-text-muted);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .hub-content.exiting {
+    animation: hub-content-out 0.2s ease-in forwards;
+  }
+
+  @keyframes hub-content-out {
+    to {
+      opacity: 0;
+    }
+  }
+
+  @keyframes hub-slide-in {
+    from {
+      opacity: 0;
+      transform: translateX(-12px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes hub-placeholder-in {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+</style>

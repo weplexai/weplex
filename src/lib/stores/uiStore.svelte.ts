@@ -1,4 +1,4 @@
-import type { OverlayType } from '../types';
+import type { OverlayType, HubSection } from '../types';
 
 const SIDEBAR_WIDTH_KEY = 'weplex_sidebar_width';
 const SIDEBAR_HIDDEN_KEY = 'weplex_sidebar_hidden';
@@ -31,6 +31,10 @@ let spaceChatOpen = $state(false);
 let activeOverlay = $state<OverlayType>('none');
 let sidebarWidthVal = $state(loadSidebarWidth());
 let sidebarHidden = $state(loadSidebarHidden());
+let hubMode = $state(false);
+let hubExiting = $state(false);
+let hubSection = $state<HubSection>('agents');
+let hubExitAt = $state(0);
 
 export const uiStore = {
   get detailPanelOpen() {
@@ -124,5 +128,48 @@ export const uiStore = {
 
   openAuth() {
     activeOverlay = 'auth';
+  },
+
+  // Hub mode
+  get hubMode() {
+    return hubMode;
+  },
+  get hubSection(): HubSection {
+    return hubSection;
+  },
+
+  enterHubMode(section?: HubSection) {
+    if (section) hubSection = section;
+    hubMode = true;
+    activeOverlay = 'none';
+  },
+
+  get hubExitAt() {
+    return hubExitAt;
+  },
+  get hubExiting() {
+    return hubExiting;
+  },
+
+  exitHubMode() {
+    hubExiting = true;
+    hubExitAt = Date.now();
+    setTimeout(() => {
+      hubMode = false;
+      hubExiting = false;
+    }, 200);
+  },
+
+  toggleHubMode() {
+    if (hubMode) {
+      hubMode = false;
+    } else {
+      hubMode = true;
+      activeOverlay = 'none';
+    }
+  },
+
+  setHubSection(section: HubSection) {
+    hubSection = section;
   },
 };

@@ -53,8 +53,16 @@ const shortcuts: Shortcut[] = [
     key: 'a',
     meta: true,
     shift: true,
-    action: () => uiStore.openOverlay('agents'),
+    action: () => uiStore.enterHubMode('agents'),
     label: 'Agents & Pipelines',
+    category: 'navigation',
+  },
+  {
+    key: 'h',
+    meta: true,
+    shift: true,
+    action: () => uiStore.toggleHubMode(),
+    label: 'Toggle Hub',
     category: 'navigation',
   },
   {
@@ -170,6 +178,11 @@ export function handleGlobalKeydown(e: KeyboardEvent) {
   }
 
   if (e.key === 'Escape') {
+    if (uiStore.hubMode) {
+      uiStore.exitHubMode();
+      e.preventDefault();
+      return;
+    }
     uiStore.closeOverlay();
     e.preventDefault();
     return;
@@ -178,6 +191,7 @@ export function handleGlobalKeydown(e: KeyboardEvent) {
   // Cmd+0 — Hyperspace
   if (e.key === '0' && !e.shiftKey) {
     e.preventDefault();
+    if (uiStore.hubMode) uiStore.exitHubMode();
     spaceStore.activate(HYPERSPACE_ID);
     sessionStore.activateForSpace(HYPERSPACE_ID);
     return;
@@ -186,6 +200,7 @@ export function handleGlobalKeydown(e: KeyboardEvent) {
   // Cmd+1..9 — Switch to space by index
   const digit = parseInt(e.key);
   if (digit >= 1 && digit <= 9 && !e.shiftKey) {
+    if (uiStore.hubMode) uiStore.exitHubMode();
     const idx = digit - 1;
     if (idx < spaceStore.spaces.length) {
       e.preventDefault();

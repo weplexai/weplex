@@ -13,6 +13,7 @@ export type OverlayType =
   | 'auth'
   | 'marketplace'
   | 'uikit';
+export type HubSection = 'agents' | 'pipelines' | 'marketplace' | 'spaces' | 'settings' | 'account';
 export type SplitDirection = 'horizontal' | 'vertical';
 
 export interface Session {
