@@ -302,8 +302,6 @@
   <NewSessionDialog />
 {:else if uiStore.activeOverlay === 'space-modal'}
   <SpaceModal />
-{:else if uiStore.activeOverlay === 'marketplace'}
-  <MarketplaceOverlay />
 {:else if uiStore.activeOverlay === 'uikit'}
   <UIKit />
 {/if}

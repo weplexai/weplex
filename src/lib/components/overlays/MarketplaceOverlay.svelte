@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { uiStore } from '../../stores/uiStore';
   import { invoke } from '@tauri-apps/api/core';
-  import { Modal } from '../ui';
+  // Modal removed — Marketplace now renders inline in Hub
   import { authStore } from '../../stores/authStore.svelte';
   import {
     searchPackages, installPackage as apiInstall, ratePackage, publishPackage,
@@ -236,7 +236,7 @@
   });
 </script>
 
-<Modal onclose={close} label="Marketplace" class="mp-modal">
+<div class="mp-inner">
   <!-- Tab bar -->
   <div class="mp-tabs">
     <button class="mp-tab" class:active={view === 'browse'} onclick={() => view = 'browse'}>Browse</button>
@@ -468,9 +468,17 @@
       {/if}
     </div>
   {/if}
-</Modal>
+</div>
 
 <style>
+  .mp-inner {
+    width: 100%;
+    height: 100%;
+    padding: 32px 40px;
+    overflow-y: auto;
+    background: var(--weplex-bg);
+  }
+
   .mp-tabs {
     display: flex;
     gap: 2px;

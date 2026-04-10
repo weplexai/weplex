@@ -99,7 +99,7 @@
           category: 'Actions',
           action: () => {
             uiStore.closeOverlay();
-            uiStore.openOverlay('marketplace');
+            uiStore.enterHubMode('marketplace');
           },
         },
         {

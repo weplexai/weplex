@@ -13,15 +13,15 @@
   import HubSpaces from './HubSpaces.svelte';
   import HubAgents from './HubAgents.svelte';
   import HubPipelines from './HubPipelines.svelte';
+  import MarketplacePanel from '../overlays/MarketplaceOverlay.svelte';
   import type { HubSection } from '../../types';
 
   // Placeholder meta for sections not yet wired up
   const placeholders: Partial<Record<HubSection, { icon: typeof Bot; title: string; description: string }>> = {
-    marketplace: { icon: Store, title: 'Marketplace', description: 'Discover agents, pipelines, and plugins' },
   };
 
   // Sections with real components
-  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces', 'agents', 'pipelines']);
+  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces', 'agents', 'pipelines', 'marketplace']);
 
   let isPlaceholder = $derived(!liveComponents.has(uiStore.hubSection));
   let placeholder = $derived(placeholders[uiStore.hubSection]);
@@ -44,6 +44,8 @@
         <HubAgents />
       {:else if uiStore.hubSection === 'pipelines'}
         <HubPipelines />
+      {:else if uiStore.hubSection === 'marketplace'}
+        <MarketplacePanel />
       {:else if uiStore.hubSection === 'settings'}
         <SettingsPanel />
       {:else if uiStore.hubSection === 'account'}
