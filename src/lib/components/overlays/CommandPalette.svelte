@@ -90,7 +90,7 @@
           category: 'Actions',
           action: () => {
             uiStore.closeOverlay();
-            uiStore.openOverlay('agents');
+            uiStore.enterHubMode('agents');
           },
         },
         {

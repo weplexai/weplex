@@ -20,7 +20,6 @@
   import SpaceModal from './lib/components/overlays/SpaceModal.svelte';
   import Settings from './lib/components/overlays/Settings.svelte';
   import AuthOverlay from './lib/components/overlays/AuthOverlay.svelte';
-  import AgentsPipelines from './lib/components/overlays/AgentsPipelines.svelte';
   import UIKit from './lib/components/overlays/UIKit.svelte';
   import HubSidebar from './lib/components/hub/HubSidebar.svelte';
   import HubContent from './lib/components/hub/HubContent.svelte';
@@ -129,11 +128,7 @@
   {#if spaceGrain > 0}
     <div class="app-grain" style="opacity: {Math.min(spaceGrain * 1.5, 1)}"></div>
   {/if}
-  {#if uiStore.activeOverlay === 'agents' && !uiStore.hubMode}
-    <AgentsPipelines />
-  {:else}
-    <Sidebar />
-  {/if}
+  <Sidebar />
 
   {#if uiStore.hubMode || uiStore.hubExiting}
     <div class="hub-overlay">
