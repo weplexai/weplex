@@ -12,9 +12,10 @@
     onchange?: (value: string) => void;
     id?: string;
     class?: string;
+    dropup?: boolean;
   }
 
-  let { options, value = '', onchange, id, class: className = '' }: Props = $props();
+  let { options, value = '', onchange, id, class: className = '', dropup = false }: Props = $props();
 
   let open = $state(false);
   let btnEl: HTMLButtonElement | undefined = $state();
@@ -55,7 +56,7 @@
 
 <svelte:window onclick={handleClickOutside} onkeydown={handleKeydown} />
 
-<div class="weplex-select {className}" class:open>
+<div class="weplex-select {className}" class:open class:dropup>
   <button
     type="button"
     class="weplex-select-trigger"
@@ -153,6 +154,11 @@
     border-radius: var(--weplex-radius-md);
     box-shadow: var(--weplex-shadow-md);
     z-index: 100;
+  }
+
+  .dropup .weplex-select-dropdown {
+    top: auto;
+    bottom: calc(100% + 4px);
   }
 
   .weplex-select-dropdown li {

@@ -583,7 +583,7 @@
 
   .notes-input {
     width: 100%;
-    min-height: 72px;
+    min-height: 120px;
     padding: 6px 8px;
     background: var(--weplex-bg);
     border: 1px solid var(--weplex-border);

@@ -362,6 +362,7 @@
           <Select
             value={selectedSpace}
             options={spaceStore.spaces.map((s) => ({ value: s.id, label: s.name }))}
+            dropup
             onchange={(v) => {
               selectedSpace = v;
               const space = spaceStore.spaces.find((s) => s.id === v);
@@ -385,6 +386,7 @@
                 { value: '', label: 'Inherit from Space' },
                 ...profileStore.profiles.map((p) => ({ value: p.id, label: p.name })),
               ]}
+              dropup
               onchange={(v) => { selectedProfile = v || undefined; }}
             />
           </div>
@@ -483,6 +485,7 @@
                 { value: '', label: 'Inherit from Space' },
                 ...profileStore.profiles.map((p) => ({ value: p.id, label: p.name })),
               ]}
+              dropup
               onchange={(v) => { selectedProfile = v || undefined; }}
             />
           </div>
