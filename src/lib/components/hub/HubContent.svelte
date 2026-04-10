@@ -11,17 +11,17 @@
   import SettingsPanel from '../overlays/Settings.svelte';
   import AuthPanel from '../overlays/AuthOverlay.svelte';
   import HubSpaces from './HubSpaces.svelte';
+  import HubAgents from './HubAgents.svelte';
+  import HubPipelines from './HubPipelines.svelte';
   import type { HubSection } from '../../types';
 
   // Placeholder meta for sections not yet wired up
   const placeholders: Partial<Record<HubSection, { icon: typeof Bot; title: string; description: string }>> = {
-    agents: { icon: Bot, title: 'Agents', description: 'Browse and manage your AI coding agents' },
-    pipelines: { icon: Workflow, title: 'Pipelines', description: 'Create and run automation pipelines' },
     marketplace: { icon: Store, title: 'Marketplace', description: 'Discover agents, pipelines, and plugins' },
   };
 
   // Sections with real components
-  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces']);
+  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces', 'agents', 'pipelines']);
 
   let isPlaceholder = $derived(!liveComponents.has(uiStore.hubSection));
   let placeholder = $derived(placeholders[uiStore.hubSection]);
@@ -40,7 +40,11 @@
 <div class="hub-content" class:exiting={uiStore.hubExiting}>
   {#key slideKey}
     <div class="hub-section-view">
-      {#if uiStore.hubSection === 'settings'}
+      {#if uiStore.hubSection === 'agents'}
+        <HubAgents />
+      {:else if uiStore.hubSection === 'pipelines'}
+        <HubPipelines />
+      {:else if uiStore.hubSection === 'settings'}
         <SettingsPanel />
       {:else if uiStore.hubSection === 'account'}
         <AuthPanel />
