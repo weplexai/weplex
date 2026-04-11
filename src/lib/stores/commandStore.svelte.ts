@@ -9,9 +9,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Session } from '../types';
 
-/** Strip control characters that could be dangerous in PTY. */
+/** Strip control characters that could be dangerous in PTY.
+ *  Includes ESC (0x1B) to prevent terminal escape sequence injection. */
 function sanitizePtyText(text: string): string {
-  return text.replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F]/g, '');
+  return text.replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x1B]/g, '');
 }
 
 const VALID_ICON_COLORS = new Set([
@@ -59,10 +60,30 @@ export interface Command {
 
 const META_STORE_KEY = 'weplex_command_meta';
 
+function isValidMeta(v: unknown): v is CommandMeta {
+  if (!v || typeof v !== 'object') return false;
+  const m = v as Record<string, unknown>;
+  if (m.icon !== undefined && typeof m.icon !== 'string') return false;
+  if (m.iconColor !== undefined && typeof m.iconColor !== 'string') return false;
+  if (m.showInPanel !== undefined && typeof m.showInPanel !== 'boolean') return false;
+  if (m.adapters !== undefined && (typeof m.adapters !== 'object' || m.adapters === null)) return false;
+  return true;
+}
+
 function loadMeta(): Record<string, CommandMeta> {
   try {
     const raw = localStorage.getItem(META_STORE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    // Validate each entry
+    const result: Record<string, CommandMeta> = {};
+    for (const [key, val] of Object.entries(parsed)) {
+      if (typeof key === 'string' && isValidMeta(val)) {
+        result[key] = val;
+      }
+    }
+    return result;
   } catch {
     return {};
   }
