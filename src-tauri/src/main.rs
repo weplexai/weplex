@@ -1162,40 +1162,39 @@ fn ensure_default_commands() -> Result<u32, String> {
 
     let defaults: Vec<(&str, &str)> = vec![
         ("review", r#"---
-description: Full review from all agents
+description: Code review for architecture, security, tests, and requirements
 allowed-tools: Read, Grep, Glob, Bash, Agent
-model: opus
 ---
 
-Проведи финальное ревью параллельно через subagents:
-- architect: архитектура, паттерны, качество кода
-- security: OWASP, секреты, инъекции, доступы
-- tester: покрытие тестами критического кода
-- pm: соответствие требованиям, scope
-Если найдены проблемы — пофикси и проведи ревью заново.
-Итерируй пока все агенты не одобрят.
+Review the current changes for:
+- Architecture: patterns, structure, code quality, maintainability
+- Security: vulnerabilities, input validation, secrets exposure, access control
+- Testing: coverage of critical paths, edge cases, regression risks
+- Requirements: scope alignment, acceptance criteria, completeness
+
+If issues are found — fix them and review again.
+Iterate until all areas pass.
 "#),
         ("review-iterate", r#"---
-description: Re-run review after fixes
+description: Re-run review after applying fixes
 allowed-tools: Read, Grep, Glob, Bash, Agent
-model: opus
 ---
 
-Повторное ревью от всех агентов (architect, security, tester, PM).
-Запусти параллельно через subagents.
-Если всё ок — сообщи. Если нет — пофикси и проведи ещё раз.
+Re-review all areas (architecture, security, testing, requirements).
+If everything passes — report summary. If not — fix and review again.
 "#),
         ("plan", r#"---
-description: Plan implementation approach
+description: Plan implementation approach before coding
 allowed-tools: Read, Grep, Glob, Bash
-model: opus
 ---
 
-Спроектируй подход к реализации:
-- Какие файлы затронуты
-- Архитектурный подход
-- Зависимости и риски
-Не пиши код, только план.
+Plan the implementation:
+- Which files will be affected
+- Architectural approach and patterns
+- Dependencies and risks
+- Edge cases to consider
+
+Do not write code — only the plan.
 "#),
     ];
 
