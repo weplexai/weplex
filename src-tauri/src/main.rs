@@ -137,51 +137,6 @@ fn claude_sessions_dir(cwd: &str) -> String {
     format!("{}/.claude/projects/{}", home, encoded)
 }
 
-/// Find a Claude session file CREATED after a given timestamp (ms since epoch).
-/// Uses file birthtime (macOS) to avoid picking up existing sessions from other terminals.
-#[tauri::command]
-fn get_new_claude_session(
-    cwd: String,
-    after_epoch_ms: u64,
-    exclude_ids: Option<Vec<String>>,
-) -> Result<Option<String>, String> {
-    let sessions_dir = claude_sessions_dir(&cwd);
-    let dir = match std::fs::read_dir(&sessions_dir) {
-        Ok(d) => d,
-        Err(_) => {
-            return Ok(None);
-        }
-    };
-
-    let after = std::time::UNIX_EPOCH + std::time::Duration::from_millis(after_epoch_ms);
-    let excluded: std::collections::HashSet<String> =
-        exclude_ids.unwrap_or_default().into_iter().collect();
-
-    let mut newest: Option<(String, std::time::SystemTime)> = None;
-    for entry in dir.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-            && let Ok(meta) = path.metadata()
-            && let Ok(created) = meta.created()
-            && created > after
-        {
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            if excluded.contains(&stem) {
-                continue;
-            }
-            if newest.is_none() || created > newest.as_ref().unwrap().1 {
-                newest = Some((stem, created));
-            }
-        }
-    }
-
-    Ok(newest.map(|(id, _)| id))
-}
-
 #[derive(serde::Serialize, Default)]
 struct ClaudeUsage {
     input_tokens: u64,
@@ -1089,11 +1044,221 @@ fn get_project_config(cwd: String) -> Result<ProjectConfig, String> {
     })
 }
 
+// ── Claude Commands (.claude/commands/*.md) ─────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct CommandFile {
+    name: String,
+    file_path: String,
+    scope: String, // "user" or "project"
+    description: String,
+    argument_hint: String,
+    allowed_tools: Vec<String>,
+    model: String,
+    body: String,
+}
+
+/// Parse a Claude command .md file (YAML frontmatter + body).
+fn parse_command_file(content: &str, file_path: &str, scope: &str) -> CommandFile {
+    let name = std::path::Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    let content = content.trim_start_matches('\n');
+    let mut description = String::new();
+    let mut argument_hint = String::new();
+    let mut allowed_tools: Vec<String> = Vec::new();
+    let mut model = String::new();
+    let mut body = content.to_string();
+
+    if content.starts_with("---") {
+        let rest = &content[3..];
+        if let Some(end) = rest.find("\n---") {
+            let frontmatter = &rest[..end];
+            body = rest[end + 4..].trim_start_matches('\n').to_string();
+
+            for line in frontmatter.lines() {
+                // Split on first ": " (colon-space) to handle values with colons (URLs etc.)
+                let parts = if let Some(pos) = line.find(": ") {
+                    Some((&line[..pos], &line[pos + 2..]))
+                } else if let Some((k, v)) = line.split_once(':') {
+                    // Fallback for "key:" with no value
+                    Some((k, v))
+                } else {
+                    None
+                };
+                if let Some((key, value)) = parts {
+                    let key = key.trim();
+                    let value = value.trim().to_string();
+                    let value = if (value.starts_with('"') && value.ends_with('"'))
+                        || (value.starts_with('\'') && value.ends_with('\''))
+                    {
+                        value[1..value.len() - 1].to_string()
+                    } else {
+                        value
+                    };
+
+                    match key {
+                        "description" => description = value,
+                        "argument-hint" => argument_hint = value,
+                        "model" => model = value,
+                        "allowed-tools" => {
+                            allowed_tools = value
+                                .split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    CommandFile {
+        name,
+        file_path: file_path.to_string(),
+        scope: scope.to_string(),
+        description,
+        argument_hint,
+        allowed_tools,
+        model,
+        body,
+    }
+}
+
+/// Read all .md command files from a directory.
+fn read_commands_from_dir(dir_path: &str, scope: &str) -> Vec<CommandFile> {
+    let dir = match std::fs::read_dir(dir_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut commands = Vec::new();
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let file_path = path.to_string_lossy().to_string();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        commands.push(parse_command_file(&content, &file_path, scope));
+    }
+    commands
+}
+
+/// List all Claude commands: user-level (~/.claude/commands/) + project-level ({cwd}/.claude/commands/).
+#[tauri::command]
+fn list_commands(cwd: Option<String>) -> Result<Vec<CommandFile>, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let user_dir = format!("{}/.claude/commands", home);
+    let mut commands = read_commands_from_dir(&user_dir, "user");
+
+    if let Some(cwd) = cwd {
+        let resolved = resolve_cwd(&cwd);
+        let project_dir = format!("{}/.claude/commands", resolved);
+        if project_dir != user_dir {
+            commands.extend(read_commands_from_dir(&project_dir, "project"));
+        }
+    }
+
+    commands.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(commands)
+}
+
+/// Save a Claude command file (frontmatter + body).
+#[tauri::command]
+fn save_command(
+    name: String,
+    scope: String,
+    cwd: Option<String>,
+    description: String,
+    argument_hint: String,
+    allowed_tools: Vec<String>,
+    model: String,
+    body: String,
+) -> Result<String, String> {
+    let safe_name = sanitize_name(&name)?;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+
+    let dir = if scope == "project" {
+        let cwd = cwd.ok_or("cwd required for project commands")?;
+        let resolved = resolve_cwd(&cwd);
+        format!("{}/.claude/commands", resolved)
+    } else {
+        format!("{}/.claude/commands", home)
+    };
+
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = format!("{}/{}.md", dir, safe_name);
+
+    // Sanitize frontmatter values: strip newlines and "---" to prevent injection
+    let sanitize_fm = |s: &str| -> String {
+        s.replace('\n', " ").replace('\r', "").replace("---", "")
+    };
+
+    let mut frontmatter = String::from("---\n");
+    if !description.is_empty() {
+        frontmatter.push_str(&format!("description: {}\n", sanitize_fm(&description)));
+    }
+    if !argument_hint.is_empty() {
+        frontmatter.push_str(&format!("argument-hint: {}\n", sanitize_fm(&argument_hint)));
+    }
+    if !allowed_tools.is_empty() {
+        frontmatter.push_str(&format!("allowed-tools: {}\n", sanitize_fm(&allowed_tools.join(", "))));
+    }
+    if !model.is_empty() {
+        frontmatter.push_str(&format!("model: {}\n", sanitize_fm(&model)));
+    }
+    frontmatter.push_str("---\n\n");
+
+    let content = format!("{}{}", frontmatter, body);
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Delete a Claude command file.
+#[tauri::command]
+fn delete_command(path: String) -> Result<(), String> {
+    let canon = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let canon_str = canon.to_string_lossy().to_string();
+
+    // Must be a .md file
+    if !canon_str.ends_with(".md") {
+        return Err("Can only delete .md files".to_string());
+    }
+
+    // Validate: parent dir must be named "commands" and grandparent must be ".claude"
+    let parent = canon.parent().ok_or("Invalid path")?;
+    let grandparent = parent.parent().ok_or("Invalid path")?;
+    let parent_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let grandparent_name = grandparent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if parent_name != "commands" || grandparent_name != ".claude" {
+        return Err("Path is not within a .claude/commands/ directory".to_string());
+    }
+
+    // Additionally verify it's under $HOME
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    if !canon_str.starts_with(&home) {
+        return Err("Path must be under home directory".to_string());
+    }
+    if canon.exists() {
+        std::fs::remove_file(&canon).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Inject Weplex workspace context into the project's CLAUDE.local.md.
 /// This file is gitignored by design (Claude Code convention), so it won't
 /// pollute the shared repo. Writes only when content has changed.
 #[tauri::command]
-fn inject_claude_md(cwd: String, context_block: String) -> Result<String, String> {
+fn inject_context_block(cwd: String, context_block: String) -> Result<String, String> {
     let resolved = resolve_cwd(&cwd);
 
     // Path validation: must be an existing directory, no traversal
@@ -2137,7 +2302,6 @@ fn main() {
             write_pty,
             resize_pty,
             kill_pty,
-            get_new_claude_session,
             get_claude_usage,
             get_claude_state,
             list_dirs,
@@ -2150,10 +2314,13 @@ fn main() {
             save_pipeline,
             delete_pipeline,
             generate_pipeline_instructions,
+            list_commands,
+            save_command,
+            delete_command,
             get_project_config,
             get_git_branch,
             get_git_status,
-            inject_claude_md,
+            inject_context_block,
             list_skills,
             read_skill_content,
             persist_store,
