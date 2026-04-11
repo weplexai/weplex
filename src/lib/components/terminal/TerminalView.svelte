@@ -14,6 +14,7 @@
   import { pipelineWsService } from '../../services/pipelineWsService';
   import { notifyWaitingForInput, notifyError, trackSessionActivity, redactSecrets } from '../../services/notificationService';
   import { terminalRegistry } from '../../stores/terminalRegistry';
+  import { commandStore } from '../../stores/commandStore.svelte';
 
   let { sessionId }: { sessionId: number } = $props();
   let isActive = $derived(sessionStore.activeSessionId === sessionId);
@@ -43,6 +44,39 @@
   let isDragOver = $state(false);
   // Set in connectPty once session type is known
   let isAgentMode = false;
+
+  // Slash command autocomplete
+  let slashBuffer = '';
+  let slashActive = $state(false);
+  let slashQuery = $state('');
+  let slashSelectedIdx = $state(0);
+  let slashMatches = $derived.by(() => {
+    if (!slashActive || !slashQuery) return commandStore.getSlashCommands();
+    const q = slashQuery.toLowerCase();
+    return commandStore.getSlashCommands().filter(
+      (c) => c.name.toLowerCase().startsWith(q),
+    );
+  });
+
+  function slashSelectByClick(idx: number) {
+    slashSelectedIdx = idx;
+    const selected = slashMatches[idx];
+    const session = sessionStore.sessions.find((s) => s.id === sessionId);
+    if (!selected || !session || !ptyWriter) return;
+    const resolved = commandStore.resolveForPty(selected, session);
+    if (!resolved) return;
+    // Erase local echo
+    const eraseLen = 1 + slashBuffer.length;
+    term?.write('\b'.repeat(eraseLen) + ' '.repeat(eraseLen) + '\b'.repeat(eraseLen));
+    slashActive = false;
+    slashBuffer = '';
+    slashQuery = '';
+    ptyWriter(resolved + '\n');
+    if (scheduleTransition) {
+      sessionStore.updateStatus(sessionId, 'thinking');
+      scheduleTransition();
+    }
+  }
 
   // Reusable TextDecoder for converting raw PTY bytes to string (pattern matching only).
   // stream:true keeps state across calls so multibyte sequences split across
@@ -154,6 +188,113 @@
 
     disposables.push(
       term.onData((data) => {
+        // ── Slash command interception (agent sessions only) ──
+        // During slash mode: characters are echoed locally to xterm (not sent to PTY).
+        // On resolve: only the resolved text is sent to PTY.
+        // On cancel/no match: the typed slash text is flushed to PTY.
+        if (isAgentMode && ptyWriter) {
+          // Detect "/" at start of line (single char, not paste)
+          if (data === '/' && inputBuffer.length === 0 && !slashActive) {
+            slashActive = true;
+            slashBuffer = '';
+            slashQuery = '';
+            slashSelectedIdx = 0;
+            term.write(data); // local echo only
+            return;
+          }
+
+          if (slashActive) {
+            const code = data.charCodeAt(0);
+
+            // Escape — close autocomplete, flush typed text to PTY
+            if (data === '\x1b') {
+              const typed = '/' + slashBuffer;
+              slashActive = false;
+              slashBuffer = '';
+              slashQuery = '';
+              // Erase local echo, send typed text to PTY for real
+              const eraseLen = typed.length;
+              term.write('\b'.repeat(eraseLen) + ' '.repeat(eraseLen) + '\b'.repeat(eraseLen));
+              ptyWriter(typed);
+              return;
+            }
+
+            // Arrow keys (up/down) — navigate autocomplete
+            if (data === '\x1b[A') { // up
+              slashSelectedIdx = Math.max(0, slashSelectedIdx - 1);
+              return;
+            }
+            if (data === '\x1b[B') { // down
+              slashSelectedIdx = Math.min(Math.max(0, slashMatches.length - 1), slashSelectedIdx + 1);
+              return;
+            }
+
+            // Tab or Enter — select and execute
+            if (data === '\t' || data === '\r' || data === '\n') {
+              const selected = slashMatches[slashSelectedIdx];
+              const session = sessionStore.sessions.find((s) => s.id === sessionId);
+              if (selected && session) {
+                const resolved = commandStore.resolveForPty(selected, session);
+                if (resolved) {
+                  // Erase local echo of slash command
+                  const eraseLen = 1 + slashBuffer.length;
+                  term.write('\b'.repeat(eraseLen) + ' '.repeat(eraseLen) + '\b'.repeat(eraseLen));
+                  slashActive = false;
+                  slashBuffer = '';
+                  slashQuery = '';
+                  inputBuffer = ''; // clear to prevent auto-rename from slash fragments
+                  // Send only the resolved text to PTY
+                  ptyWriter(resolved + '\n');
+                  if (scheduleTransition) {
+                    sessionStore.updateStatus(sessionId, 'thinking');
+                    scheduleTransition();
+                  }
+                  return;
+                }
+              }
+              // No match — close autocomplete, flush typed text + Enter to PTY
+              const typed = '/' + slashBuffer;
+              const eraseLen = typed.length;
+              term.write('\b'.repeat(eraseLen) + ' '.repeat(eraseLen) + '\b'.repeat(eraseLen));
+              slashActive = false;
+              slashBuffer = '';
+              slashQuery = '';
+              ptyWriter(typed + data); // send original typed text + Enter
+              // Fall through to agent status tracking below
+            } else if (code === 127 || code === 8) {
+              // Backspace
+              if (slashBuffer.length > 0) {
+                slashBuffer = slashBuffer.slice(0, -1);
+                slashQuery = slashBuffer;
+                slashSelectedIdx = 0;
+                term.write(data); // local echo backspace
+              } else {
+                // Backspaced past "/" — erase "/" and close
+                term.write(data); // erase the "/"
+                slashActive = false;
+                slashQuery = '';
+              }
+              return;
+            } else if (data === '/' && slashBuffer.length === 0) {
+              // Double slash "//" — cancel slash mode, send both to PTY
+              slashActive = false;
+              slashQuery = '';
+              term.write('\b \b'); // erase first local "/"
+              ptyWriter('//' ); // send both to PTY
+              return;
+            } else if (data.length === 1 && code >= 32) {
+              // Regular character — accumulate + local echo
+              slashBuffer += data;
+              slashQuery = slashBuffer;
+              slashSelectedIdx = 0;
+              term.write(data); // local echo only
+              return;
+            }
+            // For unhandled cases (control chars etc), ignore during slash mode
+            return;
+          }
+        }
+
         if (ptyWriter) ptyWriter(data);
         // Agent: user input → set "thinking" (agent will process)
         // When PTY output arrives, status changes to "active"
@@ -415,6 +556,11 @@
         await contextInjectionStore.inject(session);
       }
 
+      // Load commands for slash autocomplete
+      if (isAgentMode && session?.cwd) {
+        commandStore.load(session.cwd);
+      }
+
       await invoke('create_pty', {
         sessionId,
         cols: term.cols > 2 ? term.cols : 80,
@@ -634,40 +780,25 @@
         await invoke('write_pty', { sessionId, data });
       };
 
-      // Detect the NEW Claude session ID by file creation time
-      // Claude takes 10-40s to create its session file, so we poll with retries
-      if (isClaude && !claudeIdCaptured) {
-        const pollForSessionId = async (attempt: number) => {
-          if (destroyed || claudeIdCaptured || attempt > 12) return;
-          try {
-            // Collect IDs already claimed by other sessions to avoid collisions
-            const excludeIds = sessionStore.sessions
-              .filter((s) => s.id !== sessionId && s.claudeSessionId)
-              .map((s) => s.claudeSessionId!);
-            const newId = await invoke<string | null>('get_new_claude_session', {
-              cwd: session!.cwd,
-              afterEpochMs: launchTime,
-              excludeIds,
-            });
-            if (newId) {
-              claudeIdCaptured = true;
-              sessionStore.update(sessionId, { claudeSessionId: newId });
-              startUsagePolling(invoke, session!.cwd!, newId);
-              return;
-            }
-          } catch {
-            /* retry on next attempt */
+      // Claude session ID is captured via SessionStart hook (reliable, no polling).
+      // Start usage polling when claudeSessionId becomes available (may arrive later via hook).
+      if (isClaude) {
+        let usagePollingStarted = !!session!.claudeSessionId;
+        if (usagePollingStarted) {
+          startUsagePolling(invoke, session!.cwd!, session!.claudeSessionId!);
+        }
+        // Watch for claudeSessionId arriving via SessionStart hook
+        const checkInterval = setInterval(() => {
+          if (destroyed) { clearInterval(checkInterval); return; }
+          const s = sessionStore.sessions.find((s) => s.id === sessionId);
+          if (!usagePollingStarted && s?.claudeSessionId) {
+            usagePollingStarted = true;
+            claudeIdCaptured = true;
+            startUsagePolling(invoke, session!.cwd!, s.claudeSessionId);
+            clearInterval(checkInterval);
           }
-          const t = setTimeout(() => pollForSessionId(attempt + 1), 5000);
-          pendingTimers.push(t);
-        };
-        const t = setTimeout(() => pollForSessionId(0), 3000);
-        pendingTimers.push(t);
-      }
-
-      // If session already has a Claude session ID (restored), start polling immediately
-      if (isClaude && claudeIdCaptured && session!.claudeSessionId) {
-        startUsagePolling(invoke, session!.cwd!, session!.claudeSessionId);
+        }, 1000);
+        pendingTimers.push(checkInterval as unknown as ReturnType<typeof setTimeout>);
       }
 
       disposables.push(
@@ -727,6 +858,29 @@
   ondrop={(e) => e.preventDefault()}
 >
   <div class="terminal-inner" bind:this={containerEl}></div>
+
+  <!-- Slash command autocomplete -->
+  {#if slashActive && slashMatches.length > 0}
+    <div class="slash-dropdown">
+      {#each slashMatches as cmd, i (cmd.name)}
+        <button
+          class="slash-item"
+          class:selected={i === slashSelectedIdx}
+          onmouseenter={() => { slashSelectedIdx = i; }}
+          onmousedown={(e) => { e.preventDefault(); slashSelectByClick(i); }}
+        >
+          <span class="slash-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">{cmd.icon}</span>
+          <span class="slash-cmd">/{cmd.name}</span>
+          <span class="slash-desc">{cmd.description || cmd.name}</span>
+        </button>
+      {/each}
+      <div class="slash-hint">
+        <span><kbd>↑↓</kbd> navigate</span>
+        <span><kbd>↵</kbd> select</span>
+        <span><kbd>esc</kbd> close</span>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -756,5 +910,85 @@
     outline: 2px solid var(--weplex-accent);
     outline-offset: -2px;
     border-radius: 4px;
+  }
+
+  /* Slash command autocomplete */
+  .slash-dropdown {
+    position: absolute;
+    bottom: 48px;
+    left: 24px;
+    width: 240px;
+    background: var(--weplex-surface);
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-lg);
+    box-shadow: var(--weplex-shadow-md);
+    padding: 4px;
+    z-index: 50;
+  }
+
+  .slash-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: var(--weplex-radius-sm);
+    width: 100%;
+    border: none;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    font-family: var(--weplex-font-ui);
+    color: var(--weplex-text);
+  }
+
+  .slash-item:hover,
+  .slash-item.selected {
+    background: color-mix(in srgb, var(--weplex-accent) 10%, transparent);
+  }
+
+  .slash-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 700;
+    flex-shrink: 0;
+    font-family: var(--weplex-font-mono);
+    background: color-mix(in srgb, var(--cmd-color) 15%, transparent);
+    color: var(--cmd-color);
+  }
+
+  .slash-cmd {
+    font-family: var(--weplex-font-mono);
+    font-size: var(--weplex-text-xs);
+    font-weight: 600;
+    color: var(--weplex-accent);
+    min-width: 80px;
+  }
+
+  .slash-desc {
+    font-size: var(--weplex-text-xs);
+    color: var(--weplex-text-muted);
+  }
+
+  .slash-hint {
+    padding: 4px 8px;
+    font-size: 10px;
+    color: var(--weplex-text-muted);
+    border-top: 1px solid var(--weplex-border);
+    margin-top: 2px;
+    display: flex;
+    gap: 12px;
+  }
+
+  .slash-hint kbd {
+    font-family: var(--weplex-font-mono);
+    background: var(--weplex-surface-hover);
+    padding: 0 4px;
+    border-radius: 2px;
+    font-size: 9px;
   }
 </style>

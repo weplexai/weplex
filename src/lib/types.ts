@@ -13,7 +13,7 @@ export type OverlayType =
   | 'auth'
   | 'marketplace'
   | 'uikit';
-export type HubSection = 'agents' | 'pipelines' | 'marketplace' | 'spaces' | 'settings' | 'account';
+export type HubSection = 'agents' | 'pipelines' | 'commands' | 'marketplace' | 'spaces' | 'settings' | 'account';
 export type SplitDirection = 'horizontal' | 'vertical';
 
 export interface Session {
@@ -100,6 +100,10 @@ export interface Session {
   // Plugin
   /** Plugin ID for plugin-type sessions. */
   pluginId?: string;
+
+  // Workflow
+  /** Active workflow for this session (inherited from space on create). */
+  workflowId?: string;
 }
 
 export interface Note {
@@ -148,6 +152,7 @@ export interface Space {
   teamId?: string; // set for shared/team spaces
   serverId?: string; // server UUID (null for private local spaces)
   createdBy?: string; // userId who created
+  defaultWorkflowId?: string; // default workflow for new sessions in this space
 }
 
 export interface Profile {
@@ -499,7 +504,7 @@ export interface SessionRecord {
 
 // ── Hook Events ──────────────────────────────────────────────────────────────
 
-export type HookEventType = 'pre_tool_use' | 'post_tool_use' | 'stop' | 'subagent_start' | 'subagent_stop';
+export type HookEventType = 'pre_tool_use' | 'post_tool_use' | 'stop' | 'subagent_start' | 'subagent_stop' | 'session_start';
 
 export interface HookEventPayload {
   event_type: HookEventType;
@@ -511,6 +516,7 @@ export interface HookEventPayload {
   tool_output?: string;
   agent_type?: string;
   agent_id?: string;
+  claude_session_id?: string;
   timestamp: number;
 }
 

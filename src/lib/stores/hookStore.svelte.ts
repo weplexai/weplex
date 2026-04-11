@@ -210,6 +210,15 @@ function processEvent(event: HookEventPayload) {
     subAgents.set(event.session_id, sessionSubs);
     subAgents = new Map(subAgents);
   }
+
+  // SessionStart: capture Claude session ID for --resume support
+  // Validate UUID format to prevent command injection (claudeSessionId is interpolated into shell command)
+  if (event.event_type === 'session_start' && event.claude_session_id) {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (UUID_RE.test(event.claude_session_id)) {
+      sessionStore.update(event.session_id, { claudeSessionId: event.claude_session_id });
+    }
+  }
 }
 
 /** Cap sub-agents list: remove oldest completed entries when over limit. */

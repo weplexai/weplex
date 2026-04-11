@@ -21,6 +21,7 @@ pub enum HookEventType {
     Stop,
     SubagentStart,
     SubagentStop,
+    SessionStart,
 }
 
 /// Payload sent by hook scripts to the Weplex HTTP listener.
@@ -44,6 +45,8 @@ pub struct HookEvent {
     pub agent_type: Option<String>,
     /// Sub-agent unique ID for matching start/stop events
     pub agent_id: Option<String>,
+    /// Claude Code session UUID (from SessionStart hook)
+    pub claude_session_id: Option<String>,
 }
 
 /// Tauri event payload emitted to the frontend.
@@ -58,6 +61,7 @@ pub struct HookEventPayload {
     pub tool_output: Option<String>,
     pub agent_type: Option<String>,
     pub agent_id: Option<String>,
+    pub claude_session_id: Option<String>,
     pub timestamp: u64,
 }
 
@@ -209,6 +213,7 @@ fn run_hook_server(server: Arc<tiny_http::Server>, app: tauri::AppHandle, expect
                     tool_output: event.tool_output.clone(),
                     agent_type: event.agent_type.clone(),
                     agent_id: event.agent_id.clone(),
+                    claude_session_id: event.claude_session_id.clone(),
                     timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
