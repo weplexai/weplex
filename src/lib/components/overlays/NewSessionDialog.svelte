@@ -11,6 +11,7 @@
   import SessionIcon from '../SessionIcon.svelte';
   import { Workflow } from 'lucide-svelte';
   import { Button, Modal, Input, Select } from '../ui';
+  import { workflowStore } from '../../stores/workflowStore.svelte';
 
   // Resolve default directory: Space.directory > AppSettings.defaultDirectory > '~'
   function getDefaultDirectory(): string {
@@ -45,6 +46,9 @@
   let inputEl = $state<HTMLInputElement>();
   let iconTab = $state<'emoji' | 'icon'>('emoji');
   let selectedProfile = $state<string | undefined>(undefined); // undefined = inherit from space
+  let selectedWorkflow = $state<string>(
+    spaceStore.spaces.find((s) => s.id === spaceStore.activeSpaceId)?.defaultWorkflowId || '',
+  );
   let showSpaceDropdown = $state(false);
   let showProfileDropdown = $state(false);
   let currentSpaceName = $derived(
@@ -182,6 +186,7 @@
       spaceId: selectedSpace,
       profileId: selectedProfile,
       pinned,
+      workflowId: selectedWorkflow || undefined,
     });
     if (selectedIcon) {
       sessionStore.update(session.id, { icon: selectedIcon });
@@ -316,6 +321,13 @@
         {/each}
       </div>
 
+      <span class="field-label">Workflow</span>
+      <Select
+        value={selectedWorkflow}
+        options={workflowStore.options}
+        onchange={(v) => { selectedWorkflow = v; }}
+      />
+
       <span class="field-label">Icon</span>
       <div class="icon-picker-container">
         <div class="picker-tabs">
@@ -373,6 +385,7 @@
                 const settingsDir = settingsStore.settings.defaultDirectory;
                 directory = settingsDir && settingsDir !== '~' ? settingsDir : '~';
               }
+              selectedWorkflow = space?.defaultWorkflowId || '';
             }}
           />
         </div>

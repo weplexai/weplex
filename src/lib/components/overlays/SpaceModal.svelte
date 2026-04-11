@@ -8,7 +8,8 @@
   import { uiStore } from '../../stores/uiStore';
   import { SPACE_COLORS } from '../../types';
   import type { SpaceType } from '../../types';
-  import { Button, Modal, Input } from '../ui';
+  import { Button, Modal, Input, Select } from '../ui';
+  import { workflowStore } from '../../stores/workflowStore.svelte';
   import { Eye, Users } from 'lucide-svelte';
 
   // ── HSB ↔ Hex conversion ──
@@ -150,6 +151,7 @@
   }
   let profileId = $state('default');
   let directory = $state('');
+  let defaultWorkflowId = $state('');
   let showProfileDropdown = $state(false);
   let spaceType = $state<SpaceType>('personal');
   let shared = $state(false);
@@ -234,6 +236,7 @@
           bgMode = space.bgMode ?? 'dark';
           profileId = space.profileId || 'default';
           directory = space.directory || '';
+          defaultWorkflowId = space.defaultWorkflowId || '';
           spaceType = space.type ?? 'personal';
           shared = space.shared ?? false;
           selectedTeamId = space.teamId || teamStore.activeTeamId;
@@ -247,6 +250,7 @@
         bgMode = 'dark';
         profileId = 'default';
         directory = '';
+        defaultWorkflowId = '';
         spaceType = 'personal';
         shared = false;
         selectedTeamId = teamStore.activeTeamId;
@@ -274,6 +278,7 @@
         bgMode: bgMode !== 'dark' ? bgMode : undefined,
         profileId: profileId === 'default' ? undefined : profileId,
         directory: trimmedDir,
+        defaultWorkflowId: defaultWorkflowId || undefined,
         type: spaceType,
         shared,
         teamId: (shared || spaceType === 'team') ? (selectedTeamId || undefined) : undefined,
@@ -502,6 +507,13 @@
         </div>
       {/if}
     </div>
+
+    <span class="field-label">Default Workflow</span>
+    <Select
+      value={defaultWorkflowId}
+      options={workflowStore.options}
+      onchange={(v) => { defaultWorkflowId = v; }}
+    />
 
     {#if hasTeams}
       <span class="field-label">Sharing</span>

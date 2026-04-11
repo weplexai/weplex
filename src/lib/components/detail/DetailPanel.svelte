@@ -22,6 +22,8 @@
   import SpaceChat from './SpaceChat.svelte';
   import { chatStore } from '../../stores/chatStore.svelte';
   import { hookStore } from '../../stores/hookStore.svelte';
+  import ProjectSection from './ProjectSection.svelte';
+  import CommandsSection from './CommandsSection.svelte';
 
   let { session }: { session: Session | undefined } = $props();
   let showPipelineView = $derived(pipelineRunStore.activeRunId !== null);
@@ -39,15 +41,21 @@
   let profileEnvVars = $derived(profile ? Object.entries(profile.envVars || {}) : []);
   let sessionDurationMs = $derived(session ? Date.now() - session.createdAt : 0);
 
-  // Chat tab — only visible in shared/team spaces
+  // Tabs — Info always visible, Chat for shared/team spaces, Project/Cmds for agent sessions
   let isSharedSpace = $derived(space?.shared === true || space?.type === 'team');
-  let activeTab = $state<'info' | 'chat'>('info');
+  let hasProject = $derived(session?.type === 'agent' && !!session?.cwd);
+  let hasCommands = $derived(session?.type === 'agent');
+  let activeTab = $state<'info' | 'chat' | 'project' | 'cmds'>('info');
   let chatUnread = $derived(space?.serverId ? chatStore.getUnread(space.serverId) : 0);
 
-  // Reset tab when session or space changes, or space loses shared status
+  // Reset tab only when switching to a DIFFERENT session (not on status/prop updates)
+  let prevSessionId = $state<number | undefined>(undefined);
   $effect(() => {
-    const _sessionId = session?.id;
-    activeTab = 'info';
+    const currentId = session?.id;
+    if (currentId !== prevSessionId) {
+      prevSessionId = currentId;
+      activeTab = 'info';
+    }
   });
 
   // Note key: SSH → "user@host", others → cwd
@@ -103,8 +111,8 @@
   {:else if showPipelineView}
     <StageOutput />
   {:else if session}
-    <!-- Tab switcher for shared/team spaces -->
-    {#if isSharedSpace}
+    <!-- Tab switcher — visible when multiple tabs available -->
+    {#if isSharedSpace || hasProject || hasCommands}
       <div class="tab-bar">
         <button
           class="tab-btn"
@@ -113,21 +121,45 @@
         >
           Info
         </button>
-        <button
-          class="tab-btn"
-          class:active={activeTab === 'chat'}
-          onclick={() => (activeTab = 'chat')}
-        >
-          Chat
-          {#if chatUnread > 0}
-            <span class="unread-badge">{chatUnread > 99 ? '99+' : chatUnread}</span>
-          {/if}
-        </button>
+        {#if hasProject}
+          <button
+            class="tab-btn"
+            class:active={activeTab === 'project'}
+            onclick={() => (activeTab = 'project')}
+          >
+            Project
+          </button>
+        {/if}
+        {#if hasCommands}
+          <button
+            class="tab-btn"
+            class:active={activeTab === 'cmds'}
+            onclick={() => (activeTab = 'cmds')}
+          >
+            Cmds
+          </button>
+        {/if}
+        {#if isSharedSpace}
+          <button
+            class="tab-btn"
+            class:active={activeTab === 'chat'}
+            onclick={() => (activeTab = 'chat')}
+          >
+            Chat
+            {#if chatUnread > 0}
+              <span class="unread-badge">{chatUnread > 99 ? '99+' : chatUnread}</span>
+            {/if}
+          </button>
+        {/if}
       </div>
     {/if}
 
     {#if activeTab === 'chat' && isSharedSpace && space?.serverId}
       <SpaceChat serverId={space.serverId} sessionId={session?.id} />
+    {:else if activeTab === 'project' && hasProject && session?.cwd}
+      <ProjectSection cwd={session.cwd} />
+    {:else if activeTab === 'cmds' && hasCommands && session}
+      <CommandsSection {session} />
     {:else}
     <!-- Space / Profile section -->
     {#if space}

@@ -129,6 +129,7 @@ export const sessionStore = {
       pinned?: boolean;
       extraEnvVars?: Record<string, string>;
       parentId?: number;
+      workflowId?: string;
     } = {},
   ): Session {
     const id = nextId++;
@@ -136,13 +137,18 @@ export const sessionStore = {
     const type = opts.command ? detectSessionType(opts.command) : 'terminal';
     const agentType = type === 'agent' && opts.command ? detectAgentType(opts.command) : undefined;
 
+    // Inherit workflow from space if not explicitly set
+    const spaceId = opts.spaceId || 'default';
+    const space = spaceStore.spaces.find((s) => s.id === spaceId);
+    const workflowId = opts.workflowId !== undefined ? opts.workflowId : space?.defaultWorkflowId;
+
     const session: Session = {
       id,
       name: opts.name || smartName(agentType, opts.cwd, id, opts.command),
       type,
       agentType,
       status: 'new',
-      spaceId: opts.spaceId || 'default',
+      spaceId,
       profileId: opts.profileId,
       folderId: opts.folderId,
       pinned: opts.pinned || false,
@@ -153,6 +159,7 @@ export const sessionStore = {
       cwd: opts.cwd || '~',
       extraEnvVars: opts.extraEnvVars,
       parentId: opts.parentId,
+      workflowId: workflowId || undefined,
     };
 
     sessions.push(session);

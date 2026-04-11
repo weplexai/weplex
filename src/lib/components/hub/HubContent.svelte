@@ -13,6 +13,7 @@
   import HubSpaces from './HubSpaces.svelte';
   import HubAgents from './HubAgents.svelte';
   import HubPipelines from './HubPipelines.svelte';
+  import HubCommands from './HubCommands.svelte';
   import MarketplacePanel from '../overlays/MarketplaceOverlay.svelte';
   import type { HubSection } from '../../types';
 
@@ -21,7 +22,7 @@
   };
 
   // Sections with real components
-  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces', 'agents', 'pipelines', 'marketplace']);
+  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces', 'agents', 'pipelines', 'commands', 'marketplace']);
 
   let isPlaceholder = $derived(!liveComponents.has(uiStore.hubSection));
   let placeholder = $derived(placeholders[uiStore.hubSection]);
@@ -44,6 +45,8 @@
         <HubAgents />
       {:else if uiStore.hubSection === 'pipelines'}
         <HubPipelines />
+      {:else if uiStore.hubSection === 'commands'}
+        <HubCommands />
       {:else if uiStore.hubSection === 'marketplace'}
         <MarketplacePanel />
       {:else if uiStore.hubSection === 'settings'}

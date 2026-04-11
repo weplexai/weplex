@@ -8,6 +8,7 @@
     searchPackages, installPackage as apiInstall, ratePackage, publishPackage,
     type MarketplacePackage,
   } from '../../services/marketplaceService';
+  import { Select } from '../ui';
 
   // ── Search state ──
   let query = $state('');
@@ -253,22 +254,33 @@
         bind:value={query}
         oninput={() => debouncedSearch()}
       />
-      <select class="mp-filter" bind:value={type} onchange={() => search()}>
-        <option value="">All types</option>
-        <option value="agent">Agents</option>
-        <option value="pipeline">Pipelines</option>
-      </select>
-      <select class="mp-filter" bind:value={category} onchange={() => search()}>
-        {#each categories as cat}
-          <option value={cat}>{cat || 'All categories'}</option>
-        {/each}
-      </select>
-      <select class="mp-filter" bind:value={sort} onchange={() => search()}>
-        <option value="popular">Popular</option>
-        <option value="rating">Top rated</option>
-        <option value="newest">Newest</option>
-        <option value="name">A-Z</option>
-      </select>
+      <Select
+        class="mp-filter"
+        value={type}
+        onchange={(v) => { type = v; search(); }}
+        options={[
+          { value: '', label: 'All types' },
+          { value: 'agent', label: 'Agents' },
+          { value: 'pipeline', label: 'Pipelines' },
+        ]}
+      />
+      <Select
+        class="mp-filter"
+        value={category}
+        onchange={(v) => { category = v; search(); }}
+        options={categories.map((c) => ({ value: c, label: c || 'All categories' }))}
+      />
+      <Select
+        class="mp-filter"
+        value={sort}
+        onchange={(v) => { sort = v; search(); }}
+        options={[
+          { value: 'popular', label: 'Popular' },
+          { value: 'rating', label: 'Top rated' },
+          { value: 'newest', label: 'Newest' },
+          { value: 'name', label: 'A-Z' },
+        ]}
+      />
     </div>
 
     <!-- Results -->
@@ -423,18 +435,22 @@
           <div class="mp-pub-row mp-pub-half">
             <div>
               <label>Type</label>
-              <select bind:value={pubType}>
-                <option value="agent">Agent</option>
-                <option value="pipeline">Pipeline</option>
-              </select>
+              <Select
+                value={pubType}
+                onchange={(v) => { pubType = v as 'agent' | 'pipeline'; }}
+                options={[
+                  { value: 'agent', label: 'Agent' },
+                  { value: 'pipeline', label: 'Pipeline' },
+                ]}
+              />
             </div>
             <div>
               <label>Category</label>
-              <select bind:value={pubCategory}>
-                {#each categories.filter(c => c) as cat}
-                  <option value={cat}>{cat}</option>
-                {/each}
-              </select>
+              <Select
+                value={pubCategory}
+                onchange={(v) => { pubCategory = v; }}
+                options={categories.filter((c) => c).map((c) => ({ value: c, label: c }))}
+              />
             </div>
           </div>
           <div class="mp-pub-row mp-pub-half">
@@ -507,10 +523,8 @@
     font-size: var(--weplex-text-sm); outline: none;
   }
   .mp-search:focus { border-color: var(--weplex-accent); }
-  .mp-filter {
-    padding: 6px 8px; background: var(--weplex-surface);
-    border: 1px solid var(--weplex-border); border-radius: var(--weplex-radius-sm);
-    color: var(--weplex-text); font-size: var(--weplex-text-xs); outline: none;
+  .mp-toolbar :global(.mp-filter) {
+    font-size: var(--weplex-text-xs);
   }
 
   .mp-results { max-height: 360px; overflow-y: auto; }
@@ -633,13 +647,13 @@
     font-size: var(--weplex-text-xs); font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.04em; color: var(--weplex-text-muted);
   }
-  .mp-pub-row input, .mp-pub-row select, .mp-pub-row textarea {
+  .mp-pub-row input, .mp-pub-row textarea {
     padding: 6px 10px; background: var(--weplex-bg);
     border: 1px solid var(--weplex-border); border-radius: var(--weplex-radius-sm);
     color: var(--weplex-text); font-size: var(--weplex-text-sm);
     font-family: inherit; outline: none;
   }
-  .mp-pub-row input:focus, .mp-pub-row select:focus, .mp-pub-row textarea:focus {
+  .mp-pub-row input:focus, .mp-pub-row textarea:focus {
     border-color: var(--weplex-accent);
   }
   .mp-pub-row textarea {
