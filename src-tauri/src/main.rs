@@ -1153,6 +1153,63 @@ fn read_commands_from_dir(dir_path: &str, scope: &str) -> Vec<CommandFile> {
     commands
 }
 
+/// Create default command files in ~/.claude/commands/ if they don't exist.
+#[tauri::command]
+fn ensure_default_commands() -> Result<u32, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let dir = format!("{}/.claude/commands", home);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let defaults: Vec<(&str, &str)> = vec![
+        ("review", r#"---
+description: Full review from all agents
+allowed-tools: Read, Grep, Glob, Bash, Agent
+model: opus
+---
+
+Проведи финальное ревью параллельно через subagents:
+- architect: архитектура, паттерны, качество кода
+- security: OWASP, секреты, инъекции, доступы
+- tester: покрытие тестами критического кода
+- pm: соответствие требованиям, scope
+Если найдены проблемы — пофикси и проведи ревью заново.
+Итерируй пока все агенты не одобрят.
+"#),
+        ("review-iterate", r#"---
+description: Re-run review after fixes
+allowed-tools: Read, Grep, Glob, Bash, Agent
+model: opus
+---
+
+Повторное ревью от всех агентов (architect, security, tester, PM).
+Запусти параллельно через subagents.
+Если всё ок — сообщи. Если нет — пофикси и проведи ещё раз.
+"#),
+        ("plan", r#"---
+description: Plan implementation approach
+allowed-tools: Read, Grep, Glob, Bash
+model: opus
+---
+
+Спроектируй подход к реализации:
+- Какие файлы затронуты
+- Архитектурный подход
+- Зависимости и риски
+Не пиши код, только план.
+"#),
+    ];
+
+    let mut created = 0u32;
+    for (name, content) in defaults {
+        let path = format!("{}/{}.md", dir, name);
+        if !std::path::Path::new(&path).exists() {
+            std::fs::write(&path, content).map_err(|e| e.to_string())?;
+            created += 1;
+        }
+    }
+    Ok(created)
+}
+
 /// List all Claude commands: user-level (~/.claude/commands/) + project-level ({cwd}/.claude/commands/).
 #[tauri::command]
 fn list_commands(cwd: Option<String>) -> Result<Vec<CommandFile>, String> {
@@ -2314,6 +2371,7 @@ fn main() {
             save_pipeline,
             delete_pipeline,
             generate_pipeline_instructions,
+            ensure_default_commands,
             list_commands,
             save_command,
             delete_command,

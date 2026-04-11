@@ -115,11 +115,28 @@ class CommandStore {
   commands = $state<Command[]>([]);
   loading = $state(false);
   private meta: Record<string, CommandMeta> = loadMeta();
+  private defaultsEnsured = false;
+  private lastCwd?: string;
+
+  constructor() {
+    // Reload commands when window regains focus (user may have edited .md files externally)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', () => {
+        if (this.lastCwd !== undefined) this.load(this.lastCwd);
+      });
+    }
+  }
 
   /** Load commands from disk. Call on init and after changes. */
   async load(cwd?: string): Promise<void> {
+    this.lastCwd = cwd;
     this.loading = true;
     try {
+      // Ensure default command files exist on first load
+      if (!this.defaultsEnsured) {
+        await invoke('ensure_default_commands');
+        this.defaultsEnsured = true;
+      }
       const files = await invoke<CommandFile[]>('list_commands', { cwd: cwd || null });
       this.commands = files.map((f) => mergeCommand(f, this.meta[f.name]));
     } catch (e) {
