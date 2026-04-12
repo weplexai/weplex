@@ -5,9 +5,7 @@
 <h1 align="center">Weplex</h1>
 
 <p align="center">
-  The platform for AI coding agents.
-  <br>
-  Powered by Claude. Open to any agent.
+  A workspace for AI coding agents.
 </p>
 
 <p align="center">
@@ -20,120 +18,60 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="macOS">
   <img src="https://img.shields.io/badge/tauri-2.x-blue.svg" alt="Tauri 2">
-  <img src="https://img.shields.io/badge/svelte-5-orange.svg" alt="Svelte 5">
 </p>
+
+<!-- TODO: screenshot or gif here -->
 
 ---
 
-## What is Weplex?
+Run multiple AI coding agents across multiple projects without losing your mind.
 
-Not a terminal. Not an IDE. A **platform** for AI coding agents.
+Weplex gives each project its own **Space** — a workspace with its own sessions, color, and profile. Switch between projects in one click. See all your agents at a glance.
 
-Run Claude Code, Codex, Aider, Gemini CLI, or any agent — each in its own session with real-time status, cost tracking, and output capture. Collaborate with your team. Browse and install community agents from the marketplace.
+Works with **Claude Code**, **Aider**, **Gemini CLI**, **Codex**, and **OpenCode**. Claude Code gets deep integration. Others are auto-detected and fully supported.
 
 ## Features
 
-### Spaces & Sessions
-- Full PTY terminal (bash, zsh, fish, ssh)
-- Spaces for context switching — each with own sessions, profile, and color
-- Split views (horizontal + vertical), Hyperspace (all sessions across spaces)
-- Session persistence across restarts
-- Profiles with separate API keys and preferences
+**Spaces** — One per project. Own sessions, color, grain texture, and profile. Switch context instantly.
 
-### Agent Intelligence
-- Auto-detects running agents (Claude Code, Codex, Aider, Gemini CLI, OpenCode)
-- Real-time status: thinking → active → idle → waiting → error
-- Hook-driven awareness — every tool use, sub-agent spawn, file write
-- Smart session naming from `-p` prompts or first user input
-- Per-session cost tracking, error detection with sidebar highlighting
-- OS notifications: finished, stuck (5min), waiting for input, errors
+**Sessions** — Full PTY terminal. Split views (horizontal + vertical). Hyperspace mode to see all sessions across spaces. Session persistence across restarts.
 
-### Claude Deep Integration
-- Hook Server: intercepts PreToolUse, PostToolUse, Stop, SubagentStart, SubagentStop
-- CLAUDE.md context injection — workspace context prepended before session start
-- Sub-agent visibility with lifecycle tracking
-- Git integration — real-time branch + status
-- Orchestration, Project, and Space Dashboards
+**Agent Detection** — Auto-detects which agent is running. Real-time status: thinking → active → idle → waiting → error. Smart session naming from prompts.
 
-### Teams & Collaboration
-- Teams with invite codes
-- Shared spaces with session presence (see what teammates are working on)
-- Space chat with mentions, replies, edits, typing indicators
-- Session spectating — watch teammates' agent sessions in real-time (read-only)
-- Conflict detection — alerts when two agents edit the same file
+**Profiles** — Work, Personal, Client. Each with its own API keys and preferences. Switch in one click.
 
-### Marketplace & Plugins
-- Browse, install, rate, and publish agents and skills
-- Plugin system with dynamic JS loading
-- Browser plugin (Chrome via CDP) included
+**Claude Code Integration** — Hook server intercepts tool use, sub-agent spawns, and file changes. CLAUDE.md context injection. Sub-agent visibility tree. Orchestration dashboard.
 
-### Accounts
-- Email + password, GitHub OAuth, Google OAuth
-- Config sync & backup across devices
-- Free for individuals. Always. Team features will be paid.
+**Dashboards** — Orchestration (agent tree + activity feed), Project (git status + file changes), Space (all sessions overview with costs).
 
-## Getting Started
+**Cost Tracking** — Reads JSONL usage files. Per-session spend in the sidebar.
 
-### Download
+## Download
 
 Grab the latest release from [weplex.ai](https://weplex.ai) or [GitHub Releases](https://github.com/weplexai/weplex/releases).
 
-macOS — Apple Silicon & Intel. Linux & Windows soon.
+macOS — Apple Silicon & Intel. Linux & Windows coming.
 
-### Build from Source
+## Build from Source
 
 Prerequisites: [Rust](https://rustup.rs/) (stable), [Node.js](https://nodejs.org/) 22+, [pnpm](https://pnpm.io/) 10+
 
 ```bash
 git clone https://github.com/weplexai/weplex.git
 cd weplex
-
 pnpm install
 pnpm tauri dev
-```
-
-Production build:
-
-```bash
-pnpm tauri build
 ```
 
 ## Architecture
 
 | Layer | Technology |
 |-------|-----------|
-| Runtime | Tauri 2.2+ (Rust backend) |
+| Runtime | Tauri 2.2+ (Rust) |
 | Frontend | Svelte 5 + Vite |
-| Terminal | xterm.js (Canvas renderer) |
-| PTY | portable-pty (from WezTerm) |
-| Hook Server | tiny_http (localhost, bearer token auth) |
-| MCP Server | JSON-RPC over Unix domain sockets |
-| Styles | CSS Variables (custom design system) |
-
-```
-weplex/
-├── src-tauri/              # Rust backend
-│   ├── src/
-│   │   ├── main.rs                 # Tauri commands, hooks, git
-│   │   ├── pty_manager.rs          # PTY session management
-│   │   ├── hook_server.rs          # Local HTTP for Claude hooks
-│   │   ├── ipc_server.rs           # Unix socket for MCP
-│   │   ├── plugin_host.rs          # Plugin discovery & lifecycle
-│   │   └── weplex_agents.rs        # Agent YAML resolution
-│   └── mcp-server/                 # Weplex MCP Server binary
-├── src/                    # Svelte frontend
-│   ├── App.svelte
-│   └── lib/
-│       ├── components/             # sidebar, terminal, dashboard, overlays
-│       ├── stores/                 # Svelte 5 runes state management
-│       ├── services/               # API clients, WebSocket, notifications
-│       └── utils/                  # Detection, shortcuts, formatting
-└── update-worker/          # Cloudflare Worker (auto-updater)
-```
-
-## Backend
-
-The Weplex backend (api.weplex.ai) handles authentication, config sync, teams, marketplace, and real-time collaboration via WebSocket.
+| Terminal | xterm.js |
+| PTY | portable-pty |
+| Hook Server | tiny_http |
 
 ## License
 
