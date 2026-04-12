@@ -312,7 +312,7 @@
           <h2>New {tabs.find((t) => t.id === activeTab)?.label.slice(0, -1)}</h2>
           <div class="editor-actions">
             <Button variant="secondary" onclick={() => { editMode = 'view'; editError = null; }}>Cancel</Button>
-            <Button variant="primary" onclick={saveNew}>Save</Button>
+            <Button variant="primary" disabled={operating} onclick={saveNew}>Save</Button>
           </div>
         </div>
 
