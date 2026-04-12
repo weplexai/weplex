@@ -257,7 +257,7 @@
                   class="row-action share-btn"
                   title="Share to all profiles"
                   disabled={operating}
-                  onclick|stopPropagation={() => shareResource(r)}
+                  onclick={(e) => { e.stopPropagation(); shareResource(r); }}
                 >
                   <Share2 size={11} />
                 </button>
