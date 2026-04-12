@@ -13,7 +13,7 @@ export type OverlayType =
   | 'auth'
   | 'marketplace'
   | 'uikit';
-export type HubSection = 'agents' | 'pipelines' | 'commands' | 'marketplace' | 'spaces' | 'settings' | 'account';
+export type HubSection = 'agents' | 'commands' | 'marketplace' | 'spaces' | 'settings' | 'account';
 export type SplitDirection = 'horizontal' | 'vertical';
 
 export interface Session {
@@ -75,7 +75,7 @@ export interface Session {
   // User annotations
   tags?: string[];
 
-  // Extra environment variables (e.g. MCP socket path for pipeline stages)
+  // Extra environment variables
   extraEnvVars?: Record<string, string>;
 
   // Session hierarchy
@@ -83,7 +83,7 @@ export interface Session {
   childCollapsed?: boolean;
 
   // Dashboard
-  dashboardType?: 'orchestration' | 'project' | 'space' | 'pipeline';
+  dashboardType?: 'orchestration' | 'project' | 'space';
   /** Session ID this dashboard is attached to (orchestration dashboard). */
   orchestratorId?: number;
 
@@ -263,38 +263,6 @@ export const SESSION_TYPE_ICONS: Record<SessionType, string> = {
   plugin: '🧩',
 };
 
-// ── Pipeline Run types ──────────────────────────────────────────────────────
-
-export type PipelineRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type StageStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
-
-export interface StageRunInfo {
-  name: string;
-  agent: string;
-  state: {
-    status: StageStatus;
-    artifact?: string;
-    output?: string;
-    exit_code?: number;
-    duration_ms?: number;
-  };
-  parallel_group: StageRunInfo[] | null;
-}
-
-export interface PipelineRunInfo {
-  id: string;
-  pipeline_name: string;
-  pipeline_file: string;
-  task: string;
-  cwd: string;
-  /** Profile used for this run — all stages share the same profile. */
-  profile_name: string;
-  status: PipelineRunStatus;
-  stages: StageRunInfo[];
-  started_at: number | null;
-  finished_at: number | null;
-}
-
 export interface WeplexAgent {
   name: string;
   description: string;
@@ -343,44 +311,6 @@ export interface AuthResponse {
 
 export type SyncStatus = 'idle' | 'pulling' | 'pushing' | 'error';
 
-// ── Collaborative Pipeline Types ──────────────────────────────────────────
-
-export type CollaborativeRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type CollaborativeStageStatus =
-  | 'pending'
-  | 'waiting'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'skipped';
-
-export interface CollaborativeRun {
-  id: string;
-  teamId: string;
-  initiatorId: string;
-  pipelineName: string;
-  task: string;
-  status: CollaborativeRunStatus;
-  stages: CollaborativeStageInfo[];
-  artifacts: Record<string, string>;
-  createdAt: string;
-  updatedAt: string;
-  finishedAt: string | null;
-}
-
-export interface CollaborativeStageInfo {
-  name: string;
-  agent: string;
-  role: string;
-  receives: string[];
-  optional: boolean;
-  ownerId: string | null;
-  ownerEmail: string | null;
-  status: CollaborativeStageStatus;
-  startedAt: string | null;
-  finishedAt: string | null;
-}
-
 export interface TeamInfo {
   id: string;
   name: string;
@@ -396,27 +326,6 @@ export interface TeamMember {
   email: string;
   displayName: string | null;
   role: 'owner' | 'member';
-}
-
-export interface CreateRunPayload {
-  teamId: string;
-  pipelineName: string;
-  task: string;
-  stages: StageDefinitionPayload[];
-}
-
-export interface StageDefinitionPayload {
-  name: string;
-  agent: string;
-  role: string;
-  receives: string[];
-  optional?: boolean;
-  ownerEmail?: string;
-}
-
-export interface CreateRunResponse {
-  run: CollaborativeRun;
-  warnings: string[];
 }
 
 // ── Space Sharing / Presence types ────────────────────────────────────────
@@ -453,14 +362,6 @@ export interface ServerSpace {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface PipelineNotification {
-  type: 'stage-ready' | 'run-completed' | 'run-failed';
-  title: string;
-  body: string;
-  runId: string;
-  stageName?: string;
 }
 
 // ── Chat ─────────────────────────────────────────────────────────────────

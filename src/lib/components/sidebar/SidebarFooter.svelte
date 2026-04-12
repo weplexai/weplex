@@ -12,7 +12,7 @@
   <div class="footer-actions">
     <button
       class="icon-btn"
-      title="Agents & Pipelines (⌘⇧A)"
+      title="Agents (⌘⇧A)"
       onclick={() => uiStore.enterHubMode('agents')}
     >
       <Layers size={15} />

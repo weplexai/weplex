@@ -15,24 +15,6 @@ export type AgentConfig = {
   source: string;
 };
 
-export type PipelineStage = {
-  name: string | null;
-  agent: string | null;
-  role: string | null;
-  receives: string[];
-  optional: boolean | null;
-  parallel: PipelineStage[] | null;
-  owner: string | null;
-};
-
-export type PipelineConfig = {
-  name: string;
-  description: string;
-  stages: PipelineStage[];
-  layout: Record<string, { x: number; y: number }>;
-  file_path: string;
-};
-
 export type ProjectConfig = {
   exists: boolean;
   content: string;

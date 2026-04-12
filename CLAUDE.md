@@ -1,6 +1,6 @@
 # Weplex Client
 
-> Tauri desktop app — terminal with pipeline engine for AI coding agents.
+> Tauri desktop app — terminal for AI coding agents.
 
 ## Tech Stack
 - **Runtime**: Tauri 2.2+ (Rust backend)
@@ -18,10 +18,8 @@ weplex-client/
 │   ├── src/
 │   │   ├── main.rs        # Tauri entry, commands, hook scripts, git commands
 │   │   ├── pty_manager.rs # PTY management (portable-pty)
-│   │   ├── pipeline_engine.rs  # Pipeline orchestration state machine
-│   │   ├── pipeline_parser.rs  # YAML pipeline config parser
 │   │   ├── hook_server.rs      # Local HTTP server for Claude Code hook events
-│   │   ├── ipc_server.rs       # Unix socket pool for MCP per-run isolation
+│   │   ├── ipc_server.rs       # Unix socket pool for MCP cross-session tools
 │   │   ├── weplex_agents.rs    # Agent YAML format, resolution, command builder
 │   │   ├── session_summary.rs  # Session activity notes persistence
 │   │   ├── secure_store.rs     # Encrypted credential storage
@@ -46,13 +44,11 @@ weplex-client/
 │   │   │   ├── header/    # Session header bar
 │   │   │   ├── detail/    # Right detail panel (live activity, sub-agents, conflicts)
 │   │   │   ├── status/    # Bottom status bar
-│   │   │   └── overlays/  # Command palette, settings, new session, pipeline editor, auth
+│   │   │   └── overlays/  # Command palette, settings, new session, auth
 │   │   ├── stores/        # Svelte 5 runes stores
 │   │   │   ├── sessionStore    # Sessions CRUD, hierarchy, dashboards
 │   │   │   ├── hookStore       # Hook events, activity tracking, conflict detection
 │   │   │   ├── contextInjectionStore  # CLAUDE.md context block injection
-│   │   │   ├── pipelineRunStore       # Interactive pipeline execution
-│   │   │   ├── collabPipelineStore    # Collaborative pipeline delegation
 │   │   │   ├── profileStore    # Multi-account profiles
 │   │   │   ├── spaceStore      # Workspace spaces
 │   │   │   ├── presenceStore   # Team presence sync
@@ -72,19 +68,16 @@ weplex-client/
 ### Terminal (Phase 0 — done)
 Spaces, Profiles, Sessions, Agent detection (Claude/OpenCode/Aider/Gemini/Codex), Usage panel (JSONL), Split views, Hyperspace, Session notes, Command palette
 
-### Pipeline Engine (Phase 0 — done)
-YAML pipelines, visual editor, interactive stages (each = PTY session), MCP artifact passing, profile-bound runs, unified agent resolution (`.claude/agents/*.md` + `~/.weplex/agents/*.yaml`)
-
 ### Claude Deep Integration (Phase 2 — done)
 - **Hook Server**: localhost HTTP with bearer token auth, receives PreToolUse/PostToolUse/Stop/SubagentStart/SubagentStop from Claude Code via jq-based bash scripts
 - **CLAUDE.md Injection**: prepends workspace context (space, sessions, cost) before Claude session start
 - **Sub-agent Visibility**: tracks Claude's Agent tool sub-agents with start/stop lifecycle
 - **Git Integration**: real-time branch + status via git CLI, hook-driven refresh after file modifications
-- **Session Hierarchy**: parent/child sessions, pipeline stages as children, collapse/expand in sidebar
+- **Session Hierarchy**: parent/child sessions, collapse/expand in sidebar
 - **Dashboards**: Orchestration (agent tree, timeline, activity feed), Project (cwd-based, git status), Space (grid overview)
 
 ### Accounts & Collaboration (Phase 3 — partial)
-Auth (email + OAuth), teams, spaces API, collaborative pipelines, chat, session presence
+Auth (email + OAuth), teams, spaces API, chat, session presence
 
 ## Key Design Decisions
 - Sidebar LEFT (Arc-style), collapsible (240px / 48px / overlay)
@@ -93,9 +86,7 @@ Auth (email + OAuth), teams, spaces API, collaborative pipelines, chat, session 
 - Detail panel RIGHT (toggle, 280px) with live activity + sub-agents + conflicts
 - Split views (horizontal + vertical)
 - Session persistence across app restarts
-- Interactive pipeline stages: each stage = full PTY session
 - All sessions rendered simultaneously (position: absolute) for instant switching
-- Pipeline run = one profile (anti-abuse)
 - Agent resolution: `.claude/agents/` + `~/.weplex/agents/` (both equal, no hierarchy)
 - Claude-first strategy: deep features for Claude, basic support for others
 
@@ -119,5 +110,5 @@ Backend: api.weplex.ai (see ../weplex-server/)
 - Sync: PUT /sync, GET /sync
 - Teams: POST /teams, /teams/join, /teams/leave
 - Spaces: CRUD /spaces, GET /spaces/:id/chat, /spaces/:id/sessions
-- Pipeline: WebSocket /pipeline namespace
+- Collaboration: WebSocket /relay namespace (teams, chat, presence, spectating)
 - OAuth desktop flow: open system browser → callback to localhost:19847 → exchange code for tokens

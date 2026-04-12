@@ -84,8 +84,8 @@
           },
         },
         {
-          id: 'agents-pipelines',
-          label: 'Agents & Pipelines',
+          id: 'agents',
+          label: 'Agents',
           hint: '⇧⌘A',
           category: 'Actions',
           action: () => {
@@ -122,18 +122,6 @@
             const spaceId = spaceStore.activeSpaceId;
             if (spaceId) {
               sessionStore.createSpaceDashboard(spaceId);
-            }
-            uiStore.closeOverlay();
-          },
-        },
-        {
-          id: 'new-pipeline-dashboard',
-          label: 'New Pipeline Dashboard',
-          category: 'Dashboards',
-          action: () => {
-            const spaceId = spaceStore.activeSpaceId;
-            if (spaceId) {
-              sessionStore.createPipelineDashboard(spaceId);
             }
             uiStore.closeOverlay();
           },

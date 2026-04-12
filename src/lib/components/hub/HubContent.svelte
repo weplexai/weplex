@@ -2,7 +2,6 @@
   import { uiStore } from '../../stores/uiStore';
   import {
     Bot,
-    Workflow,
     Store,
     LayoutGrid,
     Settings as SettingsIcon,
@@ -12,7 +11,6 @@
   import AuthPanel from '../overlays/AuthOverlay.svelte';
   import HubSpaces from './HubSpaces.svelte';
   import HubAgents from './HubAgents.svelte';
-  import HubPipelines from './HubPipelines.svelte';
   import HubCommands from './HubCommands.svelte';
   import MarketplacePanel from '../overlays/MarketplaceOverlay.svelte';
   import type { HubSection } from '../../types';
@@ -22,7 +20,7 @@
   };
 
   // Sections with real components
-  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces', 'agents', 'pipelines', 'commands', 'marketplace']);
+  const liveComponents: Set<HubSection> = new Set(['settings', 'account', 'spaces', 'agents', 'commands', 'marketplace']);
 
   let isPlaceholder = $derived(!liveComponents.has(uiStore.hubSection));
   let placeholder = $derived(placeholders[uiStore.hubSection]);
@@ -43,8 +41,6 @@
     <div class="hub-section-view">
       {#if uiStore.hubSection === 'agents'}
         <HubAgents />
-      {:else if uiStore.hubSection === 'pipelines'}
-        <HubPipelines />
       {:else if uiStore.hubSection === 'commands'}
         <HubCommands />
       {:else if uiStore.hubSection === 'marketplace'}

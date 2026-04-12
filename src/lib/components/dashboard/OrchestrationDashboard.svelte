@@ -4,8 +4,6 @@
   import { sessionStore } from '../../stores/sessionStore';
   import { hookStore } from '../../stores/hookStore.svelte';
   import { formatCost, formatDuration, formatAbsoluteTime } from '../../utils/time';
-  import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-
   let {
     sessionId,
     orchestratorId,
@@ -31,14 +29,6 @@
       .reduce((sum, s) => sum + ((s as Session).cost || 0), 0),
   );
   let activeCount = $derived(children.filter((c) => c.status === 'active').length);
-
-  // Pipeline stages for flow view
-  let activeRun = $derived(
-    pipelineRunStore.runs.find((r) =>
-      r.stages.some((s) => s.sessionId && children.some((c) => c.id === s.sessionId)),
-    ),
-  );
-  let pipelineStages = $derived(activeRun?.stages || []);
 
   // Ticking clock for live duration display
   let now = $state(Date.now());
@@ -175,28 +165,6 @@
         {/if}
       </div>
     </div>
-
-    <!-- Pipeline Flow -->
-    {#if pipelineStages.length > 0}
-      <section class="dash-section">
-        <h3 class="section-title">PIPELINE FLOW</h3>
-        <div class="flow-container">
-          {#each pipelineStages as stage, i (stage.name)}
-            <div class="flow-node" class:flow-running={stage.status === 'running'} class:flow-completed={stage.status === 'completed'} class:flow-failed={stage.status === 'failed'} class:flow-pending={stage.status === 'pending'}>
-              <span class="flow-dot"
-                class:pulse={stage.status === 'running'}
-                style="background: {stage.status === 'completed' ? 'var(--weplex-active)' : stage.status === 'running' ? 'var(--weplex-accent)' : stage.status === 'failed' ? 'var(--weplex-error)' : 'var(--weplex-text-muted)'}"
-              ></span>
-              <span class="flow-name">{stage.name}</span>
-              <span class="flow-agent">{stage.agent}</span>
-            </div>
-            {#if i < pipelineStages.length - 1}
-              <div class="flow-arrow">→</div>
-            {/if}
-          {/each}
-        </div>
-      </section>
-    {/if}
 
     <!-- Agents -->
     {#if children.length > 0}
@@ -393,67 +361,6 @@
   @keyframes dot-pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.45; transform: scale(0.75); }
-  }
-
-  /* Pipeline Flow */
-  .flow-container {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    overflow-x: auto;
-    padding: 8px 0;
-  }
-
-  .flow-node {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    border-radius: var(--weplex-radius-md);
-    border: 1px solid var(--weplex-border);
-    background: var(--weplex-surface);
-    flex-shrink: 0;
-  }
-
-  .flow-node.flow-running {
-    border-color: var(--weplex-accent);
-    background: color-mix(in srgb, var(--weplex-accent) 8%, var(--weplex-surface));
-  }
-
-  .flow-node.flow-completed {
-    border-color: var(--weplex-active);
-  }
-
-  .flow-node.flow-failed {
-    border-color: var(--weplex-error);
-  }
-
-  .flow-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .flow-dot.pulse {
-    animation: dot-pulse 1.4s ease-in-out infinite;
-  }
-
-  .flow-name {
-    font-size: var(--weplex-text-xs);
-    font-weight: 600;
-    color: var(--weplex-text);
-  }
-
-  .flow-agent {
-    font-size: 10px;
-    color: var(--weplex-text-muted);
-  }
-
-  .flow-arrow {
-    color: var(--weplex-text-muted);
-    font-size: 14px;
-    flex-shrink: 0;
   }
 
   /* Agents */

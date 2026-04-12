@@ -1,7 +1,6 @@
 import type { TeamInfo } from '../types';
 import { teamService } from '../services/teamService';
-import { pipelineWsService } from '../services/pipelineWsService';
-import { collabPipelineStore } from './collabPipelineStore.svelte';
+import { wsService } from '../services/wsService';
 import { spaceStore } from './spaceStore.svelte';
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -76,7 +75,7 @@ export const teamStore = {
 
       // Join WS rooms for all teams + sync shared spaces
       for (const team of teams) {
-        pipelineWsService.joinTeamRoom(team.id);
+        wsService.joinTeamRoom(team.id);
         spaceStore.syncSharedSpaces(team.id).catch((e) =>
           console.warn('[Weplex] Space sync failed for team', team.id, e),
         );
@@ -85,7 +84,7 @@ export const teamStore = {
       // Subscribe to real-time team events
       cleanupListeners();
 
-      unsubMemberJoined = pipelineWsService.onTeamMemberJoined(({ teamId, member }) => {
+      unsubMemberJoined = wsService.onTeamMemberJoined(({ teamId, member }) => {
         const team = teams.find((t) => t.id === teamId);
         if (team && !team.members.find((m) => m.userId === member.userId)) {
           team.members = [...team.members, member];
@@ -93,7 +92,7 @@ export const teamStore = {
         }
       });
 
-      unsubMemberLeft = pipelineWsService.onTeamMemberLeft(({ teamId, userId }) => {
+      unsubMemberLeft = wsService.onTeamMemberLeft(({ teamId, userId }) => {
         const team = teams.find((t) => t.id === teamId);
         if (team) {
           team.members = team.members.filter((m) => m.userId !== userId);
@@ -101,7 +100,7 @@ export const teamStore = {
         }
       });
 
-      unsubTeamUpdated = pipelineWsService.onTeamUpdated(({ teamId, ...updates }) => {
+      unsubTeamUpdated = wsService.onTeamUpdated(({ teamId, ...updates }) => {
         const team = teams.find((t) => t.id === teamId);
         if (team) {
           Object.assign(team, updates);
@@ -109,12 +108,11 @@ export const teamStore = {
         }
       });
 
-      unsubTeamDeleted = pipelineWsService.onTeamDeleted(({ teamId }) => {
-        pipelineWsService.leaveTeamRoom(teamId);
+      unsubTeamDeleted = wsService.onTeamDeleted(({ teamId }) => {
+        wsService.leaveTeamRoom(teamId);
         teams = teams.filter((t) => t.id !== teamId);
         if (activeTeamId === teamId) {
           activeTeamId = teams[0]?.id ?? null;
-          collabPipelineStore.reset();
         }
       });
 
@@ -138,7 +136,7 @@ export const teamStore = {
       teams = [...teams, newTeam];
       activeTeamId = newTeam.id;
       // Join WS room for the new team
-      pipelineWsService.joinTeamRoom(newTeam.id);
+      wsService.joinTeamRoom(newTeam.id);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to create team';
       throw e;
@@ -155,7 +153,7 @@ export const teamStore = {
       teams = [...teams, joined];
       activeTeamId = joined.id;
       // Join WS room + sync shared spaces for the new team
-      pipelineWsService.joinTeamRoom(joined.id);
+      wsService.joinTeamRoom(joined.id);
       spaceStore.syncSharedSpaces(joined.id).catch(() => {});
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to join team';
@@ -170,11 +168,10 @@ export const teamStore = {
     error = null;
     try {
       await teamService.leaveTeam(teamId);
-      pipelineWsService.leaveTeamRoom(teamId);
+      wsService.leaveTeamRoom(teamId);
       teams = teams.filter((t) => t.id !== teamId);
       if (activeTeamId === teamId) {
         selectNextTeam(teamId);
-        collabPipelineStore.reset();
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to leave team';
@@ -189,11 +186,10 @@ export const teamStore = {
     error = null;
     try {
       await teamService.deleteTeam(teamId);
-      pipelineWsService.leaveTeamRoom(teamId);
+      wsService.leaveTeamRoom(teamId);
       teams = teams.filter((t) => t.id !== teamId);
       if (activeTeamId === teamId) {
         selectNextTeam(teamId);
-        collabPipelineStore.reset();
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to delete team';
@@ -203,15 +199,10 @@ export const teamStore = {
     }
   },
 
-  /** Switch active team context. Resets collaborative pipeline state. */
+  /** Switch active team context. */
   setActiveTeam(teamId: string): void {
     if (activeTeamId === teamId) return;
     activeTeamId = teamId;
-    // Reset and re-init collab pipelines for the new team
-    collabPipelineStore.reset();
-    collabPipelineStore.init().catch((e) =>
-      console.warn('[Weplex] Collab pipeline re-init failed on team switch:', e),
-    );
   },
 
   async regenerateCode(teamId: string): Promise<void> {

@@ -7,10 +7,7 @@ use mcp_protocol::{JsonRpcRequest, JsonRpcResponse};
 use std::io::{self, BufRead, Write};
 
 fn main() {
-    // Read pipeline context from environment
-    let run_id = std::env::var("WEPLEX_RUN_ID").unwrap_or_default();
-    let stage_name = std::env::var("WEPLEX_STAGE_NAME").unwrap_or_default();
-    let socket_path = std::env::var("WEPLEX_MCP_SOCKET").unwrap_or_default();
+    // Read session context from environment
     let session_id = std::env::var("WEPLEX_SESSION_ID").unwrap_or_default();
 
     // Global socket path for MCP v2 cross-session tools
@@ -19,15 +16,11 @@ fn main() {
     let global_exists = std::path::Path::new(&global_socket_path).exists();
 
     eprintln!(
-        "[weplex-mcp] starting (run_id={}, stage={}, socket={}, session={}, global={})",
-        if run_id.is_empty() { "<none>" } else { &run_id },
-        if stage_name.is_empty() { "<none>" } else { &stage_name },
-        if socket_path.is_empty() { "<none>" } else { &socket_path },
+        "[weplex-mcp] starting (session={}, global={})",
         if session_id.is_empty() { "<none>" } else { &session_id },
         if global_exists { &global_socket_path } else { "<not found>" },
     );
 
-    let mut ipc = IpcClient::new(socket_path.clone());
     let mut global_ipc = if global_exists {
         Some(IpcClient::new(global_socket_path.clone()))
     } else {
@@ -68,11 +61,7 @@ fn main() {
 
         let response = handle_request(
             &request,
-            &run_id,
-            &stage_name,
-            &socket_path,
             &session_id,
-            &mut ipc,
             if global_exists { &global_socket_path } else { "" },
             &mut global_ipc,
         );
@@ -88,11 +77,7 @@ fn main() {
 
 fn handle_request(
     request: &JsonRpcRequest,
-    run_id: &str,
-    stage_name: &str,
-    socket_path: &str,
     session_id: &str,
-    ipc: &mut IpcClient,
     global_socket_path: &str,
     global_ipc: &mut Option<IpcClient>,
 ) -> Option<JsonRpcResponse> {
@@ -106,7 +91,7 @@ fn handle_request(
         "notifications/initialized" => None,
 
         "tools/list" => {
-            let tools = tools::list_tools(socket_path, global_socket_path);
+            let tools = tools::list_tools(global_socket_path);
             Some(JsonRpcResponse::success(request.id.clone(), tools))
         }
 
@@ -122,7 +107,7 @@ fn handle_request(
                 .unwrap_or(serde_json::json!({}));
 
             match tools::call_tool(
-                tool_name, &arguments, run_id, stage_name, session_id, ipc, global_ipc,
+                tool_name, &arguments, session_id, global_ipc,
             ) {
                 Ok(result) => Some(JsonRpcResponse::success(request.id.clone(), result)),
                 Err(msg) => {

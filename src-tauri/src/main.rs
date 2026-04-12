@@ -8,14 +8,11 @@ mod plugin_host;
 mod plugins;
 mod keychain;
 mod oauth_server;
-mod pipeline_engine;
-mod pipeline_parser;
 mod pty_manager;
 mod secure_store;
 mod session_summary;
 mod weplex_agents;
 
-use pipeline_engine::PipelineEngine;
 use pty_manager::PtyManager;
 use std::io::BufRead;
 use std::sync::Mutex;
@@ -23,7 +20,6 @@ use tauri::{Manager, State};
 
 struct AppState {
     pty_manager: std::sync::Arc<Mutex<PtyManager>>,
-    pipeline_engine: std::sync::Arc<Mutex<PipelineEngine>>,
     ipc_pool: Mutex<ipc_server::IpcSocketPool>,
 }
 
@@ -470,7 +466,7 @@ fn discover_profiles() -> Result<Vec<DiscoveredProfile>, String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Agents & Pipelines
+// Agents
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Sanitize a name for use as a filename: only allow alphanumeric, dash, underscore.
@@ -725,52 +721,6 @@ fn read_agents_from_dir(dir_path: &str, source: &str) -> Vec<AgentConfig> {
     agents
 }
 
-/// Convert a Claude AgentConfig to a WeplexAgent for unified pipeline resolution.
-/// Claude agents always use binary="claude".
-fn agent_config_to_weplex(config: &AgentConfig) -> weplex_agents::WeplexAgent {
-    weplex_agents::WeplexAgent {
-        name: config.name.clone(),
-        description: config.description.clone(),
-        binary: "claude".to_string(),
-        model: if config.model.is_empty() { None } else { Some(config.model.clone()) },
-        prompt: config.system_prompt.clone(),
-        one_shot: None,
-        env: std::collections::HashMap::new(),
-        file_path: config.file_path.clone(),
-    }
-}
-
-/// Collect all agents (Weplex YAML + Claude native) for pipeline resolution.
-/// Claude agents from ~/.claude/agents/ and {cwd}/.claude/agents/ are converted
-/// to WeplexAgent format. Weplex agents take priority on name conflicts.
-fn collect_all_agents(cwd: &str) -> Result<std::collections::HashMap<String, weplex_agents::WeplexAgent>, String> {
-    let mut agent_map = std::collections::HashMap::new();
-
-    // 1. Load Claude user agents (~/.claude/agents/)
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let user_agents_dir = format!("{}/.claude/agents", home);
-    for agent in read_agents_from_dir(&user_agents_dir, "user") {
-        agent_map.insert(agent.name.clone(), agent_config_to_weplex(&agent));
-    }
-
-    // 2. Load Claude project agents ({cwd}/.claude/agents/)
-    let resolved_cwd = resolve_cwd(cwd);
-    let project_agents_dir = format!("{}/.claude/agents", resolved_cwd);
-    if project_agents_dir != user_agents_dir {
-        for agent in read_agents_from_dir(&project_agents_dir, "project") {
-            // Project agents override user agents with same name
-            agent_map.insert(agent.name.clone(), agent_config_to_weplex(&agent));
-        }
-    }
-
-    // 3. Load Weplex agents (~/.weplex/agents/) — override Claude agents on conflict
-    for agent in weplex_agents::list()? {
-        agent_map.insert(agent.name.clone(), agent);
-    }
-
-    Ok(agent_map)
-}
-
 /// List all configured Claude agents (user-level from ~/.claude/agents/).
 #[tauri::command]
 fn list_agents() -> Result<Vec<AgentConfig>, String> {
@@ -966,45 +916,6 @@ fn get_git_status(cwd: String) -> Result<Vec<GitFileChange>, String> {
     // Cap at 200 files to avoid huge payloads
     files.truncate(200);
     Ok(files)
-}
-
-// ── Pipeline types ──────────────────────────────────────────────────────
-
-// Pipeline types are now in pipeline_parser module.
-// Re-export for Tauri command compatibility.
-use pipeline_parser::{PipelineConfig, PipelineStage};
-
-// ── Pipeline CRUD (delegates to pipeline_parser module) ─────────────────────
-
-#[tauri::command]
-fn list_pipelines() -> Result<Vec<PipelineConfig>, String> {
-    pipeline_parser::list()
-}
-
-#[tauri::command]
-fn save_pipeline(
-    name: String,
-    description: String,
-    stages: Vec<PipelineStage>,
-    old_file_path: Option<String>,
-) -> Result<String, String> {
-    pipeline_parser::save(
-        &name,
-        &description,
-        &stages,
-        &std::collections::HashMap::new(),
-        old_file_path.as_deref(),
-    )
-}
-
-#[tauri::command]
-fn delete_pipeline(file_path: String) -> Result<(), String> {
-    pipeline_parser::delete(&file_path)
-}
-
-#[tauri::command]
-fn generate_pipeline_instructions(file_path: String, task: String) -> Result<String, String> {
-    pipeline_parser::generate_instructions(&file_path, &task)
 }
 
 // ── Project & Skills ────────────────────────────────────────────────────
@@ -1583,126 +1494,12 @@ fn delete_weplex_agent(name: String) -> Result<(), String> {
     weplex_agents::delete(&name)
 }
 
-// ── Pipeline Engine ─────────────────────────────────────────────────────────
-
-#[tauri::command]
-fn start_pipeline(
-    state: State<AppState>,
-    app: tauri::AppHandle,
-    pipeline_file: String,
-    task: String,
-    cwd: String,
-    profile_name: Option<String>,
-    env_vars: Option<std::collections::HashMap<String, String>>,
-) -> Result<String, String> {
-    let profile = profile_name.unwrap_or_else(|| "Default".to_string());
-
-    // Collect all agents (Weplex YAML + Claude native from user + project level)
-    let agent_map = collect_all_agents(&cwd)?;
-
-    // Phase 1: Prepare run (parse config, create run record) — no thread spawned yet
-    let prepared = {
-        let mut engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
-        engine.prepare_run(
-            &pipeline_file,
-            &task,
-            &cwd,
-            &profile,
-            env_vars.unwrap_or_default(),
-            agent_map,
-            &app,
-        )?
-    };
-
-    let run_id = prepared.run_id.clone();
-
-    // Phase 2: Start MCP IPC socket BEFORE launching the orchestrator thread,
-    // so the socket is ready when the first stage agent tries to connect
-    {
-        let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
-        let mut pool = state.ipc_pool.lock().map_err(|e| e.to_string())?;
-        if let Err(e) = pool.start_run_socket(run_id.clone(), engine_arc, app.clone()) {
-            eprintln!("[weplex] Failed to start MCP socket for run {}: {}", run_id, e);
-        }
-    }
-
-    // Phase 3: Launch orchestrator thread (now socket is guaranteed ready)
-    {
-        let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
-        PipelineEngine::launch_run(prepared, engine_arc, app.clone());
-    }
-
-    // Phase 4: Schedule socket cleanup when the pipeline run finishes
-    {
-        let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
-        let run_id_clone = run_id.clone();
-        let app_for_cleanup = app;
-
-        std::thread::spawn(move || {
-            // Poll until the run is no longer "running"
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                let eng = engine_arc
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                if let Some(run) = eng.get_run(&run_id_clone) {
-                    if run.status != pipeline_engine::RunStatus::Running {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-            // Stop the socket via app state
-            let state: State<AppState> = app_for_cleanup.state();
-            let mut pool = state
-                .ipc_pool
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            pool.stop_run_socket(&run_id_clone);
-        });
-    }
-
-    Ok(run_id)
-}
-
-#[tauri::command]
-fn cancel_pipeline(state: State<AppState>, run_id: String) -> Result<(), String> {
-    let mut engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
-    engine.cancel_run(&run_id)
-}
-
-#[tauri::command]
-fn get_pipeline_run(
-    state: State<AppState>,
-    run_id: String,
-) -> Result<Option<pipeline_engine::PipelineRun>, String> {
-    let engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
-    Ok(engine.get_run(&run_id))
-}
-
-#[tauri::command]
-fn list_pipeline_runs(state: State<AppState>) -> Result<Vec<pipeline_engine::PipelineRun>, String> {
-    let engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
-    Ok(engine.list_runs())
-}
-
-#[tauri::command]
-fn get_stage_artifact(
-    state: State<AppState>,
-    run_id: String,
-    stage_name: String,
-) -> Result<Option<String>, String> {
-    let engine = state.pipeline_engine.lock().map_err(|e| e.to_string())?;
-    Ok(engine.get_artifact(&run_id, &stage_name))
-}
-
-/// Save a marketplace package (agent/pipeline YAML) to local filesystem.
+/// Save a marketplace package (agent/skill YAML) to local filesystem.
 #[tauri::command]
 fn save_marketplace_package(dir: String, name: String, content: String) -> Result<(), String> {
     // Whitelist dir to prevent path traversal
-    if dir != "agents" && dir != "pipelines" && dir != "skills" {
-        return Err("Invalid directory: must be 'agents', 'pipelines', or 'skills'".to_string());
+    if dir != "agents" && dir != "skills" {
+        return Err("Invalid directory: must be 'agents' or 'skills'".to_string());
     }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
@@ -1823,57 +1620,6 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 // ── MCP Commands ───────────────────────────────────────────────────────────
-
-/// Validate run_id to prevent path traversal in socket paths.
-fn validate_run_id(run_id: &str) -> Result<(), String> {
-    if run_id.is_empty()
-        || !run_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return Err("Invalid run_id format".to_string());
-    }
-    Ok(())
-}
-
-/// Start a scoped IPC socket for a pipeline run. Returns the socket path.
-#[tauri::command]
-fn start_mcp_for_run(
-    state: State<AppState>,
-    app: tauri::AppHandle,
-    run_id: String,
-) -> Result<String, String> {
-    validate_run_id(&run_id)?;
-    let engine_arc = std::sync::Arc::clone(&state.pipeline_engine);
-    let mut pool = state.ipc_pool.lock().map_err(|e| e.to_string())?;
-    pool.start_run_socket(run_id, engine_arc, app)
-}
-
-/// Stop and clean up an IPC socket for a pipeline run.
-#[tauri::command]
-fn stop_mcp_for_run(state: State<AppState>, run_id: String) -> Result<(), String> {
-    validate_run_id(&run_id)?;
-    let mut pool = state.ipc_pool.lock().map_err(|e| e.to_string())?;
-    pool.stop_run_socket(&run_id);
-    Ok(())
-}
-
-/// Store an MCP artifact for a stage (called from frontend for prefetching).
-#[tauri::command]
-fn set_run_artifact(
-    state: State<AppState>,
-    run_id: String,
-    stage_name: String,
-    artifact: String,
-) -> Result<(), String> {
-    validate_run_id(&run_id)?;
-    let mut engine = state
-        .pipeline_engine
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    engine.set_mcp_artifact(&run_id, &stage_name, &artifact);
-    Ok(())
-}
 
 /// Get the path to the weplex-mcp binary.
 /// In dev mode: looks in src-tauri/mcp-server/target/debug/
@@ -2311,7 +2057,6 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState {
             pty_manager: std::sync::Arc::new(Mutex::new(PtyManager::new())),
-            pipeline_engine: std::sync::Arc::new(Mutex::new(PipelineEngine::new())),
             ipc_pool: Mutex::new(ipc_server::IpcSocketPool::new()),
         })
         .setup(|app| {
@@ -2366,10 +2111,6 @@ fn main() {
             list_project_agents,
             save_agent,
             delete_agent,
-            list_pipelines,
-            save_pipeline,
-            delete_pipeline,
-            generate_pipeline_instructions,
             ensure_default_commands,
             list_commands,
             save_command,
@@ -2385,11 +2126,6 @@ fn main() {
             list_weplex_agents,
             save_weplex_agent,
             delete_weplex_agent,
-            start_pipeline,
-            cancel_pipeline,
-            get_pipeline_run,
-            list_pipeline_runs,
-            get_stage_artifact,
             oauth_server::start_oauth_server,
             open_url,
             save_marketplace_package,
@@ -2405,9 +2141,6 @@ fn main() {
             secure_store::secure_store_save,
             secure_store::secure_store_load,
             secure_store::secure_store_delete,
-            start_mcp_for_run,
-            stop_mcp_for_run,
-            set_run_artifact,
             get_mcp_binary_path,
             register_mcp_in_claude,
             set_traffic_lights_visible,

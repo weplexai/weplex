@@ -1,5 +1,4 @@
 import { tildeHome } from '../../utils/path';
-import type { PipelineStage } from './types';
 
 export function modelShort(m: string | null | undefined): string {
   if (!m) return '\u2014';
@@ -27,15 +26,3 @@ export function shortenPath(p: string | null | undefined): string {
   return tildeHome(p);
 }
 
-export function getMissingAgents(stages: PipelineStage[], agentNameSet: Set<string>): string[] {
-  const required = new Set(
-    stages.flatMap((s) =>
-      s.parallel
-        ? (s.parallel.map((ps) => ps.agent).filter(Boolean) as string[])
-        : s.agent
-          ? [s.agent]
-          : [],
-    ),
-  );
-  return [...required].filter((a) => !agentNameSet.has(a));
-}

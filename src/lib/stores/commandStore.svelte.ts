@@ -250,7 +250,7 @@ class CommandStore {
 
   /** Resolve a slash input (e.g. "/review") for PTY. */
   resolveSlash(input: string, session: Session): string | null {
-    const name = input.replace(/^\//, '').trim();
+    const name = input.replace(/^\/\//, '').trim();
     const cmd = this.commands.find((c) => c.name === name);
     if (!cmd) return null;
     return this.resolveForPty(cmd, session);

@@ -1,24 +1,23 @@
-// WebSocket service for real-time pipeline collaboration updates
+// WebSocket service for real-time collaboration (teams, chat, presence, spectating)
 
 import { io, type Socket } from 'socket.io-client';
 import { getBaseUrl } from './apiClient';
-import type { CollaborativeRun, PipelineNotification, SessionMeta, MemberPresence, TeamMember, ServerSpace, ChatMessage } from '../types';
+import type { SessionMeta, MemberPresence, TeamMember, ServerSpace, ChatMessage } from '../types';
 
 let socket: Socket | null = null;
 
 // Track joined rooms for re-joining on reconnect
-const joinedRuns: Set<string> = new Set();
 const joinedSpaces: Map<string, string | undefined> = new Map();
 const joinedTeams: Set<string> = new Set();
 
-export const pipelineWsService = {
-  /** Connect to the /pipeline namespace with bearer auth. */
+export const wsService = {
+  /** Connect to the /relay namespace with bearer auth. */
   connect(token: string): void {
     if (socket?.connected) return;
 
-    // Derive WS URL from API base (same host, /pipeline namespace)
+    // Derive WS URL from API base (same host, /relay namespace)
     const baseUrl = getBaseUrl();
-    socket = io(`${baseUrl}/pipeline`, {
+    socket = io(`${baseUrl}/relay`, {
       transports: ['websocket'],
       auth: { token },
       reconnection: true,
@@ -28,11 +27,8 @@ export const pipelineWsService = {
     });
 
     socket.on('connect', () => {
-      console.log('[Weplex] Pipeline WS connected');
+      console.log('[Weplex] WS connected');
       // Re-join all rooms on reconnect
-      for (const runId of joinedRuns) {
-        socket?.emit('join-run', { runId });
-      }
       for (const [spaceId, displayName] of joinedSpaces) {
         socket?.emit('join-space', { spaceId, displayName });
       }
@@ -42,11 +38,11 @@ export const pipelineWsService = {
     });
 
     socket.on('disconnect', (reason) => {
-      console.log(`[Weplex] Pipeline WS disconnected: ${reason}`);
+      console.log(`[Weplex] WS disconnected: ${reason}`);
     });
 
     socket.on('connect_error', (err) => {
-      console.warn('[Weplex] Pipeline WS connection error:', err.message);
+      console.warn('[Weplex] WS connection error:', err.message);
     });
   },
 
@@ -56,50 +52,8 @@ export const pipelineWsService = {
     socket.removeAllListeners();
     socket.disconnect();
     socket = null;
-    joinedRuns.clear();
     joinedSpaces.clear();
     joinedTeams.clear();
-  },
-
-  /** Join a run room to receive updates. */
-  joinRun(runId: string): void {
-    joinedRuns.add(runId);
-    socket?.emit('join-run', { runId });
-  },
-
-  /** Leave a run room. */
-  leaveRun(runId: string): void {
-    joinedRuns.delete(runId);
-    socket?.emit('leave-run', { runId });
-  },
-
-  /** Subscribe to run updates. Returns an unsubscribe function. */
-  onRunUpdated(cb: (run: CollaborativeRun) => void): () => void {
-    if (!socket) return () => {};
-    socket.on('run-updated', cb);
-    return () => {
-      socket?.off('run-updated', cb);
-    };
-  },
-
-  /** Subscribe to stage-ready notifications. Returns an unsubscribe function. */
-  onStageReady(
-    cb: (data: { runId: string; stageName: string; ownerEmail: string }) => void,
-  ): () => void {
-    if (!socket) return () => {};
-    socket.on('stage-ready', cb);
-    return () => {
-      socket?.off('stage-ready', cb);
-    };
-  },
-
-  /** Subscribe to pipeline notifications. Returns an unsubscribe function. */
-  onNotification(cb: (data: PipelineNotification) => void): () => void {
-    if (!socket) return () => {};
-    socket.on('notification', cb);
-    return () => {
-      socket?.off('notification', cb);
-    };
   },
 
   // ── Space Presence ───────────────────────────────────────────────────────

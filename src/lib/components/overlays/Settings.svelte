@@ -311,7 +311,7 @@
         <h3 class="section-title">About</h3>
         <p class="about-text"><strong>Weplex</strong> v{appVersion}</p>
         <p class="about-text muted">
-          The terminal with a built-in pipeline engine for AI coding agents.
+          The terminal for AI coding agents.
         </p>
         <p class="about-text muted">Apache 2.0 License</p>
 

@@ -6,10 +6,7 @@
   import { profileStore } from '../../stores/profileStore';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { uiStore } from '../../stores/uiStore';
-  import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-  import type { PipelineConfig } from './types';
   import SessionIcon from '../SessionIcon.svelte';
-  import { Workflow } from 'lucide-svelte';
   import { Button, Modal, Input, Select } from '../ui';
   import { workflowStore } from '../../stores/workflowStore.svelte';
 
@@ -21,22 +18,6 @@
     if (settingsDir && settingsDir !== '~') return settingsDir;
     return '~';
   }
-
-  // Mode: session (terminal/agent) or pipeline
-  let mode = $state<'session' | 'pipeline'>('session');
-
-  // Pipeline state
-  let pipelines = $state<PipelineConfig[]>([]);
-  let selectedPipeline = $state<PipelineConfig | null>(null);
-  let taskDescription = $state('');
-  let launching = $state(false);
-  let launchError = $state<string | null>(null);
-
-  onMount(async () => {
-    try {
-      pipelines = await invoke<PipelineConfig[]>('list_pipelines');
-    } catch {}
-  });
 
   let directory = $state(getDefaultDirectory());
   let command = $state('');
@@ -194,48 +175,9 @@
     uiStore.closeOverlay();
   }
 
-  async function launchPipeline() {
-    if (!selectedPipeline || !taskDescription.trim()) {
-      launchError = 'Select a pipeline and describe the task';
-      return;
-    }
-    launching = true;
-    launchError = null;
-    try {
-      const cwd = directory.length > 1 ? directory.replace(/\/+$/, '') : directory;
-      // Get profile env vars — explicit selection > space profile > default
-      // Must include CLAUDE_CONFIG_DIR from profile.configDir (same as TerminalView)
-      const profileId =
-        selectedProfile ??
-        spaceStore.spaces.find((s) => s.id === selectedSpace)?.profileId ??
-        'default';
-      const profile = profileStore.getById(profileId) || profileStore.defaultProfile;
-      const envVars: Record<string, string> = {};
-      if (profile && !profile.isDefault) {
-        Object.assign(envVars, profile.envVars);
-        if (profile.configDir) {
-          envVars['CLAUDE_CONFIG_DIR'] = profile.configDir;
-        }
-      }
-      await pipelineRunStore.startRun(
-        selectedPipeline.file_path,
-        taskDescription.trim(),
-        cwd,
-        profile?.name || 'Default',
-        envVars,
-      );
-      uiStore.closeOverlay();
-    } catch (e: unknown) {
-      launchError = e instanceof Error ? e.message : String(e);
-    } finally {
-      launching = false;
-    }
-  }
-
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      if (mode === 'pipeline') launchPipeline();
-      else create();
+      create();
     }
   }
 
@@ -250,21 +192,7 @@
     <h2 class="dialog-title">New Session</h2>
 
     <!-- Mode switcher -->
-    <div class="mode-switcher">
-      <button class="mode-btn" class:active={mode === 'session'} onclick={() => (mode = 'session')}
-        >Session</button
-      >
-      <button
-        class="mode-btn"
-        class:active={mode === 'pipeline'}
-        onclick={() => (mode = 'pipeline')}
-      >
-        <Workflow size={12} /> Pipeline
-      </button>
-    </div>
-
-    {#if mode === 'session'}
-      <!-- ═══ Session form (existing) ═══ -->
+      <!-- ═══ Session form ═══ -->
       <label class="field-label" for="ns-dir">Directory</label>
       <div class="dir-autocomplete">
         <input
@@ -422,105 +350,6 @@
         <Button variant="secondary" onclick={() => uiStore.closeOverlay()}>Cancel</Button>
         <Button variant="primary" onclick={create}>Create</Button>
       </div>
-    {:else}
-      <!-- ═══ Pipeline form ═══ -->
-      <label class="field-label" for="ns-pipe-dir">Directory</label>
-      <div class="dir-autocomplete">
-        <input
-          id="ns-pipe-dir"
-          bind:this={inputEl}
-          class="field-input"
-          type="text"
-          bind:value={directory}
-          placeholder="~/projects/my-app"
-          autocomplete="off"
-          oninput={onDirInput}
-          onkeydown={onDirKeydown}
-          onblur={() => {
-            suggestions = [];
-            selectedSuggestion = -1;
-          }}
-        />
-        {#if suggestions.length > 0}
-          <div class="suggestions-dropdown">
-            {#each suggestions as s, i}
-              <button
-                class="suggestion"
-                class:selected={i === selectedSuggestion}
-                onmousedown={(e) => {
-                  e.preventDefault();
-                  acceptSuggestion(s);
-                }}>{s}</button
-              >
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <span class="field-label">Pipeline</span>
-      <div class="pipeline-picker">
-        {#each pipelines as p}
-          <button
-            class="pipeline-card"
-            class:active={selectedPipeline?.name === p.name}
-            onclick={() => (selectedPipeline = p)}
-          >
-            <span class="pipeline-card-icon"><Workflow size={13} /></span>
-            <span class="pipeline-card-info">
-              <span class="pipeline-card-name">{p.name}</span>
-              <span class="pipeline-card-desc">{p.stages.length} stages</span>
-            </span>
-          </button>
-        {/each}
-        {#if pipelines.length === 0}
-          <div class="pipeline-empty">
-            No pipelines configured. Create one in Agents & Pipelines (⌘⇧A).
-          </div>
-        {/if}
-      </div>
-
-      <label class="field-label" for="ns-task">Task</label>
-      <textarea
-        id="ns-task"
-        class="field-input task-textarea"
-        bind:value={taskDescription}
-        placeholder="Describe what needs to be done..."
-        rows={3}
-      ></textarea>
-
-      {#if profileStore.profiles.length > 1}
-        <div class="options">
-          <div class="option">
-            <span class="field-label">Profile</span>
-            <Select
-              value={selectedProfile ?? ''}
-              options={[
-                { value: '', label: 'Inherit from Space' },
-                ...profileStore.profiles.map((p) => ({ value: p.id, label: p.name })),
-              ]}
-              dropup
-              onchange={(v) => { selectedProfile = v || undefined; }}
-            />
-          </div>
-        </div>
-      {/if}
-
-      {#if launchError}
-        <div class="launch-error">{launchError}</div>
-      {/if}
-
-      <div class="dialog-actions">
-        <Button variant="secondary" onclick={() => uiStore.closeOverlay()}>Cancel</Button>
-        <Button
-          variant="primary"
-          onclick={launchPipeline}
-          disabled={launching || !selectedPipeline || !taskDescription.trim()}
-        >
-          <Workflow size={13} />
-          {launching ? 'Starting...' : 'Launch'}
-        </Button>
-      </div>
-    {/if}
   </div>
 </Modal>
 
@@ -771,122 +600,4 @@
     margin-top: 20px;
   }
 
-  /* ── Mode switcher ─────────────────────────────── */
-  .mode-switcher {
-    display: flex;
-    gap: 2px;
-    margin-bottom: 14px;
-    background: var(--weplex-bg);
-    border-radius: var(--weplex-radius-md);
-    padding: 2px;
-  }
-
-  .mode-btn {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    padding: 6px 12px;
-    border: none;
-    border-radius: var(--weplex-radius-sm);
-    background: transparent;
-    color: var(--weplex-text-muted);
-    font-size: var(--weplex-text-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: all var(--weplex-duration-fast) var(--weplex-easing);
-  }
-
-  .mode-btn:hover {
-    color: var(--weplex-text);
-  }
-
-  .mode-btn.active {
-    background: var(--weplex-surface);
-    color: var(--weplex-text);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-  }
-
-  /* ── Pipeline picker ───────────────────────────── */
-  .pipeline-picker {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-top: 4px;
-  }
-
-  .pipeline-card {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    border: 1px solid var(--weplex-border);
-    border-radius: var(--weplex-radius-md);
-    background: transparent;
-    cursor: pointer;
-    text-align: left;
-    transition: all var(--weplex-duration-fast) var(--weplex-easing);
-  }
-
-  .pipeline-card:hover {
-    border-color: var(--weplex-accent);
-    background: color-mix(in srgb, var(--weplex-accent) 4%, transparent);
-  }
-
-  .pipeline-card.active {
-    border-color: var(--weplex-accent);
-    background: color-mix(in srgb, var(--weplex-accent) 10%, transparent);
-  }
-
-  .pipeline-card-icon {
-    color: var(--weplex-accent);
-    display: flex;
-    flex-shrink: 0;
-  }
-
-  .pipeline-card-info {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-
-  .pipeline-card-name {
-    font-size: var(--weplex-text-sm);
-    font-weight: 600;
-    color: var(--weplex-text);
-    font-family: var(--weplex-font-mono);
-  }
-
-  .pipeline-card.active .pipeline-card-name {
-    color: var(--weplex-accent);
-  }
-
-  .pipeline-card-desc {
-    font-size: var(--weplex-text-xs);
-    color: var(--weplex-text-muted);
-  }
-
-  .pipeline-empty {
-    padding: 12px;
-    font-size: var(--weplex-text-xs);
-    color: var(--weplex-text-muted);
-    text-align: center;
-  }
-
-  .task-textarea {
-    resize: vertical;
-    min-height: 60px;
-    line-height: 1.5;
-  }
-
-  .launch-error {
-    margin-top: 8px;
-    padding: 6px 10px;
-    border-radius: var(--weplex-radius-sm);
-    background: color-mix(in srgb, var(--weplex-error) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--weplex-error) 20%, transparent);
-    color: var(--weplex-error);
-    font-size: var(--weplex-text-xs);
-  }
 </style>

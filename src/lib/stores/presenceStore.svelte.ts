@@ -1,7 +1,7 @@
 // Presence store — tracks team member sessions in shared/team spaces
 
 import type { MemberPresence, NoteEntry, SessionMeta, SessionRecord } from '../types';
-import { pipelineWsService } from '../services/pipelineWsService';
+import { wsService } from '../services/wsService';
 import { spaceStore } from './spaceStore';
 import { sessionStore } from './sessionStore';
 import { authStore } from './authStore.svelte';
@@ -116,7 +116,7 @@ async function syncAllSharedSpaces(): Promise<void> {
   await refreshSummaryCache(activeSpace.id);
 
   const sessions = buildLocalSessionMeta(activeSpace.id);
-  pipelineWsService.syncSessions(activeSpace.serverId, sessions);
+  wsService.syncSessions(activeSpace.serverId, sessions);
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -170,13 +170,13 @@ export const presenceStore = {
     // Clean up previous subscriptions
     this.reset();
 
-    unsubSessions = pipelineWsService.onSpaceSessions((data) => {
+    unsubSessions = wsService.onSpaceSessions((data) => {
       const existing = presenceMap[data.spaceId];
       if (existing && membersEqual(existing, data.members)) return;
       presenceMap = { ...presenceMap, [data.spaceId]: data.members };
     });
 
-    unsubOffline = pipelineWsService.onMemberOffline((data) => {
+    unsubOffline = wsService.onMemberOffline((data) => {
       const members = presenceMap[data.spaceId];
       if (members) {
         presenceMap = {
@@ -208,7 +208,7 @@ export const presenceStore = {
     if (!space?.serverId) return;
 
     const sessions = buildLocalSessionMeta(spaceId);
-    pipelineWsService.syncSessions(space.serverId, sessions);
+    wsService.syncSessions(space.serverId, sessions);
   },
 
   /** Clean up all state and subscriptions. */

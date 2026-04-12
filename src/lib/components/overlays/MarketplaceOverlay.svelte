@@ -41,7 +41,7 @@
   // ── Publish state ──
   let pubName = $state('');
   let pubDesc = $state('');
-  let pubType = $state<'agent' | 'pipeline'>('agent');
+  let pubType = $state<'agent' | 'skill'>('agent');
   let pubCategory = $state('development');
   let pubTags = $state('');
   let pubVersion = $state('1.0.0');
@@ -101,9 +101,6 @@
     const hasKeyValue = lines.some((l) => /^\s*\w[\w\s]*:/.test(l));
     if (!hasKeyValue) return 'Invalid YAML: no key-value pairs found';
     // Type-specific checks
-    if (expectedType === 'pipeline' && !content.includes('stages:')) {
-      return 'Pipeline YAML must contain "stages:" section';
-    }
     return null; // valid
   }
 
@@ -121,7 +118,7 @@
         return;
       }
 
-      const dir = data.type === 'skill' ? 'skills' : data.type === 'agent' ? 'agents' : 'pipelines';
+      const dir = data.type === 'skill' ? 'skills' : 'agents';
 
       if (data.type === 'skill') {
         await invoke('save_marketplace_skill', { name: data.name, content: data.content });
@@ -208,10 +205,8 @@
   async function loadInstalled() {
     try {
       const agents: { name: string }[] = await invoke('list_agents');
-      const pipelines: { name: string }[] = await invoke('list_pipelines');
       const names = new Set<string>();
       for (const a of agents) names.add(a.name);
-      for (const p of pipelines) names.add(p.name);
       installedNames = names;
     } catch {
       // If commands not available, skip
@@ -250,7 +245,7 @@
       <input
         class="mp-search"
         type="text"
-        placeholder="Search agents & pipelines..."
+        placeholder="Search agents & skills..."
         bind:value={query}
         oninput={() => debouncedSearch()}
       />
@@ -261,7 +256,7 @@
         options={[
           { value: '', label: 'All types' },
           { value: 'agent', label: 'Agents' },
-          { value: 'pipeline', label: 'Pipelines' },
+          { value: 'skill', label: 'Skills' },
         ]}
       />
       <Select
@@ -301,7 +296,7 @@
               onclick={() => selectedPkg = pkg}
             >
               <div class="mp-card-header">
-                <span class="mp-card-type" class:agent={pkg.type === 'agent'} class:pipeline={pkg.type === 'pipeline'}>
+                <span class="mp-card-type" class:agent={pkg.type === 'agent'} class:skill={pkg.type === 'skill'}>
                   {pkg.type}
                 </span>
                 {#if installedNames.has(pkg.name)}
@@ -426,7 +421,7 @@
         <div class="mp-pub-form">
           <div class="mp-pub-row">
             <label>Name</label>
-            <input type="text" bind:value={pubName} placeholder="my-pipeline" />
+            <input type="text" bind:value={pubName} placeholder="my-agent" />
           </div>
           <div class="mp-pub-row">
             <label>Description</label>
@@ -437,10 +432,10 @@
               <label>Type</label>
               <Select
                 value={pubType}
-                onchange={(v) => { pubType = v as 'agent' | 'pipeline'; }}
+                onchange={(v) => { pubType = v as 'agent' | 'skill'; }}
                 options={[
                   { value: 'agent', label: 'Agent' },
-                  { value: 'pipeline', label: 'Pipeline' },
+                  { value: 'skill', label: 'Skill' },
                 ]}
               />
             </div>
@@ -469,7 +464,7 @@
           </div>
           <div class="mp-pub-row">
             <label>YAML Content</label>
-            <textarea bind:value={pubContent} rows="10" placeholder="Paste your agent or pipeline YAML here..."></textarea>
+            <textarea bind:value={pubContent} rows="10" placeholder="Paste your agent or skill YAML here..."></textarea>
           </div>
           {#if publishError}
             <p class="mp-pub-error">{publishError}</p>
@@ -557,7 +552,7 @@
     letter-spacing: 0.05em; padding: 1px 4px; border-radius: 2px;
   }
   .mp-card-type.agent { color: var(--weplex-accent); background: color-mix(in srgb, var(--weplex-accent) 15%, transparent); }
-  .mp-card-type.pipeline { color: var(--weplex-active); background: color-mix(in srgb, var(--weplex-active) 15%, transparent); }
+  .mp-card-type.skill { color: var(--weplex-active); background: color-mix(in srgb, var(--weplex-active) 15%, transparent); }
   .mp-verified { color: var(--weplex-active); font-size: 12px; }
   .mp-installed-badge {
     font-size: 9px; font-weight: 600; text-transform: uppercase;

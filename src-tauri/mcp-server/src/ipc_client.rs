@@ -25,14 +25,14 @@ impl IpcClient {
     /// Lazily connects on first use.
     pub fn send(&mut self, request: Value) -> Result<Value, String> {
         if self.socket_path.is_empty() {
-            return Err("Not in a pipeline context".to_string());
+            return Err("IPC socket path not configured".to_string());
         }
 
         // Lazy connect
         if self.writer.is_none() {
             let stream = UnixStream::connect(&self.socket_path).map_err(|e| {
                 format!(
-                    "Cannot connect to Weplex. The pipeline may have ended or the app is not running. ({})",
+                    "Cannot connect to Weplex. The app may not be running. ({})",
                     e
                 )
             })?;

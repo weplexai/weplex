@@ -4,10 +4,9 @@ import { authService } from '../services/authService';
 import { syncService } from '../services/syncService';
 import { invoke } from '@tauri-apps/api/core';
 import { teamStore } from './teamStore.svelte';
-import { collabPipelineStore } from './collabPipelineStore.svelte';
 import { presenceStore } from './presenceStore.svelte';
 import { chatStore } from './chatStore.svelte';
-import { pipelineWsService } from '../services/pipelineWsService';
+import { wsService } from '../services/wsService';
 
 const KEYCHAIN_KEY = 'auth_tokens';
 const FILE_BACKUP_KEY = 'weplex_auth_tokens';
@@ -180,9 +179,8 @@ export const authStore = {
       }
       // Pull remote settings silently after login
       syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after init:', e));
-      // Initialize team and collaborative pipelines after auth
+      // Initialize team collaboration after auth
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
-      collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
       presenceStore.init();
       chatStore.init();
       // Ensure file backup is in sync
@@ -223,8 +221,7 @@ export const authStore = {
         // Success — init dependent stores
         syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after retry:', e));
         teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
-        collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
-      presenceStore.init();
+        presenceStore.init();
       chatStore.init();
         // Clean up listener
         if (focusRetryCleanup) {
@@ -274,9 +271,8 @@ export const authStore = {
       syncService
         .pull()
         .catch((e) => console.warn('[Weplex] Settings sync failed after login:', e));
-      // Initialize team and collaborative pipelines after login
+      // Initialize team collaboration after login
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
-      collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
       presenceStore.init();
       chatStore.init();
     } catch (e) {
@@ -343,9 +339,8 @@ export const authStore = {
       syncService
         .pull()
         .catch((e) => console.warn('[Weplex] Settings sync failed after OAuth:', e));
-      // Initialize team and collaborative pipelines after OAuth
+      // Initialize team collaboration after OAuth
       teamStore.init().catch((e) => console.warn('[Weplex] Team init failed:', e));
-      collabPipelineStore.init().catch((e) => console.warn('[Weplex] Collab pipeline init failed:', e));
       presenceStore.init();
       chatStore.init();
     } catch (e) {
@@ -373,12 +368,11 @@ export const authStore = {
     } catch {
       // Ignore — server may be unreachable, still clear local state
     }
-    // Clean up team and collaborative pipeline state
+    // Clean up team collaboration state
     teamStore.reset();
-    collabPipelineStore.reset();
     presenceStore.reset();
     chatStore.reset();
-    pipelineWsService.disconnect();
+    wsService.disconnect();
 
     // Clean up any pending retry listener
     if (focusRetryCleanup) {

@@ -29,9 +29,7 @@
 
 Not a terminal. Not an IDE. A **platform** for AI coding agents.
 
-Run Claude Code, Codex, Aider, Gemini CLI, or any agent — each in its own session with real-time status, cost tracking, and output capture. Chain them into deterministic pipelines. Collaborate with your team. Browse and install community agents from the marketplace.
-
-**No AI in the orchestration layer.** Weplex is a deterministic Rust state machine that reads YAML and executes it. Predictable, repeatable, inspectable.
+Run Claude Code, Codex, Aider, Gemini CLI, or any agent — each in its own session with real-time status, cost tracking, and output capture. Collaborate with your team. Browse and install community agents from the marketplace.
 
 ## Features
 
@@ -50,15 +48,6 @@ Run Claude Code, Codex, Aider, Gemini CLI, or any agent — each in its own sess
 - Per-session cost tracking, error detection with sidebar highlighting
 - OS notifications: finished, stuck (5min), waiting for input, errors
 
-### Pipeline Engine
-- Define multi-stage workflows in YAML
-- Each stage = a real interactive PTY session (not headless)
-- Sequential and parallel execution
-- Artifact passing between stages via MCP
-- Agent-agnostic: mix Claude, Aider, Codex in one pipeline
-- Visual pipeline editor (drag & drop)
-- Pipeline Dashboard with flow visualization, Gantt timeline, cost breakdown
-
 ### Claude Deep Integration
 - Hook Server: intercepts PreToolUse, PostToolUse, Stop, SubagentStart, SubagentStop
 - CLAUDE.md context injection — workspace context prepended before session start
@@ -70,12 +59,11 @@ Run Claude Code, Codex, Aider, Gemini CLI, or any agent — each in its own sess
 - Teams with invite codes
 - Shared spaces with session presence (see what teammates are working on)
 - Space chat with mentions, replies, edits, typing indicators
-- Collaborative pipelines — delegate stages to team members
 - Session spectating — watch teammates' agent sessions in real-time (read-only)
 - Conflict detection — alerts when two agents edit the same file
 
 ### Marketplace & Plugins
-- Browse, install, rate, and publish agents and pipelines
+- Browse, install, rate, and publish agents and skills
 - Plugin system with dynamic JS loading
 - Browser plugin (Chrome via CDP) included
 
@@ -110,43 +98,6 @@ Production build:
 pnpm tauri build
 ```
 
-## Pipeline Example
-
-Create `~/.weplex/pipelines/feature.yaml`:
-
-```yaml
-name: Feature Pipeline
-description: Full feature development workflow
-stages:
-  - agent: pm
-    role: Analyze the task, produce a Task Brief
-  - agent: architect
-    role: Design the implementation approach
-    receives: [pm]
-  - agent: backend
-    role: Implement the feature
-    receives: [architect]
-  - parallel:
-    - agent: security
-      role: Review for vulnerabilities
-      receives: [backend]
-    - agent: tester
-      role: Write and run tests
-      receives: [backend]
-```
-
-Define agents in `~/.weplex/agents/`:
-
-```yaml
-# ~/.weplex/agents/backend.yaml
-name: backend
-description: Backend implementation agent
-binary: claude
-model: sonnet
-prompt: |
-  You are a backend developer. Write clean, production-ready code.
-```
-
 ## Architecture
 
 | Layer | Technology |
@@ -165,7 +116,6 @@ weplex/
 │   ├── src/
 │   │   ├── main.rs                 # Tauri commands, hooks, git
 │   │   ├── pty_manager.rs          # PTY session management
-│   │   ├── pipeline_engine.rs      # Pipeline orchestration
 │   │   ├── hook_server.rs          # Local HTTP for Claude hooks
 │   │   ├── ipc_server.rs           # Unix socket for MCP
 │   │   ├── plugin_host.rs          # Plugin discovery & lifecycle

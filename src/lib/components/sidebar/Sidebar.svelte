@@ -7,10 +7,9 @@
   import { folderStore } from '../../stores/folderStore';
   import { uiStore } from '../../stores/uiStore';
   import { dragStore } from '../../stores/dragStore';
-  import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
   import { Plus, X, User, Settings, Download, RotateCw, MessageSquare } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
-  import { pipelineWsService } from '../../services/pipelineWsService';
+  import { wsService } from '../../services/wsService';
   import { updateState, installUpdate, restartToUpdate } from '../../utils/updater';
 
   let updateDismissed = $state(false);
@@ -31,14 +30,14 @@
 
     // Leave previous space
     if (prevPresenceSpaceId) {
-      pipelineWsService.leaveSpace(prevPresenceSpaceId);
+      wsService.leaveSpace(prevPresenceSpaceId);
       presenceStore.stopSyncing();
     }
 
     // Join new space if shared/team
     if (isShared && serverId) {
       const displayName = authStore.user?.displayName || authStore.user?.email || undefined;
-      pipelineWsService.joinSpace(serverId, displayName);
+      wsService.joinSpace(serverId, displayName);
       presenceStore.startSyncing();
       presenceStore.loadHistory(serverId);
       prevPresenceSpaceId = serverId;
@@ -74,8 +73,6 @@
   import SessionItem from './SessionItem.svelte';
   import FolderItem from './FolderItem.svelte';
   import HyperspaceView from './HyperspaceView.svelte';
-  import PipelineGroup from './PipelineGroup.svelte';
-  import CollabPipelineList from './CollabPipelineList.svelte';
   import TeamPresence from './TeamPresence.svelte';
   import PluginTray from './PluginTray.svelte';
   import { presenceStore } from '../../stores/presenceStore.svelte';
@@ -497,8 +494,6 @@
 
   // Register global pointer listeners
   onMount(() => {
-    pipelineRunStore.init();
-
     const onMove = (e: PointerEvent) => handlePointerMove(e);
     const onUp = (e: PointerEvent) => handlePointerUp(e);
 
@@ -566,7 +561,6 @@
         <div class="slider-slide hub-preview-slide">
           <div class="hub-preview-nav">
             <div class="hub-preview-item">Agents</div>
-            <div class="hub-preview-item">Pipelines</div>
             <div class="hub-preview-item">Marketplace</div>
             <div class="hub-preview-item">Spaces</div>
             <div class="hub-preview-divider"></div>
@@ -617,21 +611,6 @@
                 {/each}
               </div>
             {/if}
-
-            <!-- Active pipeline runs -->
-            {#each pipelineRunStore.runs.filter((r) => r.status === 'running' || r.status === 'pending') as run (run.id)}
-              <PipelineGroup {run} />
-            {/each}
-
-            <!-- Recently finished pipeline runs -->
-            {#each pipelineRunStore.runs
-              .filter((r) => r.status !== 'running' && r.status !== 'pending')
-              .slice(-3) as run (run.id)}
-              <PipelineGroup {run} />
-            {/each}
-
-            <!-- Collaborative pipeline runs -->
-            <CollabPipelineList />
 
             <!-- Team presence for shared/team spaces -->
             {#if (space.shared || space.type === 'team') && space.serverId}

@@ -2,7 +2,7 @@ import type { Space, ServerSpace } from '../types';
 import { SPACE_COLORS, HYPERSPACE_ID } from '../types';
 import { durableSave } from '../utils/durablePersist';
 import { spaceService } from '../services/spaceService';
-import { pipelineWsService } from '../services/pipelineWsService';
+import { wsService } from '../services/wsService';
 
 const STORAGE_KEY = 'weplex_spaces';
 const ACTIVE_KEY = 'weplex_active_space';
@@ -308,7 +308,7 @@ export const spaceStore = {
     // Clean up previous subscriptions
     cleanupSpaceListeners();
 
-    unsubSpaceCreated = pipelineWsService.onSpaceCreated(({ teamId, space: ss }) => {
+    unsubSpaceCreated = wsService.onSpaceCreated(({ teamId, space: ss }) => {
       // Skip if already exists locally by serverId
       if (spaces.find((s) => s.serverId === ss.id)) return;
 
@@ -330,7 +330,7 @@ export const spaceStore = {
       persist();
     });
 
-    unsubSpaceUpdated = pipelineWsService.onSpaceUpdated(({ teamId, space: ss }) => {
+    unsubSpaceUpdated = wsService.onSpaceUpdated(({ teamId, space: ss }) => {
       const existing = spaces.find((s) => s.serverId === ss.id);
       if (!existing) return;
 
@@ -345,7 +345,7 @@ export const spaceStore = {
       persist();
     });
 
-    unsubSpaceDeleted = pipelineWsService.onSpaceDeleted(({ teamId, spaceId }) => {
+    unsubSpaceDeleted = wsService.onSpaceDeleted(({ teamId, spaceId }) => {
       const existing = spaces.find((s) => s.serverId === spaceId);
       if (!existing) return;
 

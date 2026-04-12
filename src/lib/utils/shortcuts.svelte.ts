@@ -54,7 +54,7 @@ const shortcuts: Shortcut[] = [
     meta: true,
     shift: true,
     action: () => uiStore.enterHubMode('agents'),
-    label: 'Agents & Pipelines',
+    label: 'Agents',
     category: 'navigation',
   },
   {

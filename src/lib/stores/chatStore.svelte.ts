@@ -1,7 +1,7 @@
 // Chat store — real-time chat messages per space
 
 import type { ChatMessage } from '../types';
-import { pipelineWsService } from '../services/pipelineWsService';
+import { wsService } from '../services/wsService';
 import { spaceService } from '../services/spaceService';
 import { authStore } from './authStore.svelte';
 import { settingsStore } from './settingsStore.svelte';
@@ -166,18 +166,18 @@ export const chatStore = {
 
   /** Edit a message's text. */
   edit(messageId: string, text: string): void {
-    pipelineWsService.editChatMessage(messageId, text);
+    wsService.editChatMessage(messageId, text);
     editingMessage = null;
   },
 
   /** Delete a message. */
   deleteMsg(messageId: string): void {
-    pipelineWsService.deleteChatMessage(messageId);
+    wsService.deleteChatMessage(messageId);
   },
 
   /** Send a chat message (with optional reply). */
   send(serverId: string, text: string): void {
-    pipelineWsService.sendChatMessage(serverId, text, replyingTo?.id);
+    wsService.sendChatMessage(serverId, text, replyingTo?.id);
     replyingTo = null;
   },
 
@@ -185,13 +185,13 @@ export const chatStore = {
   init(): void {
     this.reset();
 
-    unsubHistory = pipelineWsService.onChatHistory((data) => {
+    unsubHistory = wsService.onChatHistory((data) => {
       messages = { ...messages, [data.spaceId]: data.messages };
       // Initial history = no unread
       hasMore = { ...hasMore, [data.spaceId]: data.messages.length >= 50 };
     });
 
-    unsubTyping = pipelineWsService.onChatTyping((data) => {
+    unsubTyping = wsService.onChatTyping((data) => {
       const current = typingUsers[data.spaceId] ?? [];
       // Remove existing entry for this user (reset timer)
       const filtered = current.filter((t) => {
@@ -214,7 +214,7 @@ export const chatStore = {
       };
     });
 
-    unsubMessage = pipelineWsService.onChatMessage((msg) => {
+    unsubMessage = wsService.onChatMessage((msg) => {
       const current = messages[msg.spaceId] ?? [];
       messages = {
         ...messages,
@@ -231,7 +231,7 @@ export const chatStore = {
       }
     });
 
-    unsubEdited = pipelineWsService.onChatMessageEdited((data) => {
+    unsubEdited = wsService.onChatMessageEdited((data) => {
       const msgs = messages[data.spaceId];
       if (msgs) {
         messages = {
@@ -243,7 +243,7 @@ export const chatStore = {
       }
     });
 
-    unsubDeleted = pipelineWsService.onChatMessageDeleted((data) => {
+    unsubDeleted = wsService.onChatMessageDeleted((data) => {
       const msgs = messages[data.spaceId];
       if (msgs) {
         messages = {
@@ -262,7 +262,7 @@ export const chatStore = {
   /** Emit a typing indicator (debounced: max once per 2s). */
   emitTyping(serverId: string): void {
     if (typingDebounce) return;
-    pipelineWsService.emitTyping(serverId);
+    wsService.emitTyping(serverId);
     typingDebounce = setTimeout(() => {
       typingDebounce = null;
     }, 2000);

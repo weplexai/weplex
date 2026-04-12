@@ -8,7 +8,6 @@
   import OrchestrationDashboard from './lib/components/dashboard/OrchestrationDashboard.svelte';
   import ProjectDashboard from './lib/components/dashboard/ProjectDashboard.svelte';
   import SpaceDashboard from './lib/components/dashboard/SpaceDashboard.svelte';
-  import PipelineDashboard from './lib/components/dashboard/PipelineDashboard.svelte';
   import SpectatorView from './lib/components/terminal/SpectatorView.svelte';
   import MarketplaceOverlay from './lib/components/overlays/MarketplaceOverlay.svelte';
   import PluginView from './lib/components/terminal/PluginView.svelte';
@@ -28,7 +27,6 @@
   import { uiStore } from './lib/stores/uiStore';
   import { splitStore } from './lib/stores/splitStore';
   import { authStore } from './lib/stores/authStore.svelte';
-  import { pipelineRunStore } from './lib/stores/pipelineRunStore.svelte';
   import { HYPERSPACE_ID } from './lib/types';
   import { handleGlobalKeydown } from './lib/utils/shortcuts';
   import { checkForUpdates } from './lib/utils/updater';
@@ -50,9 +48,6 @@
 
     // Load installed plugins and activate
     pluginStore.refresh().then(() => loadActivePlugins());
-
-    // Initialize MCP event listener for pipeline stage completions
-    pipelineRunStore.init();
 
     // Register MCP server config in Claude's settings (~/.claude.json)
     invoke('register_mcp_in_claude').catch((e) =>
@@ -261,7 +256,7 @@
     {/if}
 
   <!-- Terminal instances live outside the conditional so they survive overlay switches
-       (AgentsPipelines replaces the {:else} block, which would destroy all terminals) -->
+       (Agents replaces the {:else} block, which would destroy all terminals) -->
   <div id="terminal-host">
     {#each sessionStore.sessions as session (session.id)}
       {#if session.type === 'dashboard' && session.dashboardType === 'orchestration'}
@@ -270,8 +265,6 @@
         <ProjectDashboard sessionId={session.id} />
       {:else if session.type === 'dashboard' && session.dashboardType === 'space'}
         <SpaceDashboard sessionId={session.id} />
-      {:else if session.type === 'dashboard' && session.dashboardType === 'pipeline'}
-        <PipelineDashboard sessionId={session.id} />
       {:else if session.type === 'plugin' && session.pluginId}
         <PluginView sessionId={session.id} pluginId={session.pluginId} />
       {:else if session.type === 'spectator' && session.spectateSpaceId && session.spectateSessionName}

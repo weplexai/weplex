@@ -4,7 +4,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { sessionStore } from '../../stores/sessionStore';
   import { settingsStore } from '../../stores/settingsStore';
-  import { pipelineWsService } from '../../services/pipelineWsService';
+  import { wsService } from '../../services/wsService';
 
   let {
     spaceId,
@@ -65,10 +65,10 @@
     resizeObserver.observe(container);
 
     // Join as spectator
-    pipelineWsService.spectateJoin(spaceId, sessionName);
+    wsService.spectateJoin(spaceId, sessionName);
 
     // Listen for scrollback (sent on join — raw chunks preserving ANSI)
-    unsubScrollback = pipelineWsService.onSpectateScrollback((data: any) => {
+    unsubScrollback = wsService.onSpectateScrollback((data: any) => {
       if (data.spaceId === spaceId && data.sessionName === sessionName) {
         // Write raw chunks sequentially to preserve terminal state
         const chunks = data.chunks || data.lines || [];
@@ -79,14 +79,14 @@
     });
 
     // Listen for live PTY stream
-    unsubStream = pipelineWsService.onPtyStream((data) => {
+    unsubStream = wsService.onPtyStream((data) => {
       if (data.spaceId === spaceId && data.sessionName === sessionName) {
         term.write(data.chunk);
       }
     });
 
     // Listen for session ended
-    unsubEnded = pipelineWsService.onSpectateEnded((data) => {
+    unsubEnded = wsService.onSpectateEnded((data) => {
       if (data.spaceId === spaceId && data.sessionName === sessionName) {
         ended = true;
         term.writeln('\r\n\x1b[90m--- Session ended ---\x1b[0m');
@@ -96,7 +96,7 @@
 
   onDestroy(() => {
     destroyed = true;
-    pipelineWsService.spectateLeave(spaceId, sessionName);
+    wsService.spectateLeave(spaceId, sessionName);
     unsubStream?.();
     unsubScrollback?.();
     unsubEnded?.();

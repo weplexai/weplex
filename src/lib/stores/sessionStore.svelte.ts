@@ -559,29 +559,6 @@ export const sessionStore = {
     return session;
   },
 
-  /** Create a pipeline dashboard showing flow, cost, and timeline. */
-  createPipelineDashboard(spaceId: string): Session {
-    const id = nextId++;
-    const now = Date.now();
-    const session: Session = {
-      id,
-      name: 'Pipeline Dashboard',
-      type: 'dashboard',
-      status: 'active',
-      spaceId,
-      pinned: false,
-      order: now,
-      createdAt: now,
-      lastActivity: now,
-      dashboardType: 'pipeline',
-    };
-
-    sessions.push(session);
-    activeSessionId = id;
-    persist();
-    return session;
-  },
-
   /** Create a spectator session to watch a remote session. */
   createSpectatorSession(
     spaceId: string,

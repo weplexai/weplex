@@ -131,7 +131,7 @@
   {#if !projectConfig?.exists && projectAgents.length === 0 && skills.length === 0}
     <div class="ps-empty">
       <p>No project configuration.</p>
-      <p class="ps-hint">Ask Claude: <code>"set up a project pipeline for this codebase"</code></p>
+      <p class="ps-hint">Ask Claude: <code>"set up a CLAUDE.md for this codebase"</code></p>
     </div>
   {/if}
 {/if}

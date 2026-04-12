@@ -13,11 +13,7 @@
   import { folderStore } from '../../stores/folderStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { noteStore } from '../../stores/noteStore.svelte';
-  import { pipelineRunStore } from '../../stores/pipelineRunStore.svelte';
-  import { collabPipelineStore } from '../../stores/collabPipelineStore.svelte';
   import { shortPath } from '../../utils/path';
-  import StageOutput from './StageOutput.svelte';
-  import CollabRunDetail from './CollabRunDetail.svelte';
   import ActivitySection from './ActivitySection.svelte';
   import SpaceChat from './SpaceChat.svelte';
   import { chatStore } from '../../stores/chatStore.svelte';
@@ -26,8 +22,6 @@
   import CommandsSection from './CommandsSection.svelte';
 
   let { session }: { session: Session | undefined } = $props();
-  let showPipelineView = $derived(pipelineRunStore.activeRunId !== null);
-  let showCollabView = $derived(collabPipelineStore.activeRunId !== null);
 
   let space = $derived(
     session ? spaceStore.spaces.find((s) => s.id === session.spaceId) : undefined,
@@ -106,11 +100,7 @@
 </script>
 
 <aside class="detail-panel">
-  {#if showCollabView}
-    <CollabRunDetail />
-  {:else if showPipelineView}
-    <StageOutput />
-  {:else if session}
+  {#if session}
     <!-- Tab switcher — visible when multiple tabs available -->
     {#if isSharedSpace || hasProject || hasCommands}
       <div class="tab-bar">

@@ -180,7 +180,7 @@
 
 {#if !authStore.isAuthenticated}
   <h3 class="section-title">Teams</h3>
-  <p class="section-desc">Sign in to create or join teams for collaborative pipelines.</p>
+  <p class="section-desc">Sign in to create or join teams for collaboration.</p>
 
 {:else}
   <h3 class="section-title">Teams</h3>
@@ -254,7 +254,7 @@
   {/if}
 
   {#if !hasTeams && !showCreateForm && !showJoinForm}
-    <p class="section-desc">Create a team or join an existing one to run collaborative pipelines.</p>
+    <p class="section-desc">Create a team or join an existing one to run collaboration.</p>
   {/if}
 
   <!-- Team list -->
