@@ -56,7 +56,7 @@ pub struct Resource {
     pub profile_config_dir: Option<String>,
     /// Absolute file path.
     pub file_path: String,
-    /// SHA-256 first 16 hex chars of file content.
+    /// FNV-1a hash of file content (16 hex chars). For change detection, not cryptographic.
     pub content_hash: String,
     /// Description extracted from frontmatter (agents only).
     pub description: String,
@@ -352,14 +352,22 @@ pub fn discover_all_resources(profiles: &[ProfileInfo]) -> Result<Vec<Resource>,
                 &manifest,
             );
 
-            // Filter out resources that are Weplex-managed copies
-            // (they're already in the list from Weplex scan)
             for r in resources {
                 if r.origin == ResourceOrigin::ProfileLocal {
+                    // Profile-local: add to list
                     all_resources.push(r);
+                } else if r.is_outdated {
+                    // Weplex-managed copy with local modifications:
+                    // mark the source resource as outdated
+                    if let Some(source) = all_resources.iter_mut().find(|s| {
+                        s.name == r.name && s.resource_type == r.resource_type
+                            && (s.origin == ResourceOrigin::WeplexManaged
+                                || s.origin == ResourceOrigin::Marketplace)
+                    }) {
+                        source.is_outdated = true;
+                    }
                 }
-                // WeplexManaged/Marketplace copies in profiles are skipped
-                // (the source from ~/.weplex/ is already included)
+                // Non-outdated Weplex copies are skipped (source already in list)
             }
         }
     }
@@ -600,6 +608,18 @@ pub fn create_resource(
     Ok(())
 }
 
+/// Validate that a path from manifest is within $HOME (defense against manifest poisoning).
+fn validate_manifest_path(path: &str) -> bool {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    // Resolve symlinks if path exists
+    let canonical = std::fs::canonicalize(path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(path));
+    canonical.starts_with(&home)
+}
+
 /// Update a Weplex-managed resource and re-distribute to all profiles.
 pub fn update_resource(
     name: &str,
@@ -613,6 +633,11 @@ pub fn update_resource(
         .find(|e| e.name == name && e.resource_type == resource_type)
         .ok_or_else(|| format!("Resource not found: {}/{}", resource_type.dir_name(), name))?;
 
+    // Validate source path from manifest
+    if !validate_manifest_path(&entry.source_path) {
+        return Err(format!("Manifest source path outside HOME: {}", entry.source_path));
+    }
+
     let hash = compute_hash(content);
 
     // Update source file
@@ -620,8 +645,12 @@ pub fn update_resource(
         .map_err(|e| format!("Failed to write source: {}", e))?;
     entry.content_hash = hash;
 
-    // Re-distribute to all existing targets
+    // Re-distribute to all existing targets (validate paths from manifest)
     for target in &mut entry.distributed_to {
+        if !validate_manifest_path(&target.target_path) {
+            eprintln!("[weplex] skipping invalid manifest path: {}", target.target_path);
+            continue;
+        }
         let tmp = format!("{}.tmp", target.target_path);
         let _ = std::fs::remove_file(&tmp);
         if let Err(e) = std::fs::write(&tmp, content) {
@@ -660,12 +689,20 @@ pub fn delete_resource(name: &str, resource_type: ResourceType) -> Result<(), St
         }
     };
 
-    // Remove source file
-    let _ = std::fs::remove_file(&entry.source_path);
+    // Remove source file (validate path from manifest)
+    if validate_manifest_path(&entry.source_path) {
+        let _ = std::fs::remove_file(&entry.source_path);
+    } else {
+        eprintln!("[weplex] skipping invalid manifest source: {}", entry.source_path);
+    }
 
-    // Remove distributed copies
+    // Remove distributed copies (validate paths from manifest)
     for target in &entry.distributed_to {
-        let _ = std::fs::remove_file(&target.target_path);
+        if validate_manifest_path(&target.target_path) {
+            let _ = std::fs::remove_file(&target.target_path);
+        } else {
+            eprintln!("[weplex] skipping invalid manifest target: {}", target.target_path);
+        }
     }
 
     // Remove from manifest
@@ -715,6 +752,11 @@ pub fn check_drift(profile_config_dirs: &[String]) -> Vec<DriftEntry> {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
+
+/// Public wrapper for Tauri command validation.
+pub fn sanitize_resource_name_public(name: &str) -> Result<String, String> {
+    sanitize_resource_name(name)
+}
 
 /// Sanitize resource name for filesystem use.
 fn sanitize_resource_name(name: &str) -> Result<String, String> {

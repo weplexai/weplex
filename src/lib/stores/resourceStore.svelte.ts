@@ -58,17 +58,10 @@ function getProfileInfos(): ProfileInfo[] {
   }));
 }
 
-function getProfileConfigDirs(): string[] {
-  return profileStore.profiles
-    .filter((p) => p.configDir)
-    .map((p) => p.configDir as string);
-}
-
 function getAllConfigDirs(): string[] {
-  // Include default profile dir too
-  const dirs = getProfileConfigDirs();
-  // Default profile has configDir=null, Rust handles it via ~/.claude/
-  return dirs;
+  // Default profile has configDir=null — pass empty string so Rust
+  // resolves it to ~/.claude/ (same logic as sync_hooks_for_profile).
+  return profileStore.profiles.map((p) => p.configDir ?? '');
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────
@@ -116,8 +109,12 @@ export const resourceStore = {
     loading = true;
     try {
       const profiles = getProfileInfos();
-      resources = await invoke<Resource[]>('discover_resources', { profiles });
-      conflicts = await invoke<Conflict[]>('detect_resource_conflicts', { profiles });
+      const result = await invoke<{ resources: Resource[]; conflicts: Conflict[] }>(
+        'discover_resources',
+        { profiles },
+      );
+      resources = result.resources;
+      conflicts = result.conflicts;
     } catch (e) {
       console.warn('[weplex] resource discovery failed:', e);
     } finally {
