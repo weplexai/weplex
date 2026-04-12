@@ -9,6 +9,7 @@ mod plugins;
 mod keychain;
 mod oauth_server;
 mod pty_manager;
+mod resources;
 mod secure_store;
 mod session_summary;
 mod weplex_agents;
@@ -2183,6 +2184,75 @@ fn sync_hooks_for_profile(config_dir: String) -> Result<(), String> {
     sync_hooks_to_profile(&validated)
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Resources (agents, rules, skills) — cross-profile management
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn discover_resources(
+    profiles: Vec<resources::ProfileInfo>,
+) -> Result<Vec<resources::Resource>, String> {
+    resources::discover_all_resources(&profiles)
+}
+
+#[tauri::command]
+fn detect_resource_conflicts(
+    profiles: Vec<resources::ProfileInfo>,
+) -> Result<Vec<resources::Conflict>, String> {
+    let all = resources::discover_all_resources(&profiles)?;
+    Ok(resources::detect_conflicts(&all))
+}
+
+#[tauri::command]
+fn share_resource(
+    source_path: String,
+    name: String,
+    resource_type: resources::ResourceType,
+    profile_config_dirs: Vec<String>,
+) -> Result<(), String> {
+    resources::share_resource(&source_path, &name, resource_type, &profile_config_dirs)
+}
+
+#[tauri::command]
+fn create_shared_resource(
+    name: String,
+    resource_type: resources::ResourceType,
+    content: String,
+    profile_config_dirs: Vec<String>,
+) -> Result<(), String> {
+    resources::create_resource(&name, resource_type, &content, &profile_config_dirs)
+}
+
+#[tauri::command]
+fn update_shared_resource(
+    name: String,
+    resource_type: resources::ResourceType,
+    content: String,
+) -> Result<(), String> {
+    resources::update_resource(&name, resource_type, &content)
+}
+
+#[tauri::command]
+fn delete_shared_resource(
+    name: String,
+    resource_type: resources::ResourceType,
+) -> Result<(), String> {
+    resources::delete_resource(&name, resource_type)
+}
+
+#[tauri::command]
+fn sync_resources_to_profile(config_dir: String) -> Result<(), String> {
+    let validated = validate_config_dir(&config_dir)?;
+    resources::distribute_all_to_profile(&validated)
+}
+
+#[tauri::command]
+fn check_resource_drift(
+    profile_config_dirs: Vec<String>,
+) -> Result<Vec<resources::DriftEntry>, String> {
+    Ok(resources::check_drift(&profile_config_dirs))
+}
+
 /// Register or update the weplex MCP server entry in ~/.claude.json.
 fn do_register_mcp_in_claude(app: &tauri::AppHandle) -> Result<(), String> {
     let binary_path = match find_mcp_binary(app) {
@@ -2374,6 +2444,14 @@ fn main() {
             register_mcp_in_claude,
             sync_hooks_for_profiles,
             sync_hooks_for_profile,
+            discover_resources,
+            detect_resource_conflicts,
+            share_resource,
+            create_shared_resource,
+            update_shared_resource,
+            delete_shared_resource,
+            sync_resources_to_profile,
+            check_resource_drift,
             set_traffic_lights_visible,
             get_session_summary,
         ])
