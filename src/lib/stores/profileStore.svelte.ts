@@ -67,6 +67,13 @@ export const profileStore = {
       console.warn('[weplex] failed to sync hooks for new profile:', e),
     );
 
+    // Distribute all shared resources to the new profile
+    if (configDir) {
+      invoke('sync_resources_to_profile', { configDir }).catch((e) =>
+        console.warn('[weplex] failed to sync resources for new profile:', e),
+      );
+    }
+
     return profile;
   },
 

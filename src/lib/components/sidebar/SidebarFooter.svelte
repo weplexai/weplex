@@ -12,8 +12,8 @@
   <div class="footer-actions">
     <button
       class="icon-btn"
-      title="Agents (⌘⇧A)"
-      onclick={() => uiStore.enterHubMode('agents')}
+      title="Resources (⌘⇧A)"
+      onclick={() => uiStore.enterHubMode('resources')}
     >
       <Layers size={15} />
     </button>

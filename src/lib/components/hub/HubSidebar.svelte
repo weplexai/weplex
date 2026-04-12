@@ -79,7 +79,7 @@
 
   // Primary sections (features)
   const mainSections: { id: HubSection; label: string; icon: typeof Bot }[] = [
-    { id: 'agents', label: 'Agents', icon: Bot },
+    { id: 'resources', label: 'Resources', icon: Bot },
     { id: 'commands', label: 'Commands', icon: Zap },
     { id: 'marketplace', label: 'Marketplace', icon: Store },
     { id: 'spaces', label: 'Spaces', icon: LayoutGrid },

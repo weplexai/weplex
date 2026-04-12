@@ -33,7 +33,7 @@ let sidebarWidthVal = $state(loadSidebarWidth());
 let sidebarHidden = $state(loadSidebarHidden());
 let hubMode = $state(false);
 let hubExiting = $state(false);
-let hubSection = $state<HubSection>('agents');
+let hubSection = $state<HubSection>('resources');
 let hubExitAt = $state(0);
 
 export const uiStore = {

@@ -53,8 +53,8 @@ const shortcuts: Shortcut[] = [
     key: 'a',
     meta: true,
     shift: true,
-    action: () => uiStore.enterHubMode('agents'),
-    label: 'Agents',
+    action: () => uiStore.enterHubMode('resources'),
+    label: 'Resources',
     category: 'navigation',
   },
   {

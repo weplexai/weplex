@@ -28,6 +28,7 @@
   import { splitStore } from './lib/stores/splitStore';
   import { authStore } from './lib/stores/authStore.svelte';
   import { profileStore } from './lib/stores/profileStore.svelte';
+  import { resourceStore } from './lib/stores/resourceStore.svelte';
   import { HYPERSPACE_ID } from './lib/types';
   import { handleGlobalKeydown } from './lib/utils/shortcuts';
   import { checkForUpdates } from './lib/utils/updater';
@@ -57,6 +58,9 @@
 
     // Sync Weplex hooks into all profiles' settings.json
     profileStore.syncHooks();
+
+    // Discover resources from all profiles (unified view)
+    resourceStore.discover();
 
     window.addEventListener('keydown', handleGlobalKeydown);
 

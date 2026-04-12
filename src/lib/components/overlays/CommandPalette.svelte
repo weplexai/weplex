@@ -84,13 +84,13 @@
           },
         },
         {
-          id: 'agents',
-          label: 'Agents',
+          id: 'resources',
+          label: 'Resources',
           hint: '⇧⌘A',
           category: 'Actions',
           action: () => {
             uiStore.closeOverlay();
-            uiStore.enterHubMode('agents');
+            uiStore.enterHubMode('resources');
           },
         },
         {
