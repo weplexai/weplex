@@ -44,7 +44,7 @@
   );
 
   // Group profile-local by profile
-  let profileGroups = $derived(() => {
+  let profileGroups = $derived.by(() => {
     const groups: Record<string, Resource[]> = {};
     for (const r of profileLocalResources) {
       const key = r.profileName || 'Unknown';
@@ -193,7 +193,7 @@
         {/if}
 
         <!-- Profile-local resources (grouped by profile) -->
-        {#each profileGroups() as [profileName, resources]}
+        {#each profileGroups as [profileName, resources]}
           <div class="nav-section-label">{profileName} only</div>
           {#each resources as r}
             <button

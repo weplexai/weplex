@@ -108,9 +108,26 @@ pub struct ProfileInfo {
 
 // ─── Manifest ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+const MANIFEST_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
+    #[serde(default = "default_manifest_version")]
+    pub version: u32,
     pub resources: Vec<ManifestEntry>,
+}
+
+fn default_manifest_version() -> u32 {
+    MANIFEST_VERSION
+}
+
+impl Default for Manifest {
+    fn default() -> Self {
+        Self {
+            version: MANIFEST_VERSION,
+            resources: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,12 +194,35 @@ pub fn compute_hash(content: &str) -> String {
 }
 
 fn now_iso() -> String {
-    // Simple ISO timestamp without chrono crate
+    // ISO 8601 timestamp without chrono crate
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = duration.as_secs();
-    format!("{}", secs)
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Days since 1970-01-01
+    let mut y = 1970i64;
+    let mut remaining = days as i64;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining < days_in_year { break; }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0usize;
+    for md in &month_days {
+        if remaining < *md as i64 { break; }
+        remaining -= *md as i64;
+        m += 1;
+    }
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m + 1, remaining + 1, hours, minutes, seconds)
 }
 
 /// Extract description from .md file frontmatter (first `description:` line).

@@ -47,6 +47,7 @@ let resources = $state<Resource[]>([]);
 let conflicts = $state<Conflict[]>([]);
 let drifts = $state<DriftEntry[]>([]);
 let loading = $state(false);
+let error = $state<string | null>(null);
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -72,6 +73,9 @@ export const resourceStore = {
   },
   get loading() {
     return loading;
+  },
+  get error() {
+    return error;
   },
   get conflicts() {
     return conflicts;
@@ -107,6 +111,7 @@ export const resourceStore = {
   /** Discover all resources from all profiles + ~/.weplex/. */
   async discover() {
     loading = true;
+    error = null;
     try {
       const profiles = getProfileInfos();
       const result = await invoke<{ resources: Resource[]; conflicts: Conflict[] }>(
@@ -116,7 +121,9 @@ export const resourceStore = {
       resources = result.resources;
       conflicts = result.conflicts;
     } catch (e) {
-      console.warn('[weplex] resource discovery failed:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      error = msg;
+      console.warn('[weplex] resource discovery failed:', msg);
     } finally {
       loading = false;
     }
