@@ -1849,8 +1849,56 @@ exit 0
         preamble
     );
 
+    // ── SessionStart hook ──
+    // Unlike other hooks, SessionStart reads WEPLEX_SESSION_ID from env
+    // (set by PTY at spawn time) instead of session-map files.
+    let session_start_script = r#"#!/bin/bash
+# Weplex Hook — SessionStart: captures Claude session ID and sends to Weplex.
+# Claude Code provides session_id (UUID) in stdin JSON at session start.
+# Weplex session ID comes from WEPLEX_SESSION_ID env var (set by PTY).
+
+command -v jq >/dev/null 2>&1 || exit 0
+
+INPUT=$(cat -)
+
+CLAUDE_SID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+if [ -z "$CLAUDE_SID" ]; then exit 0; fi
+
+# Weplex session ID from environment (set by Weplex when creating PTY)
+WEPLEX_SID="$WEPLEX_SESSION_ID"
+if [ -z "$WEPLEX_SID" ]; then exit 0; fi
+
+# Read hook server port and auth token
+PORT_FILE="$HOME/.weplex/hook-port"
+TOKEN_FILE="$HOME/.weplex/hook-token"
+if [ ! -f "$PORT_FILE" ]; then exit 0; fi
+PORT=$(cat "$PORT_FILE")
+if [ -z "$PORT" ]; then exit 0; fi
+TOKEN=""
+if [ -f "$TOKEN_FILE" ]; then TOKEN=$(cat "$TOKEN_FILE"); fi
+
+# Send session_start event with Claude session ID
+PAYLOAD=$(jq -n -c --arg evt "session_start" --arg sid "$WEPLEX_SID" --arg csid "$CLAUDE_SID" \
+  '{
+    event_type: $evt,
+    session_id: ($sid | tonumber),
+    claude_session_id: $csid
+  }' 2>/dev/null)
+
+if [ -z "$PAYLOAD" ]; then exit 0; fi
+
+curl -s -X POST "http://127.0.0.1:$PORT/hook" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "$PAYLOAD" \
+  --max-time 2 > /dev/null 2>&1
+
+exit 0
+"#.to_string();
+
     // Write all scripts
     let scripts = [
+        ("session-start.sh", session_start_script),
         ("pre-tool-use.sh", pre_tool_script),
         ("post-tool-use.sh", post_tool_script),
         ("stop-hook.sh", stop_script),
@@ -1876,84 +1924,263 @@ exit 0
     Ok(())
 }
 
-/// Register all Weplex hooks (PreToolUse, PostToolUse, Stop) in ~/.claude/settings.json.
-/// Merges into existing hooks without overwriting other entries.
-fn register_hooks_in_claude() -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let settings_path = format!("{}/.claude/settings.json", home);
-    let hooks_dir = format!("{}/.weplex/hooks", home);
+/// Build a single Weplex hook entry for claude-hooks.json / settings.json.
+fn weplex_hook_entry(command: &str, status_message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hooks": [{
+            "type": "command",
+            "command": command,
+            "timeout": 10,
+            "statusMessage": status_message
+        }]
+    })
+}
 
-    // Read existing settings or create empty object
-    let mut config: serde_json::Value = if let Ok(content) = std::fs::read_to_string(&settings_path) {
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
+/// Generate ~/.weplex/claude-hooks.json — single source of truth for all
+/// Weplex hooks. This file is then synced into each profile's settings.json.
+fn write_weplex_hooks_source() -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let hooks_dir = format!("{}/.weplex/hooks", home);
+    let source_path = format!("{}/.weplex/claude-hooks.json", home);
+
+    let source = serde_json::json!({
+        "hooks": {
+            "SessionStart": [
+                weplex_hook_entry(
+                    &format!("{}/session-start.sh", hooks_dir),
+                    "[Weplex] Capturing session ID"
+                )
+            ],
+            "PreToolUse": [
+                weplex_hook_entry(
+                    &format!("{}/pre-tool-use.sh", hooks_dir),
+                    "[Weplex] Tracking tool use"
+                )
+            ],
+            "PostToolUse": [
+                weplex_hook_entry(
+                    &format!("{}/post-tool-use.sh", hooks_dir),
+                    "[Weplex] Tracking tool result"
+                )
+            ],
+            "Stop": [
+                weplex_hook_entry(
+                    &format!("{}/stop-hook.sh", hooks_dir),
+                    "[Weplex] Session notes check"
+                )
+            ],
+            "SubagentStart": [
+                weplex_hook_entry(
+                    &format!("{}/subagent-start.sh", hooks_dir),
+                    "[Weplex] Tracking subagent"
+                )
+            ],
+            "SubagentStop": [
+                weplex_hook_entry(
+                    &format!("{}/subagent-stop.sh", hooks_dir),
+                    "[Weplex] Subagent finished"
+                )
+            ]
+        }
+    });
+
+    let json_str = serde_json::to_string_pretty(&source).map_err(|e| e.to_string())?;
+    std::fs::write(&source_path, json_str).map_err(|e| e.to_string())?;
+
+    eprintln!("[weplex] hooks source written to {}", source_path);
+    Ok(())
+}
+
+/// Check if a hook entry belongs to Weplex (by .weplex/ in command path).
+fn is_weplex_hook(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.contains(".weplex/"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Sync Weplex hooks from ~/.weplex/claude-hooks.json into a single
+/// profile's settings.json. Removes stale Weplex entries first, then
+/// appends current ones. Non-Weplex entries are never touched.
+fn sync_hooks_to_profile(config_dir: &str) -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let source_path = format!("{}/.weplex/claude-hooks.json", home);
+    let settings_path = format!("{}/settings.json", config_dir);
+
+    // Read source hooks
+    let source_content = std::fs::read_to_string(&source_path)
+        .map_err(|e| format!("Failed to read hooks source: {}", e))?;
+    let source: serde_json::Value = serde_json::from_str(&source_content)
+        .map_err(|e| format!("Invalid hooks source JSON: {}", e))?;
+
+    // Read existing profile settings or create empty object
+    let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or(serde_json::json!({}));
+
+    if settings.get("hooks").is_none() {
+        settings["hooks"] = serde_json::json!({});
+    }
+
+    let source_hooks = match source["hooks"].as_object() {
+        Some(h) => h,
+        None => return Err("Invalid hooks source: missing hooks object".to_string()),
     };
 
-    if config.get("hooks").is_none() {
-        config["hooks"] = serde_json::json!({});
-    }
-
-    // Register each hook type
-    let hook_types = [
-        ("PreToolUse", format!("{}/pre-tool-use.sh", hooks_dir)),
-        ("PostToolUse", format!("{}/post-tool-use.sh", hooks_dir)),
-        ("Stop", format!("{}/stop-hook.sh", hooks_dir)),
-        ("SubagentStart", format!("{}/subagent-start.sh", hooks_dir)),
-        ("SubagentStop", format!("{}/subagent-stop.sh", hooks_dir)),
-    ];
-
-    for (hook_type, command) in &hook_types {
+    for (hook_type, weplex_entries) in source_hooks {
         // Ensure hooks.<Type> is an array
-        if !config["hooks"].get(hook_type).map(|v| v.is_array()).unwrap_or(false) {
-            config["hooks"][hook_type] = serde_json::json!([]);
+        if !settings["hooks"]
+            .get(hook_type)
+            .map(|v| v.is_array())
+            .unwrap_or(false)
+        {
+            settings["hooks"][hook_type] = serde_json::json!([]);
         }
 
-        let hooks_array = config["hooks"][hook_type].as_array_mut().unwrap();
+        let arr = settings["hooks"][hook_type].as_array_mut().unwrap();
 
-        // Claude Code hooks format:
-        // [{ "hooks": [{ "type": "command", "command": "..." }] }]
-        // Each entry is a matcher group with nested hooks array.
-        // Search for existing weplex entry by checking nested command paths.
-        let existing_idx = hooks_array.iter().position(|entry| {
-            entry.get("hooks")
-                .and_then(|h| h.as_array())
-                .map(|hooks| {
-                    hooks.iter().any(|hook| {
-                        hook.get("command")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.contains("weplex"))
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false)
-        });
+        // Remove old Weplex entries
+        arr.retain(|entry| !is_weplex_hook(entry));
 
-        let hook_entry = serde_json::json!({
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": 10
-            }]
-        });
-
-        if let Some(idx) = existing_idx {
-            hooks_array[idx] = hook_entry;
-        } else {
-            hooks_array.push(hook_entry);
+        // Append current Weplex entries
+        if let Some(entries) = weplex_entries.as_array() {
+            for entry in entries {
+                arr.push(entry.clone());
+            }
         }
     }
 
-    // Ensure ~/.claude/ directory exists
-    let claude_dir = format!("{}/.claude", home);
-    std::fs::create_dir_all(&claude_dir)
-        .map_err(|e| format!("Failed to create ~/.claude dir: {}", e))?;
+    // Also clean up Weplex hooks from event types that are no longer in source
+    // (in case we removed a hook type in an update)
+    if let Some(settings_hooks) = settings["hooks"].as_object_mut() {
+        for (hook_type, entries) in settings_hooks.iter_mut() {
+            if let Some(arr) = entries.as_array_mut() {
+                if !source_hooks.contains_key(hook_type) {
+                    arr.retain(|entry| !is_weplex_hook(entry));
+                }
+            }
+        }
+    }
 
-    let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
+    // Ensure config dir exists
+    std::fs::create_dir_all(config_dir)
+        .map_err(|e| format!("Failed to create config dir {}: {}", config_dir, e))?;
 
-    eprintln!("[weplex] hooks registered in ~/.claude/settings.json (PreToolUse, PostToolUse, Stop)");
+    // Atomic write: write to temp file, then rename to avoid partial writes.
+    // Remove stale .tmp first to prevent writing through a symlink.
+    let json_str = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    let tmp_path = format!("{}.tmp", settings_path);
+    let _ = std::fs::remove_file(&tmp_path);
+    std::fs::write(&tmp_path, &json_str)
+        .map_err(|e| format!("Failed to write temp settings: {}", e))?;
+    std::fs::rename(&tmp_path, &settings_path)
+        .map_err(|e| format!("Failed to rename temp settings: {}", e))?;
+
+    eprintln!("[weplex] hooks synced to {}", settings_path);
     Ok(())
+}
+
+/// Validate that config_dir is an absolute path under $HOME.
+/// Resolves symlinks to prevent symlink attacks.
+fn validate_config_dir(config_dir: &str) -> Result<String, String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+
+    // Must be absolute
+    if !config_dir.starts_with('/') {
+        return Err(format!("Config dir must be absolute: {}", config_dir));
+    }
+
+    // Resolve symlinks. If dir doesn't exist yet, canonicalize parent.
+    let path = std::path::Path::new(config_dir);
+    let canonical = if path.exists() {
+        std::fs::canonicalize(path).map_err(|e| format!("Cannot resolve path: {}", e))?
+    } else {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("No parent dir for: {}", config_dir))?;
+        let canonical_parent = std::fs::canonicalize(parent)
+            .map_err(|e| format!("Cannot resolve parent: {}", e))?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| format!("No dir name in: {}", config_dir))?;
+        canonical_parent.join(file_name)
+    };
+
+    if !canonical.starts_with(&home) {
+        return Err(format!(
+            "Config dir must be under HOME ({}): {}",
+            home, config_dir
+        ));
+    }
+
+    canonical
+        .to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Config dir path is not valid UTF-8: {}", config_dir))
+}
+
+/// Tauri command: sync Weplex hooks into all known profiles.
+/// Called from frontend after profileStore loads from localStorage.
+/// Ensures source file is fresh before syncing.
+#[tauri::command]
+fn sync_hooks_for_profiles(profile_config_dirs: Vec<String>) -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+
+    // Ensure source file is fresh (no race with startup thread)
+    let _ = write_weplex_hooks_source();
+
+    // Always sync default profile (~/.claude/)
+    let default_dir = format!("{}/.claude", home);
+    if let Err(e) = sync_hooks_to_profile(&default_dir) {
+        eprintln!("[weplex] failed to sync hooks to default profile: {}", e);
+    }
+
+    // Sync each custom profile
+    for config_dir in &profile_config_dirs {
+        if config_dir.is_empty() {
+            continue;
+        }
+        match validate_config_dir(config_dir) {
+            Ok(validated) => {
+                if let Err(e) = sync_hooks_to_profile(&validated) {
+                    eprintln!("[weplex] failed to sync hooks to {}: {}", validated, e);
+                }
+            }
+            Err(e) => eprintln!("[weplex] skipping invalid profile dir {}: {}", config_dir, e),
+        }
+    }
+
+    Ok(())
+}
+
+/// Tauri command: sync Weplex hooks into a single profile.
+/// Called when user creates a new profile.
+#[tauri::command]
+fn sync_hooks_for_profile(config_dir: String) -> Result<(), String> {
+    // Ensure source file exists
+    let _ = write_weplex_hooks_source();
+
+    if config_dir.is_empty() {
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME environment variable not set".to_string())?;
+        return sync_hooks_to_profile(&format!("{}/.claude", home));
+    }
+
+    let validated = validate_config_dir(&config_dir)?;
+    sync_hooks_to_profile(&validated)
 }
 
 /// Register or update the weplex MCP server entry in ~/.claude.json.
@@ -2086,12 +2313,14 @@ fn main() {
                 Err(e) => eprintln!("[weplex] failed to start hook server: {}", e),
             }
 
-            // Register MCP server in ~/.claude.json and hooks in ~/.claude/settings.json
+            // Register MCP server in ~/.claude.json, generate hook scripts and source.
+            // Hook sync into profile settings.json happens from frontend after
+            // profileStore loads (via sync_hooks_for_profiles command).
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let _ = do_register_mcp_in_claude(&handle);
                 let _ = ensure_hook_script();
-                let _ = register_hooks_in_claude();
+                let _ = write_weplex_hooks_source();
                 // Clean stale session-map from previous runs
                 let _ = clean_session_map();
             });
@@ -2143,6 +2372,8 @@ fn main() {
             secure_store::secure_store_delete,
             get_mcp_binary_path,
             register_mcp_in_claude,
+            sync_hooks_for_profiles,
+            sync_hooks_for_profile,
             set_traffic_lights_visible,
             get_session_summary,
         ])

@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import type { Profile } from '../types';
 
 const STORAGE_KEY = 'weplex_profiles';
@@ -60,6 +61,12 @@ export const profileStore = {
     };
     profiles.push(profile);
     persist();
+
+    // Sync Weplex hooks into the new profile's settings.json
+    invoke('sync_hooks_for_profile', { configDir: configDir ?? '' }).catch((e) =>
+      console.warn('[weplex] failed to sync hooks for new profile:', e),
+    );
+
     return profile;
   },
 
@@ -75,5 +82,13 @@ export const profileStore = {
     if (id === 'default') return;
     profiles = profiles.filter((p) => p.id !== id);
     persist();
+  },
+
+  /** Sync Weplex hooks into all profiles' settings.json. Call on app startup. */
+  syncHooks() {
+    const configDirs = profiles.filter((p) => p.configDir).map((p) => p.configDir as string);
+    invoke('sync_hooks_for_profiles', { profileConfigDirs: configDirs }).catch((e) =>
+      console.warn('[weplex] failed to sync hooks to profiles:', e),
+    );
   },
 };

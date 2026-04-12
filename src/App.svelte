@@ -27,6 +27,7 @@
   import { uiStore } from './lib/stores/uiStore';
   import { splitStore } from './lib/stores/splitStore';
   import { authStore } from './lib/stores/authStore.svelte';
+  import { profileStore } from './lib/stores/profileStore.svelte';
   import { HYPERSPACE_ID } from './lib/types';
   import { handleGlobalKeydown } from './lib/utils/shortcuts';
   import { checkForUpdates } from './lib/utils/updater';
@@ -53,6 +54,9 @@
     invoke('register_mcp_in_claude').catch((e) =>
       console.warn('[Weplex] Failed to register MCP in Claude config:', e),
     );
+
+    // Sync Weplex hooks into all profiles' settings.json
+    profileStore.syncHooks();
 
     window.addEventListener('keydown', handleGlobalKeydown);
 
