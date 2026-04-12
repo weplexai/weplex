@@ -2292,7 +2292,8 @@ fn sync_resources_to_profile(config_dir: String) -> Result<(), String> {
 fn check_resource_drift(
     profile_config_dirs: Vec<String>,
 ) -> Result<Vec<resources::DriftEntry>, String> {
-    Ok(resources::check_drift(&profile_config_dirs))
+    let validated = validate_config_dirs(&profile_config_dirs)?;
+    Ok(resources::check_drift(&validated))
 }
 
 /// Register or update the weplex MCP server entry in ~/.claude.json.

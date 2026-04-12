@@ -649,15 +649,17 @@ pub fn create_resource(
 }
 
 /// Validate that a path from manifest is within $HOME (defense against manifest poisoning).
+/// Rejects if file doesn't exist (manifest paths should always point to existing files).
 fn validate_manifest_path(path: &str) -> bool {
     let home = match std::env::var("HOME") {
         Ok(h) => h,
         Err(_) => return false,
     };
-    // Resolve symlinks if path exists
-    let canonical = std::fs::canonicalize(path)
-        .unwrap_or_else(|_| std::path::PathBuf::from(path));
-    canonical.starts_with(&home)
+    // Resolve symlinks — reject if file doesn't exist
+    match std::fs::canonicalize(path) {
+        Ok(canonical) => canonical.starts_with(&home),
+        Err(_) => false,
+    }
 }
 
 /// Update a Weplex-managed resource and re-distribute to all profiles.
