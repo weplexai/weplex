@@ -2200,6 +2200,14 @@ struct DiscoveryResult {
 fn discover_resources(
     profiles: Vec<resources::ProfileInfo>,
 ) -> Result<DiscoveryResult, String> {
+    // Validate all profile config dirs before filesystem access
+    for p in &profiles {
+        if let Some(ref dir) = p.config_dir {
+            if !dir.is_empty() {
+                validate_config_dir(dir)?;
+            }
+        }
+    }
     let all = resources::discover_all_resources(&profiles)?;
     let conflicts = resources::detect_conflicts(&all);
     Ok(DiscoveryResult {

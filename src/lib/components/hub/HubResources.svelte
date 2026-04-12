@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { Button, Modal } from '../ui';
   import { resourceStore, type Resource, type ResourceType } from '../../stores/resourceStore.svelte';
+  import { profileStore } from '../../stores/profileStore.svelte';
   import { Plus, Share2, Trash2, AlertTriangle, Package, RefreshCw } from 'lucide-svelte';
   import { modelShort, modelClass, initial } from '../overlays/helpers';
   import AgentDetail from '../overlays/AgentDetail.svelte';
@@ -26,6 +27,13 @@
 
   // Delete confirmation
   let confirmDelete = $state<Resource | null>(null);
+
+  // Operation state (prevents double-clicks, shows feedback)
+  let operating = $state(false);
+  let toast = $state<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Multiple profiles available for sharing
+  let hasMultipleProfiles = $derived(profileStore.profiles.length > 1);
 
   // Filtered resources by active tab
   let tabResources = $derived(
@@ -100,45 +108,82 @@
     editError = null;
   }
 
+  function showToast(type: 'success' | 'error', text: string) {
+    toast = { type, text };
+    setTimeout(() => { toast = null; }, 3000);
+  }
+
+  /** Refresh selectedResource reference after discover (prevents stale data). */
+  function refreshSelection() {
+    if (selectedResource) {
+      const updated = resourceStore.resources.find(
+        (r) => r.filePath === selectedResource!.filePath,
+      );
+      if (updated) {
+        selectedResource = updated;
+      } else {
+        selectedResource = null;
+        selectedAgentConfig = null;
+      }
+    }
+  }
+
   async function saveNew() {
     if (!editName.trim()) {
       editError = 'Name is required';
       return;
     }
+    operating = true;
     try {
       await resourceStore.create(activeTab, editName.trim(), editContent);
       editMode = 'view';
       editError = null;
-      // Select the new resource
+      // Name may be sanitized by Rust — find by type in latest resources
+      const sanitized = editName.trim().replace(/[^a-zA-Z0-9\-_]/g, (c) => c === ' ' ? '-' : '_');
       const found = resourceStore.resources.find(
-        (r) => r.name === editName.trim() && r.resourceType === activeTab,
+        (r) => r.name === sanitized && r.resourceType === activeTab,
       );
       if (found) selectResource(found);
+      showToast('success', 'Created');
     } catch (e: unknown) {
       editError = e instanceof Error ? e.message : String(e);
+    } finally {
+      operating = false;
     }
   }
 
   async function shareResource(resource: Resource) {
+    if (operating) return;
+    operating = true;
     try {
       await resourceStore.share(resource);
+      refreshSelection();
+      const count = profileStore.profiles.length;
+      showToast('success', `Shared to ${count} profile${count > 1 ? 's' : ''}`);
     } catch (e) {
-      console.error('Share failed:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast('error', `Share failed: ${msg}`);
+    } finally {
+      operating = false;
     }
   }
 
   async function deleteResource() {
-    if (!confirmDelete) return;
+    if (!confirmDelete || operating) return;
+    operating = true;
     try {
       await resourceStore.delete(confirmDelete.name, confirmDelete.resourceType);
       if (selectedResource?.name === confirmDelete.name) {
         selectedResource = null;
         selectedAgentConfig = null;
       }
+      showToast('success', 'Deleted');
     } catch (e) {
-      console.error('Delete failed:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast('error', `Delete failed: ${msg}`);
     } finally {
       confirmDelete = null;
+      operating = false;
     }
   }
 
@@ -196,21 +241,28 @@
         {#each profileGroups as [profileName, resources]}
           <div class="nav-section-label">{profileName} only</div>
           {#each resources as r}
-            <button
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
               class="resource-row"
               class:selected={selectedResource?.filePath === r.filePath && editMode === 'view'}
               onclick={() => selectResource(r)}
+              onkeydown={(e) => { if (e.key === 'Enter') selectResource(r); }}
+              role="button"
+              tabindex="0"
             >
               <span class="row-icon">{initial(r.name)}</span>
               <span class="row-name">{r.name}</span>
-              <button
-                class="row-action share-btn"
-                title="Share to all profiles"
-                onclick|stopPropagation={() => shareResource(r)}
-              >
-                <Share2 size={11} />
-              </button>
-            </button>
+              {#if hasMultipleProfiles}
+                <button
+                  class="row-action share-btn"
+                  title="Share to all profiles"
+                  disabled={operating}
+                  onclick|stopPropagation={() => shareResource(r)}
+                >
+                  <Share2 size={11} />
+                </button>
+              {/if}
+            </div>
           {/each}
         {/each}
 
@@ -297,13 +349,13 @@
             {/if}
           </div>
           <div class="detail-actions">
-            {#if selectedResource.origin === 'profile-local'}
-              <Button variant="secondary" onclick={() => shareResource(selectedResource!)}>
+            {#if selectedResource.origin === 'profile-local' && hasMultipleProfiles}
+              <Button variant="secondary" disabled={operating} onclick={() => shareResource(selectedResource!)}>
                 <Share2 size={13} /> Share
               </Button>
             {/if}
-            {#if selectedResource.origin !== 'profile-local'}
-              <Button variant="danger" onclick={() => (confirmDelete = selectedResource)}>
+            {#if selectedResource.origin === 'weplex-managed'}
+              <Button variant="danger" disabled={operating} onclick={() => (confirmDelete = selectedResource)}>
                 <Trash2 size={13} /> Delete
               </Button>
             {/if}
@@ -358,9 +410,13 @@
     <p class="confirm-hint">This will remove the resource from Weplex and all profiles.</p>
     <div class="confirm-actions">
       <Button variant="secondary" onclick={() => (confirmDelete = null)}>Cancel</Button>
-      <Button variant="danger" onclick={deleteResource}>Delete</Button>
+      <Button variant="danger" disabled={operating} onclick={deleteResource}>Delete</Button>
     </div>
   </Modal>
+{/if}
+
+{#if toast}
+  <div class="toast toast-{toast.type}">{toast.text}</div>
 {/if}
 
 <style>
@@ -739,4 +795,31 @@
   .confirm-text { font-size: 14px; margin: 0 0 6px; }
   .confirm-hint { font-size: 12px; color: var(--weplex-text-muted); margin: 0 0 16px; }
   .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* Toast */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 8px 20px;
+    border-radius: var(--weplex-radius-full, 999px);
+    font-size: 12px;
+    font-weight: 500;
+    z-index: 9999;
+    animation: toast-in 0.2s ease-out;
+    pointer-events: none;
+  }
+  .toast-success {
+    background: var(--weplex-success, #10b981);
+    color: white;
+  }
+  .toast-error {
+    background: var(--weplex-error, #ef4444);
+    color: white;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
 </style>

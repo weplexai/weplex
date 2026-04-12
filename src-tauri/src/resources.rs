@@ -480,13 +480,12 @@ pub fn share_resource(
         .map_err(|e| format!("Failed to read source: {}", e))?;
     let hash = compute_hash(&content);
 
-    // Copy to ~/.weplex/{type}/
+    // Copy to ~/.weplex/{type}/ (atomic write)
     let weplex_dir = format!("{}/.weplex/{}", home, resource_type.dir_name());
     std::fs::create_dir_all(&weplex_dir)
         .map_err(|e| format!("Failed to create dir: {}", e))?;
     let weplex_path = format!("{}/{}.md", weplex_dir, name);
-    std::fs::write(&weplex_path, &content)
-        .map_err(|e| format!("Failed to write to weplex: {}", e))?;
+    atomic_write(&weplex_path, &content)?;
 
     // Distribute copies to all profiles
     let mut distributed_to = Vec::new();
@@ -554,6 +553,15 @@ pub fn distribute_all_to_profile(config_dir: &str) -> Result<(), String> {
     let mut manifest = load_manifest();
 
     for entry in &mut manifest.resources {
+        // Validate source path from manifest before reading
+        if !validate_manifest_path(&entry.source_path) {
+            eprintln!(
+                "[weplex] skipping invalid manifest source: {}",
+                entry.source_path
+            );
+            continue;
+        }
+
         // Read source content
         let content = match std::fs::read_to_string(&entry.source_path) {
             Ok(c) => c,
@@ -610,13 +618,12 @@ pub fn create_resource(
     let safe_name = sanitize_resource_name(name)?;
     let hash = compute_hash(content);
 
-    // Write to ~/.weplex/
+    // Write to ~/.weplex/ (atomic write)
     let weplex_dir = format!("{}/.weplex/{}", home, resource_type.dir_name());
     std::fs::create_dir_all(&weplex_dir)
         .map_err(|e| format!("Failed to create dir: {}", e))?;
     let weplex_path = format!("{}/{}.md", weplex_dir, safe_name);
-    std::fs::write(&weplex_path, content)
-        .map_err(|e| format!("Failed to write resource: {}", e))?;
+    atomic_write(&weplex_path, content)?;
 
     // Distribute to all profiles
     let mut distributed_to = Vec::new();
@@ -682,9 +689,8 @@ pub fn update_resource(
 
     let hash = compute_hash(content);
 
-    // Update source file
-    std::fs::write(&entry.source_path, content)
-        .map_err(|e| format!("Failed to write source: {}", e))?;
+    // Update source file (atomic write)
+    atomic_write(&entry.source_path, content)?;
     entry.content_hash = hash;
 
     // Re-distribute to all existing targets (validate paths from manifest)
@@ -794,6 +800,17 @@ pub fn check_drift(profile_config_dirs: &[String]) -> Vec<DriftEntry> {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
+
+/// Atomic file write: write to .tmp then rename. Prevents partial writes on crash.
+fn atomic_write(path: &str, content: &str) -> Result<(), String> {
+    let tmp = format!("{}.tmp", path);
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, content)
+        .map_err(|e| format!("Failed to write {}: {}", path, e))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("Failed to rename {}: {}", path, e))?;
+    Ok(())
+}
 
 /// Public wrapper for Tauri command validation.
 pub fn sanitize_resource_name_public(name: &str) -> Result<String, String> {
