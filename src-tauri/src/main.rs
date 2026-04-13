@@ -1697,6 +1697,13 @@ if [ -n "$PAYLOAD" ]; then
     --max-time 2 > /dev/null 2>&1
 fi
 
+# Check if running inside Weplex (WEPLEX_SESSION_ID set by PTY)
+# If not in Weplex, skip the notes check entirely
+if [ -z "$WEPLEX_SID" ]; then exit 0; fi
+
+# Check if Weplex hook server is reachable (port file exists)
+if [ ! -f "$PORT_FILE" ]; then exit 0; fi
+
 # Check if agent provided activity notes
 SUMMARY_FILE="$HOME/.weplex/summaries/${{WEPLEX_SID}}.json"
 if [ -f "$SUMMARY_FILE" ]; then
@@ -1704,6 +1711,12 @@ if [ -f "$SUMMARY_FILE" ]; then
   NOW=$(date +%s)
   AGE=$(( NOW - UPDATED_AT ))
   if [ "$AGE" -lt 300 ]; then exit 0; fi
+fi
+
+# Only request notes if deck_update_notes MCP tool is likely available
+# (Weplex MCP server must be registered and running)
+if [ ! -f "$HOME/.weplex/mcp-ready" ] && [ ! -S "$HOME/.weplex/ipc-global.sock" ]; then
+  exit 0
 fi
 
 echo "Please call the deck_update_notes tool to record what you accomplished before finishing." >&2
