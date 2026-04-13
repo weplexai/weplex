@@ -50,14 +50,7 @@ export const profileStore = {
     return profiles.some((p) => p.configDir === configDir);
   },
 
-  /**
-   * Create a new profile.
-   * @param syncResources — whether to copy shared resources to this profile.
-   *   true for new empty profiles and when user explicitly confirms.
-   *   false when importing existing profiles without user confirmation.
-   *   Defaults to true (new profile creation from UI).
-   */
-  create(name: string, configDir?: string, syncResources = true): Profile {
+  create(name: string, configDir?: string): Profile {
     const id = `profile-${Date.now()}`;
     const profile: Profile = {
       id,
@@ -69,17 +62,10 @@ export const profileStore = {
     profiles.push(profile);
     persist();
 
-    // Sync Weplex hooks into the profile's settings.json (always)
+    // Sync Weplex hooks into the profile's settings.json
     invoke('sync_hooks_for_profile', { configDir: configDir ?? '' }).catch((e) =>
       console.warn('[weplex] failed to sync hooks for new profile:', e),
     );
-
-    // Distribute shared resources only when requested
-    if (configDir && syncResources) {
-      invoke('sync_resources_to_profile', { configDir }).catch((e) =>
-        console.warn('[weplex] failed to sync resources for new profile:', e),
-      );
-    }
 
     return profile;
   },

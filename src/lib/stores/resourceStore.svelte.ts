@@ -4,35 +4,26 @@ import { profileStore } from './profileStore.svelte';
 // ─── Types ──────────────────────────────────────────────────────────────
 
 export type ResourceType = 'agent' | 'rule' | 'skill';
-export type ResourceOrigin = 'profile-local' | 'weplex-managed' | 'marketplace';
 
-export interface Resource {
-  name: string;
-  resourceType: ResourceType;
-  origin: ResourceOrigin;
-  profileName?: string;
-  profileConfigDir?: string;
+export interface ResourceProfile {
+  profileId: string;
+  profileName: string;
   filePath: string;
   contentHash: string;
+}
+
+export interface UnifiedResource {
+  name: string;
+  resourceType: ResourceType;
   description: string;
-  marketplaceId?: string;
-  marketplaceVersion?: string;
-  isOutdated: boolean;
+  profiles: ResourceProfile[];
+  differs: boolean;
 }
 
-export interface Conflict {
-  name: string;
-  resourceType: ResourceType;
-  versions: { profileName: string; profileConfigDir: string; contentHash: string }[];
-}
-
-export interface DriftEntry {
-  name: string;
-  resourceType: ResourceType;
-  profileName: string;
-  profileConfigDir: string;
-  expectedHash: string;
-  actualHash: string;
+export interface ResourceCounts {
+  agents: number;
+  rules: number;
+  skills: number;
 }
 
 interface ProfileInfo {
@@ -43,9 +34,7 @@ interface ProfileInfo {
 
 // ─── State ──────────────────────────────────────────────────────────────
 
-let resources = $state<Resource[]>([]);
-let conflicts = $state<Conflict[]>([]);
-let drifts = $state<DriftEntry[]>([]);
+let resources = $state<UnifiedResource[]>([]);
 let loading = $state(false);
 let error = $state<string | null>(null);
 
@@ -57,12 +46,6 @@ function getProfileInfos(): ProfileInfo[] {
     name: p.name,
     configDir: p.configDir,
   }));
-}
-
-function getAllConfigDirs(): string[] {
-  // Default profile has configDir=null — pass empty string so Rust
-  // resolves it to ~/.claude/ (same logic as sync_hooks_for_profile).
-  return profileStore.profiles.map((p) => p.configDir ?? '');
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────
@@ -77,49 +60,29 @@ export const resourceStore = {
   get error() {
     return error;
   },
-  get conflicts() {
-    return conflicts;
-  },
-  get drifts() {
-    return drifts;
-  },
 
   // Filtered by type
-  get agents(): Resource[] {
+  get agents(): UnifiedResource[] {
     return resources.filter((r) => r.resourceType === 'agent');
   },
-  get rules(): Resource[] {
+  get rules(): UnifiedResource[] {
     return resources.filter((r) => r.resourceType === 'rule');
   },
-  get skills(): Resource[] {
+  get skills(): UnifiedResource[] {
     return resources.filter((r) => r.resourceType === 'skill');
   },
 
-  // Grouped by origin
-  get shared(): Resource[] {
-    return resources.filter(
-      (r) => r.origin === 'weplex-managed' || r.origin === 'marketplace',
-    );
-  },
-  get profileLocal(): Resource[] {
-    return resources.filter((r) => r.origin === 'profile-local');
-  },
-  get marketplace(): Resource[] {
-    return resources.filter((r) => r.origin === 'marketplace');
+  get hasMultipleProfiles(): boolean {
+    return profileStore.profiles.length > 1;
   },
 
-  /** Discover all resources from all profiles + ~/.weplex/. */
+  /** Discover all resources from all profiles. */
   async discover() {
     loading = true;
     error = null;
     try {
       const profiles = getProfileInfos();
-      const result = await invoke<{ resources: Resource[]; conflicts: Conflict[] }>(
-        'discover_resources',
-        { profiles },
-      );
-      resources = result.resources;
-      conflicts = result.conflicts;
+      resources = await invoke<UnifiedResource[]>('discover_resources', { profiles });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       error = msg;
@@ -129,56 +92,61 @@ export const resourceStore = {
     }
   },
 
-  /** Check for locally modified copies (drift). */
-  async checkDrift() {
-    try {
-      const dirs = getAllConfigDirs();
-      drifts = await invoke<DriftEntry[]>('check_resource_drift', {
-        profileConfigDirs: dirs,
-      });
-    } catch (e) {
-      console.warn('[weplex] drift check failed:', e);
-    }
+  /** Count resources across profiles (for import dialog). */
+  async getCounts(profileInfos?: ProfileInfo[]): Promise<ResourceCounts> {
+    const profiles = profileInfos ?? getProfileInfos();
+    return invoke<ResourceCounts>('count_profile_resources', { profiles });
   },
 
-  /** Share a profile-local resource to all profiles. */
-  async share(resource: Resource) {
-    const dirs = getAllConfigDirs();
-    await invoke('share_resource', {
-      sourcePath: resource.filePath,
-      name: resource.name,
-      resourceType: resource.resourceType,
-      profileConfigDirs: dirs,
-    });
-    await this.discover();
-  },
-
-  /** Create a new Weplex-managed resource, distributed to all profiles. */
-  async create(resourceType: ResourceType, name: string, content: string) {
-    const dirs = getAllConfigDirs();
-    await invoke('create_shared_resource', {
-      name,
+  /** Copy a resource from one profile to another. */
+  async copyTo(
+    sourcePath: string,
+    targetConfigDir: string,
+    resourceType: ResourceType,
+    name: string,
+    overwrite = false,
+  ): Promise<boolean> {
+    const copied = await invoke<boolean>('copy_resource_to_profile', {
+      sourcePath,
+      targetConfigDir,
       resourceType,
-      content,
-      profileConfigDirs: dirs,
+      name,
+      overwrite,
     });
     await this.discover();
+    return copied;
   },
 
-  /** Update a Weplex-managed resource and re-distribute. */
-  async update(name: string, resourceType: ResourceType, content: string) {
-    await invoke('update_shared_resource', { name, resourceType, content });
+  /** Copy all resources from existing profiles to a new profile. */
+  async copyAllToProfile(targetConfigDir: string): Promise<number> {
+    const sourceProfiles = getProfileInfos();
+    const count = await invoke<number>('copy_all_resources_to_profile', {
+      sourceProfiles,
+      targetConfigDir,
+    });
+    return count;
+  },
+
+  /** Create a new resource in a specific profile. */
+  async create(
+    configDir: string,
+    resourceType: ResourceType,
+    name: string,
+    content: string,
+  ): Promise<string> {
+    const path = await invoke<string>('create_resource_in_profile', {
+      configDir,
+      resourceType,
+      name,
+      content,
+    });
     await this.discover();
+    return path;
   },
 
-  /** Delete a Weplex-managed resource and remove all copies. */
-  async delete(name: string, resourceType: ResourceType) {
-    await invoke('delete_shared_resource', { name, resourceType });
+  /** Delete a resource file. */
+  async delete(filePath: string) {
+    await invoke('delete_resource_file', { filePath });
     await this.discover();
-  },
-
-  /** Distribute all shared resources to a new profile. */
-  async syncToProfile(configDir: string) {
-    await invoke('sync_resources_to_profile', { configDir });
   },
 };

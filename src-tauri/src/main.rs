@@ -2186,20 +2186,24 @@ fn sync_hooks_for_profile(config_dir: String) -> Result<(), String> {
 
 // ═══════════════════════════════════════════════════════════════════════
 // Resources (agents, rules, skills) — cross-profile management
+// Profile-first: profiles are source of truth, Weplex is viewer + copy tool.
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Combined discovery: resources + conflicts in one scan.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DiscoveryResult {
-    resources: Vec<resources::Resource>,
-    conflicts: Vec<resources::Conflict>,
+/// Resolve config dir: empty string = default profile ~/.claude/.
+fn resolve_config_dir(config_dir: &str) -> Result<String, String> {
+    if config_dir.is_empty() {
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME environment variable not set".to_string())?;
+        Ok(format!("{}/.claude", home))
+    } else {
+        validate_config_dir(config_dir)
+    }
 }
 
 #[tauri::command]
 fn discover_resources(
     profiles: Vec<resources::ProfileInfo>,
-) -> Result<DiscoveryResult, String> {
+) -> Result<Vec<resources::UnifiedResource>, String> {
     // Validate all profile config dirs before filesystem access
     for p in &profiles {
         if let Some(ref dir) = p.config_dir {
@@ -2208,112 +2212,70 @@ fn discover_resources(
             }
         }
     }
-    let all = resources::discover_all_resources(&profiles)?;
-    let conflicts = resources::detect_conflicts(&all);
-    Ok(DiscoveryResult {
-        resources: all,
-        conflicts,
-    })
-}
-
-/// Validate source_path: must be inside a known profile config dir or ~/.weplex/.
-fn validate_source_path(source_path: &str) -> Result<String, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
-    let path = std::path::Path::new(source_path);
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|e| format!("Cannot resolve source path: {}", e))?;
-    let canonical_str = canonical
-        .to_str()
-        .ok_or_else(|| "Source path is not valid UTF-8".to_string())?;
-    if !canonical_str.starts_with(&home) {
-        return Err(format!("Source path must be under HOME: {}", source_path));
-    }
-    Ok(canonical_str.to_string())
-}
-
-/// Validate all profile config dirs in a list.
-/// Empty string = default profile (~/.claude/).
-fn validate_config_dirs(dirs: &[String]) -> Result<Vec<String>, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
-    let mut validated = Vec::new();
-    for dir in dirs {
-        if dir.is_empty() {
-            // Default profile
-            validated.push(format!("{}/.claude", home));
-        } else {
-            validated.push(validate_config_dir(dir)?);
-        }
-    }
-    Ok(validated)
+    resources::discover(&profiles)
 }
 
 #[tauri::command]
-fn share_resource(
+fn count_profile_resources(
+    profiles: Vec<resources::ProfileInfo>,
+) -> Result<resources::ResourceCounts, String> {
+    resources::count_resources(&profiles)
+}
+
+#[tauri::command]
+fn copy_resource_to_profile(
     source_path: String,
-    name: String,
+    target_config_dir: String,
     resource_type: resources::ResourceType,
-    profile_config_dirs: Vec<String>,
-) -> Result<(), String> {
-    let validated_source = validate_source_path(&source_path)?;
-    let safe_name = resources::sanitize_resource_name_public(&name)?;
-    let validated_dirs = validate_config_dirs(&profile_config_dirs)?;
-    resources::share_resource(&validated_source, &safe_name, resource_type, &validated_dirs)
+    name: String,
+    overwrite: bool,
+) -> Result<bool, String> {
+    // Validate source is under HOME
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let canonical = std::fs::canonicalize(&source_path)
+        .map_err(|e| format!("Cannot resolve source: {}", e))?;
+    let canonical_str = canonical.to_str()
+        .ok_or("Source path not valid UTF-8")?;
+    if !canonical_str.starts_with(&home) {
+        return Err("Source path must be under HOME".to_string());
+    }
+
+    let validated_target = resolve_config_dir(&target_config_dir)?;
+    resources::copy_resource(canonical_str, &validated_target, resource_type, &name, overwrite)
 }
 
 #[tauri::command]
-fn create_shared_resource(
-    name: String,
+fn copy_all_resources_to_profile(
+    source_profiles: Vec<resources::ProfileInfo>,
+    target_config_dir: String,
+) -> Result<u32, String> {
+    let validated_target = resolve_config_dir(&target_config_dir)?;
+    resources::copy_all_to_profile(&source_profiles, &validated_target)
+}
+
+#[tauri::command]
+fn create_resource_in_profile(
+    config_dir: String,
     resource_type: resources::ResourceType,
+    name: String,
     content: String,
-    profile_config_dirs: Vec<String>,
-) -> Result<(), String> {
-    let validated_dirs = validate_config_dirs(&profile_config_dirs)?;
-    resources::create_resource(&name, resource_type, &content, &validated_dirs)
+) -> Result<String, String> {
+    let validated = resolve_config_dir(&config_dir)?;
+    resources::create_resource(&validated, resource_type, &name, &content)
 }
 
 #[tauri::command]
-fn update_shared_resource(
-    name: String,
-    resource_type: resources::ResourceType,
-    content: String,
-) -> Result<(), String> {
-    resources::update_resource(&name, resource_type, &content)
-}
-
-#[tauri::command]
-fn delete_shared_resource(
-    name: String,
-    resource_type: resources::ResourceType,
-) -> Result<(), String> {
-    resources::delete_resource(&name, resource_type)
-}
-
-#[tauri::command]
-fn sync_resources_to_profile(config_dir: String) -> Result<(), String> {
-    let validated = validate_config_dir(&config_dir)?;
-    resources::distribute_all_to_profile(&validated)
-}
-
-#[tauri::command]
-fn promote_profile_resources(config_dir: String) -> Result<bool, String> {
-    let validated = if config_dir.is_empty() {
-        let home = std::env::var("HOME")
-            .map_err(|_| "HOME environment variable not set".to_string())?;
-        format!("{}/.claude", home)
-    } else {
-        validate_config_dir(&config_dir)?
-    };
-    resources::promote_profile_resources(&validated)
-}
-
-#[tauri::command]
-fn check_resource_drift(
-    profile_config_dirs: Vec<String>,
-) -> Result<Vec<resources::DriftEntry>, String> {
-    let validated = validate_config_dirs(&profile_config_dirs)?;
-    Ok(resources::check_drift(&validated))
+fn delete_resource_file(file_path: String) -> Result<(), String> {
+    // Validate file is under HOME
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let canonical = std::fs::canonicalize(&file_path)
+        .map_err(|e| format!("Cannot resolve path: {}", e))?;
+    if !canonical.starts_with(&home) {
+        return Err("File path must be under HOME".to_string());
+    }
+    resources::delete_resource(canonical.to_str().unwrap_or(&file_path))
 }
 
 /// Register or update the weplex MCP server entry in ~/.claude.json.
@@ -2508,13 +2470,11 @@ fn main() {
             sync_hooks_for_profiles,
             sync_hooks_for_profile,
             discover_resources,
-            share_resource,
-            create_shared_resource,
-            update_shared_resource,
-            delete_shared_resource,
-            sync_resources_to_profile,
-            promote_profile_resources,
-            check_resource_drift,
+            count_profile_resources,
+            copy_resource_to_profile,
+            copy_all_resources_to_profile,
+            create_resource_in_profile,
+            delete_resource_file,
             set_traffic_lights_visible,
             get_session_summary,
         ])

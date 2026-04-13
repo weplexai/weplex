@@ -55,29 +55,42 @@
 
   // Import profile dialog state
   let importTarget = $state<DiscoveredProfile | null>(null);
-  let importCounts = $derived({
-    agents: resourceStore.shared.filter((r) => r.resourceType === 'agent').length,
-    rules: resourceStore.shared.filter((r) => r.resourceType === 'rule').length,
-    skills: resourceStore.shared.filter((r) => r.resourceType === 'skill').length,
+  let importCounts = $state<{ agents: number; rules: number; skills: number }>({
+    agents: 0,
+    rules: 0,
+    skills: 0,
   });
 
-  function startImport(dp: DiscoveredProfile) {
+  async function startImport(dp: DiscoveredProfile) {
+    // Count resources from existing profiles (to show in dialog)
+    try {
+      const profiles = profileStore.profiles.map((p) => ({
+        id: p.id,
+        name: p.name,
+        configDir: p.configDir,
+      }));
+      importCounts = await resourceStore.getCounts(profiles);
+    } catch {
+      importCounts = { agents: 0, rules: 0, skills: 0 };
+    }
     importTarget = dp;
   }
 
-  async function confirmImport(sync: boolean) {
+  async function confirmImport(copy: boolean) {
     if (!importTarget) return;
     const dp = importTarget;
     importTarget = null;
 
-    // 1. Always promote unique resources from this profile to ~/.weplex/
-    await invoke('promote_profile_resources', { configDir: dp.path }).catch((e) =>
-      console.warn('[weplex] promote failed:', e),
-    );
-
-    // 2. Create profile (sync=user's choice: copy shared resources TO this profile)
-    profileStore.create(dp.name, dp.path, sync);
+    // 1. Create profile (hooks always synced)
+    profileStore.create(dp.name, dp.path);
     discoveredProfiles = discoveredProfiles.filter((d) => d.path !== dp.path);
+
+    // 2. If user chose to copy — copy resources from existing profiles to new one
+    if (copy && dp.path) {
+      await resourceStore.copyAllToProfile(dp.path).catch((e) =>
+        console.warn('[weplex] copy resources failed:', e),
+      );
+    }
 
     // 3. Refresh resource view
     resourceStore.discover();

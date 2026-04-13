@@ -5,7 +5,7 @@
   interface Props {
     profileName: string;
     counts: { agents: number; rules: number; skills: number };
-    onconfirm: (sync: boolean) => void;
+    onconfirm: (copy: boolean) => void;
     onclose: () => void;
   }
 
@@ -40,7 +40,7 @@
 
   {#if summary}
     <p class="import-body">
-      You have {summary} in your shared library.
+      You have {summary} in your other profile{parts.length > 1 ? 's' : ''}.
     </p>
     <p class="import-question">
       Copy them to <strong>{profileName}</strong>?
@@ -57,7 +57,7 @@
     </div>
   {:else}
     <p class="import-body">
-      No shared resources yet. The profile will be added to Weplex.
+      No resources in your other profiles. The profile will be added to Weplex.
     </p>
 
     <div class="import-actions">

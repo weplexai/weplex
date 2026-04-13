@@ -2,149 +2,87 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { Button, Modal } from '../ui';
-  import { resourceStore, type Resource, type ResourceType } from '../../stores/resourceStore.svelte';
+  import {
+    resourceStore,
+    type UnifiedResource,
+    type ResourceType,
+  } from '../../stores/resourceStore.svelte';
   import { profileStore } from '../../stores/profileStore.svelte';
-  import { Plus, Share2, Trash2, AlertTriangle, Package, RefreshCw } from 'lucide-svelte';
-  import { modelShort, modelClass, initial } from '../overlays/helpers';
-  import AgentDetail from '../overlays/AgentDetail.svelte';
-  import type { AgentConfig } from '../overlays/types';
+  import { Plus, Copy, Trash2, AlertTriangle, RefreshCw, FileText, FolderOpen } from 'lucide-svelte';
+  import { initial } from '../overlays/helpers';
 
-  // Active tab
+  // ─── State ────────────────────────────────────────────────────────────
+
   let activeTab = $state<ResourceType>('agent');
+  let selectedResource = $state<UnifiedResource | null>(null);
+  let selectedProfileTab = $state<string | null>(null);
 
-  // Selected resource
-  let selectedResource = $state<Resource | null>(null);
-
-  // Agent detail (loaded on selection for full view)
-  let selectedAgentConfig = $state<AgentConfig | null>(null);
-
-  // Editor state
+  // Editor
   let editMode = $state<'view' | 'new'>('view');
   let editName = $state('');
-  let editDescription = $state('');
   let editContent = $state('');
+  let editProfile = $state('');
   let editError = $state<string | null>(null);
 
-  // Delete confirmation
-  let confirmDelete = $state<Resource | null>(null);
-
-  // Operation state (prevents double-clicks, shows feedback)
+  // Operations
   let operating = $state(false);
   let toast = $state<{ type: 'success' | 'error'; text: string } | null>(null);
+  let confirmDelete = $state<{ name: string; filePath: string } | null>(null);
 
-  // Multiple profiles available for sharing
+  // ─── Derived ──────────────────────────────────────────────────────────
+
   let hasMultipleProfiles = $derived(profileStore.profiles.length > 1);
 
-  // Filtered resources by active tab
   let tabResources = $derived(
     resourceStore.resources.filter((r) => r.resourceType === activeTab),
   );
 
-  // Grouped
-  let sharedResources = $derived(
-    tabResources.filter((r) => r.origin === 'weplex-managed'),
-  );
-  let marketplaceResources = $derived(
-    tabResources.filter((r) => r.origin === 'marketplace'),
-  );
-  let profileLocalResources = $derived(
-    tabResources.filter((r) => r.origin === 'profile-local'),
-  );
-
-  // Group profile-local by profile
-  let profileGroups = $derived.by(() => {
-    const groups: Record<string, Resource[]> = {};
-    for (const r of profileLocalResources) {
-      const key = r.profileName || 'Unknown';
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(r);
-    }
-    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
-  });
-
-  // Tab labels
-  const tabs: { id: ResourceType; label: string }[] = [
-    { id: 'agent', label: 'Agents' },
-    { id: 'rule', label: 'Rules' },
-    { id: 'skill', label: 'Skills' },
+  const tabs: { id: ResourceType; label: string; singular: string }[] = [
+    { id: 'agent', label: 'Agents', singular: 'Agent' },
+    { id: 'rule', label: 'Rules', singular: 'Rule' },
+    { id: 'skill', label: 'Skills', singular: 'Skill' },
   ];
+
+  let activeTabInfo = $derived(tabs.find((t) => t.id === activeTab)!);
+
+  // ─── Lifecycle ────────────────────────────────────────────────────────
 
   onMount(() => {
     resourceStore.discover();
   });
 
-  function selectResource(resource: Resource) {
-    selectedResource = resource;
-    editMode = 'view';
-    selectedAgentConfig = null;
-
-    // For agents, load full config for detail view
-    if (resource.resourceType === 'agent') {
-      loadAgentDetail(resource.filePath);
-    }
-  }
-
-  async function loadAgentDetail(filePath: string) {
-    try {
-      // Read file content and parse as agent
-      const agents = await invoke<AgentConfig[]>('list_agents');
-      const weplexAgents = await invoke<AgentConfig[]>('list_weplex_agents');
-      const all = [...agents, ...weplexAgents];
-      selectedAgentConfig = all.find((a) => a.file_path === filePath) || null;
-    } catch {
-      selectedAgentConfig = null;
-    }
-  }
-
-  function startNew() {
-    selectedResource = null;
-    selectedAgentConfig = null;
-    editMode = 'new';
-    editName = '';
-    editDescription = '';
-    editContent = activeTab === 'agent'
-      ? '---\nname: \ndescription: \nmodel: sonnet\ntools: [Read, Grep, Glob, Edit, Write, Bash]\n---\n\nYour instructions here...'
-      : '---\nname: \ndescription: \n---\n\nContent here...';
-    editError = null;
-  }
+  // ─── Actions ──────────────────────────────────────────────────────────
 
   function showToast(type: 'success' | 'error', text: string) {
     toast = { type, text };
     setTimeout(() => { toast = null; }, 3000);
   }
 
-  /** Refresh selectedResource reference after discover (prevents stale data). */
-  function refreshSelection() {
-    if (selectedResource) {
-      const updated = resourceStore.resources.find(
-        (r) => r.filePath === selectedResource!.filePath,
-      );
-      if (updated) {
-        selectedResource = updated;
-      } else {
-        selectedResource = null;
-        selectedAgentConfig = null;
-      }
-    }
+  function selectResource(r: UnifiedResource) {
+    selectedResource = r;
+    selectedProfileTab = r.profiles[0]?.profileId ?? null;
+    editMode = 'view';
+  }
+
+  function startNew() {
+    selectedResource = null;
+    editMode = 'new';
+    editName = '';
+    editProfile = profileStore.profiles[0]?.configDir ?? '';
+    editContent = activeTab === 'agent'
+      ? `---\nname: \ndescription: \n---\n\nInstructions for this agent.\n`
+      : `# New ${activeTabInfo.singular}\n\nContent here.\n`;
+    editError = null;
   }
 
   async function saveNew() {
-    if (!editName.trim()) {
-      editError = 'Name is required';
-      return;
-    }
+    if (!editName.trim()) { editError = 'Name is required'; return; }
     operating = true;
     try {
-      await resourceStore.create(activeTab, editName.trim(), editContent);
+      await resourceStore.create(editProfile, activeTab, editName.trim(), editContent);
       editMode = 'view';
       editError = null;
-      // Name may be sanitized by Rust — find by type in latest resources
-      const sanitized = editName.trim().replace(/[^a-zA-Z0-9\-_]/g, (c) => c === ' ' ? '-' : '_');
-      const found = resourceStore.resources.find(
-        (r) => r.name === sanitized && r.resourceType === activeTab,
-      );
-      if (found) selectResource(found);
-      showToast('success', 'Created');
+      showToast('success', `Created ${editName.trim()}`);
     } catch (e: unknown) {
       editError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -152,51 +90,64 @@
     }
   }
 
-  async function shareResource(resource: Resource) {
+  async function copyToProfile(resource: UnifiedResource, sourceProfile: string, targetConfigDir: string) {
     if (operating) return;
+    const source = resource.profiles.find((p) => p.profileId === sourceProfile);
+    if (!source) return;
     operating = true;
     try {
-      await resourceStore.share(resource);
-      refreshSelection();
-      const count = profileStore.profiles.length;
-      showToast('success', `Shared to ${count} profile${count > 1 ? 's' : ''}`);
+      const copied = await resourceStore.copyTo(
+        source.filePath,
+        targetConfigDir,
+        resource.resourceType,
+        resource.name,
+        false, // don't overwrite
+      );
+      if (copied) {
+        showToast('success', `Copied ${resource.name}`);
+      } else {
+        showToast('success', `Already identical`);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      showToast('error', `Share failed: ${msg}`);
+      if (msg.includes('different content')) {
+        // TODO: overwrite confirmation dialog
+        showToast('error', `${resource.name} already exists with different content`);
+      } else {
+        showToast('error', `Copy failed: ${msg}`);
+      }
     } finally {
       operating = false;
     }
   }
 
-  async function deleteResource() {
+  async function deleteConfirmed() {
     if (!confirmDelete || operating) return;
     operating = true;
     try {
-      await resourceStore.delete(confirmDelete.name, confirmDelete.resourceType);
+      await resourceStore.delete(confirmDelete.filePath);
       if (selectedResource?.name === confirmDelete.name) {
         selectedResource = null;
-        selectedAgentConfig = null;
       }
-      showToast('success', 'Deleted');
+      showToast('success', `Deleted ${confirmDelete.name}`);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      showToast('error', `Delete failed: ${msg}`);
+      showToast('error', `Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       confirmDelete = null;
       operating = false;
     }
   }
 
-  function resourceIcon(r: Resource): string {
-    if (r.origin === 'marketplace') return '⬡';
-    if (r.origin === 'weplex-managed') return '◆';
-    return initial(r.name);
+  function profileBadgeText(r: UnifiedResource): string {
+    const allProfileIds = new Set(profileStore.profiles.map((p) => p.id));
+    const resourceProfileIds = new Set(r.profiles.map((p) => p.profileId));
+    if (resourceProfileIds.size === allProfileIds.size) return 'All profiles';
+    return r.profiles.map((p) => p.profileName).join(', ');
   }
 
-  function resourceIconClass(r: Resource): string {
-    if (r.origin === 'marketplace') return 'marketplace';
-    if (r.origin === 'weplex-managed') return 'shared';
-    return '';
+  function missingProfiles(r: UnifiedResource) {
+    const has = new Set(r.profiles.map((p) => p.profileId));
+    return profileStore.profiles.filter((p) => !has.has(p.id));
   }
 </script>
 
@@ -208,7 +159,7 @@
         <button
           class="tab-btn"
           class:active={activeTab === tab.id}
-          onclick={() => { activeTab = tab.id; selectedResource = null; selectedAgentConfig = null; editMode = 'view'; }}
+          onclick={() => { activeTab = tab.id; selectedResource = null; editMode = 'view'; }}
         >
           {tab.label}
         </button>
@@ -218,81 +169,40 @@
     <nav class="resources-nav">
       {#if resourceStore.loading}
         <div class="resources-empty">Loading...</div>
+      {:else if tabResources.length === 0}
+        <div class="resources-empty">
+          No {activeTabInfo.label.toLowerCase()} yet.
+        </div>
       {:else}
-        <!-- Shared resources -->
-        {#if sharedResources.length > 0}
-          <div class="nav-section-label">Shared</div>
-          {#each sharedResources as r}
-            <button
-              class="resource-row"
-              class:selected={selectedResource?.filePath === r.filePath && editMode === 'view'}
-              onclick={() => selectResource(r)}
-            >
-              <span class="row-icon shared">{resourceIcon(r)}</span>
-              <span class="row-name">{r.name}</span>
-              {#if r.isOutdated}
-                <span class="row-badge drift" title="Modified locally">!</span>
-              {/if}
-            </button>
-          {/each}
-        {/if}
-
-        <!-- Profile-local resources (grouped by profile) -->
-        {#each profileGroups as [profileName, resources]}
-          <div class="nav-section-label">{profileName} only</div>
-          {#each resources as r}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="resource-row"
-              class:selected={selectedResource?.filePath === r.filePath && editMode === 'view'}
-              onclick={() => selectResource(r)}
-              onkeydown={(e) => { if (e.key === 'Enter') selectResource(r); }}
-              role="button"
-              tabindex="0"
-            >
-              <span class="row-icon">{initial(r.name)}</span>
+        {#each tabResources as r}
+          <button
+            class="resource-row"
+            class:selected={selectedResource?.name === r.name && editMode === 'view'}
+            onclick={() => selectResource(r)}
+          >
+            <span class="row-icon">{initial(r.name)}</span>
+            <div class="row-content">
               <span class="row-name">{r.name}</span>
               {#if hasMultipleProfiles}
-                <button
-                  class="row-action share-btn"
-                  title="Share to all profiles"
-                  disabled={operating}
-                  onclick={(e) => { e.stopPropagation(); shareResource(r); }}
-                >
-                  <Share2 size={11} />
-                </button>
+                <span class="row-badges">
+                  <span class="badge" class:differs={r.differs}>
+                    {profileBadgeText(r)}
+                  </span>
+                  {#if r.differs}
+                    <span class="differs-icon" title="Content differs between profiles">⚠️</span>
+                  {/if}
+                </span>
               {/if}
             </div>
-          {/each}
+          </button>
         {/each}
-
-        <!-- Marketplace resources -->
-        {#if marketplaceResources.length > 0}
-          <div class="nav-section-label">Marketplace</div>
-          {#each marketplaceResources as r}
-            <button
-              class="resource-row"
-              class:selected={selectedResource?.filePath === r.filePath && editMode === 'view'}
-              onclick={() => selectResource(r)}
-            >
-              <span class="row-icon marketplace">⬡</span>
-              <span class="row-name">{r.name}</span>
-            </button>
-          {/each}
-        {/if}
-
-        {#if tabResources.length === 0}
-          <div class="resources-empty">
-            No {tabs.find((t) => t.id === activeTab)?.label.toLowerCase()} yet.
-          </div>
-        {/if}
       {/if}
     </nav>
 
     <div class="resources-footer">
       <button class="resources-action-btn" onclick={startNew}>
         <Plus size={13} />
-        <span>New {tabs.find((t) => t.id === activeTab)?.label.slice(0, -1)}</span>
+        <span>New {activeTabInfo.singular}</span>
       </button>
       <button class="resources-action-btn" onclick={() => resourceStore.discover()}>
         <RefreshCw size={13} />
@@ -309,26 +219,35 @@
     {:else if editMode === 'new'}
       <div class="editor">
         <div class="editor-header">
-          <h2>New {tabs.find((t) => t.id === activeTab)?.label.slice(0, -1)}</h2>
+          <h2>New {activeTabInfo.singular}</h2>
           <div class="editor-actions">
             <Button variant="secondary" onclick={() => { editMode = 'view'; editError = null; }}>Cancel</Button>
-            <Button variant="primary" disabled={operating} onclick={saveNew}>Save</Button>
+            <Button variant="primary" disabled={operating} onclick={saveNew}>Create</Button>
           </div>
         </div>
-
         {#if editError}
           <div class="editor-error"><AlertTriangle size={13} />{editError}</div>
         {/if}
-
         <div class="editor-form">
           <div class="form-row">
             <label>Name
               <input type="text" bind:value={editName} placeholder="my-{activeTab}" />
             </label>
           </div>
+          {#if hasMultipleProfiles}
+            <div class="form-row">
+              <label>Profile
+                <select bind:value={editProfile}>
+                  {#each profileStore.profiles as p}
+                    <option value={p.configDir ?? ''}>{p.name}</option>
+                  {/each}
+                </select>
+              </label>
+            </div>
+          {/if}
           <div class="form-row">
-            <label>Content (.md)
-              <textarea bind:value={editContent} rows={20} placeholder="---\nname: ...\n---\n\nInstructions..."></textarea>
+            <label>Content
+              <textarea bind:value={editContent} rows={16} placeholder="---&#10;name: ...&#10;---"></textarea>
             </label>
           </div>
         </div>
@@ -338,34 +257,44 @@
       <div class="detail">
         <div class="detail-header">
           <div class="detail-title-row">
-            <span class="detail-icon {resourceIconClass(selectedResource)}">{resourceIcon(selectedResource)}</span>
+            <span class="detail-icon">{initial(selectedResource.name)}</span>
             <h2>{selectedResource.name}</h2>
-            {#if selectedResource.origin === 'weplex-managed'}
-              <span class="detail-badge shared">Shared</span>
-            {:else if selectedResource.origin === 'marketplace'}
-              <span class="detail-badge marketplace">Marketplace</span>
-            {:else}
-              <span class="detail-badge local">{selectedResource.profileName} only</span>
+            {#if hasMultipleProfiles}
+              <span class="detail-badge" class:differs={selectedResource.differs}>
+                {profileBadgeText(selectedResource)}
+              </span>
             {/if}
           </div>
           <div class="detail-actions">
-            {#if selectedResource.origin === 'profile-local' && hasMultipleProfiles}
-              <Button variant="secondary" disabled={operating} onclick={() => shareResource(selectedResource!)}>
-                <Share2 size={13} /> Share
-              </Button>
-            {/if}
-            {#if selectedResource.origin === 'weplex-managed'}
-              <Button variant="danger" disabled={operating} onclick={() => (confirmDelete = selectedResource)}>
-                <Trash2 size={13} /> Delete
-              </Button>
+            {#if hasMultipleProfiles && missingProfiles(selectedResource).length > 0}
+              {#each missingProfiles(selectedResource) as target}
+                <Button
+                  variant="secondary"
+                  disabled={operating}
+                  onclick={() => copyToProfile(
+                    selectedResource!,
+                    selectedResource!.profiles[0].profileId,
+                    target.configDir ?? '',
+                  )}
+                >
+                  <Copy size={13} /> Copy to {target.name}
+                </Button>
+              {/each}
             {/if}
           </div>
         </div>
 
-        {#if selectedResource.isOutdated}
-          <div class="drift-warning">
-            <AlertTriangle size={14} />
-            <span>This resource has been modified locally in a profile.</span>
+        {#if selectedResource.differs && selectedResource.profiles.length > 1}
+          <div class="profile-tabs">
+            {#each selectedResource.profiles as p}
+              <button
+                class="profile-tab"
+                class:active={selectedProfileTab === p.profileId}
+                onclick={() => (selectedProfileTab = p.profileId)}
+              >
+                {p.profileName}
+              </button>
+            {/each}
           </div>
         {/if}
 
@@ -373,32 +302,41 @@
           <p class="detail-description">{selectedResource.description}</p>
         {/if}
 
-        <div class="detail-meta">
-          <div class="meta-item">
-            <span class="meta-label">Type</span>
-            <span class="meta-value">{selectedResource.resourceType}</span>
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">Path</span>
-            <span class="meta-value mono">{selectedResource.filePath}</span>
-          </div>
-          {#if selectedResource.marketplaceId}
-            <div class="meta-item">
-              <span class="meta-label">Package</span>
-              <span class="meta-value">{selectedResource.marketplaceId}</span>
+        {#each [selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]] as activeProfile}
+          {#if activeProfile}
+            <div class="detail-meta">
+              <span class="meta-path">{activeProfile.filePath}</span>
+              <div class="meta-actions">
+                <button
+                  class="meta-btn"
+                  title="Delete"
+                  disabled={operating}
+                  onclick={() => (confirmDelete = { name: selectedResource!.name, filePath: activeProfile.filePath })}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             </div>
           {/if}
-        </div>
-
-        <!-- For agents, show full detail if loaded -->
-        {#if selectedAgentConfig && activeTab === 'agent'}
-          <AgentDetail agent={selectedAgentConfig} />
-        {/if}
+        {/each}
       </div>
 
     {:else}
       <div class="resources-center-msg">
-        Select a {tabs.find((t) => t.id === activeTab)?.label.slice(0, -1).toLowerCase()} to view details
+        {#if tabResources.length === 0}
+          <div class="empty-state">
+            <FileText size={40} strokeWidth={1} />
+            <h3>No {activeTabInfo.label.toLowerCase()} yet</h3>
+            <p>Create one or browse the Marketplace.</p>
+            <div class="empty-actions">
+              <Button variant="secondary" onclick={startNew}>
+                <Plus size={13} /> New {activeTabInfo.singular}
+              </Button>
+            </div>
+          </div>
+        {:else}
+          Select a {activeTabInfo.singular.toLowerCase()} to view details
+        {/if}
       </div>
     {/if}
   </div>
@@ -407,10 +345,10 @@
 {#if confirmDelete}
   <Modal onclose={() => (confirmDelete = null)} position="center" label="Confirm deletion" class="confirm-dialog">
     <p class="confirm-text">Delete <strong>{confirmDelete.name}</strong>?</p>
-    <p class="confirm-hint">This will remove the resource from Weplex and all profiles.</p>
+    <p class="confirm-hint">{confirmDelete.filePath}</p>
     <div class="confirm-actions">
       <Button variant="secondary" onclick={() => (confirmDelete = null)}>Cancel</Button>
-      <Button variant="danger" disabled={operating} onclick={deleteResource}>Delete</Button>
+      <Button variant="danger" disabled={operating} onclick={deleteConfirmed}>Delete</Button>
     </div>
   </Modal>
 {/if}
@@ -430,15 +368,14 @@
 
   /* Sidebar */
   .resources-sidebar {
-    width: 240px;
-    min-width: 240px;
+    width: 260px;
+    min-width: 260px;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--weplex-border);
     background: var(--weplex-sidebar-bg);
     position: relative;
   }
-
   .resources-sidebar::before {
     content: '';
     position: absolute;
@@ -448,7 +385,6 @@
     pointer-events: none;
   }
 
-  /* Tabs */
   .resources-tabs {
     display: flex;
     padding: 12px 10px 0;
@@ -457,7 +393,6 @@
     position: relative;
     z-index: 1;
   }
-
   .tab-btn {
     flex: 1;
     padding: 6px 0;
@@ -471,20 +406,15 @@
     transition: all var(--weplex-duration-fast);
   }
   .tab-btn:hover { color: var(--weplex-text); }
-  .tab-btn.active {
-    color: var(--weplex-accent);
-    border-bottom-color: var(--weplex-accent);
-  }
+  .tab-btn.active { color: var(--weplex-accent); border-bottom-color: var(--weplex-accent); }
 
-  /* Nav */
   .resources-nav {
     flex: 1;
     overflow-y: auto;
-    padding: 8px 0 0;
+    padding: 8px 0;
     position: relative;
     z-index: 1;
   }
-
   .resources-empty {
     padding: 16px;
     color: var(--weplex-text-muted);
@@ -492,28 +422,17 @@
     line-height: 1.5;
   }
 
-  .nav-section-label {
-    font-size: 9px;
-    font-weight: 600;
-    color: var(--weplex-text-muted);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 10px 16px 4px;
-    opacity: 0.6;
-  }
-
   .resource-row {
     display: flex;
     align-items: center;
     gap: 10px;
     width: 100%;
-    padding: 6px 14px 6px 16px;
+    padding: 6px 14px;
     border: none;
     background: transparent;
     cursor: pointer;
     text-align: left;
     transition: background var(--weplex-duration-fast);
-    position: relative;
   }
   .resource-row:hover { background: var(--weplex-surface-hover); }
   .resource-row.selected { background: color-mix(in srgb, var(--weplex-accent) 10%, transparent); }
@@ -532,11 +451,15 @@
     background: var(--weplex-surface-hover);
     color: var(--weplex-text-muted);
   }
-  .row-icon.shared { background: color-mix(in srgb, var(--weplex-accent) 12%, transparent); color: var(--weplex-accent); }
-  .row-icon.marketplace { background: color-mix(in srgb, var(--weplex-active) 12%, transparent); color: var(--weplex-active); }
 
-  .row-name {
+  .row-content {
     flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .row-name {
     font-size: 13px;
     font-weight: 500;
     color: var(--weplex-text);
@@ -547,27 +470,21 @@
   }
   .resource-row.selected .row-name { color: var(--weplex-accent); }
 
-  .row-badge.drift {
+  .row-badges {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .badge {
     font-size: 10px;
-    font-weight: 700;
-    color: var(--weplex-warning, #f59e0b);
-    flex-shrink: 0;
-  }
-
-  .row-action.share-btn {
-    opacity: 0;
-    border: none;
-    background: transparent;
     color: var(--weplex-text-muted);
-    cursor: pointer;
-    padding: 2px;
-    flex-shrink: 0;
-    transition: all var(--weplex-duration-fast);
+    white-space: nowrap;
   }
-  .resource-row:hover .share-btn { opacity: 0.6; }
-  .share-btn:hover { opacity: 1 !important; color: var(--weplex-accent); }
+  .differs-icon {
+    font-size: 11px;
+    line-height: 1;
+  }
 
-  /* Footer */
   .resources-footer {
     padding: 8px;
     border-top: 1px solid var(--weplex-border);
@@ -578,7 +495,6 @@
     position: relative;
     z-index: 1;
   }
-
   .resources-action-btn {
     display: flex;
     align-items: center;
@@ -599,7 +515,7 @@
     border-style: solid;
   }
 
-  /* Main content */
+  /* Main */
   .resources-main {
     flex: 1;
     display: flex;
@@ -607,7 +523,6 @@
     min-width: 0;
     overflow: hidden;
   }
-
   .resources-center-msg {
     flex: 1;
     display: flex;
@@ -617,26 +532,46 @@
     font-size: 13px;
   }
 
-  /* Detail view */
+  /* Empty state */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    text-align: center;
+    color: var(--weplex-text-muted);
+  }
+  .empty-state h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--weplex-text);
+    margin: 0;
+  }
+  .empty-state p {
+    font-size: 13px;
+    margin: 0;
+  }
+  .empty-actions { margin-top: 8px; }
+
+  /* Detail */
   .detail {
     flex: 1;
     overflow-y: auto;
     padding: 24px 32px;
   }
-
   .detail-header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    margin-bottom: 20px;
+    margin-bottom: 16px;
+    gap: 12px;
   }
-
   .detail-title-row {
     display: flex;
     align-items: center;
     gap: 10px;
+    flex-wrap: wrap;
   }
-
   .detail-icon {
     display: flex;
     align-items: center;
@@ -650,9 +585,6 @@
     background: var(--weplex-surface-hover);
     color: var(--weplex-text-muted);
   }
-  .detail-icon.shared { background: color-mix(in srgb, var(--weplex-accent) 12%, transparent); color: var(--weplex-accent); }
-  .detail-icon.marketplace { background: color-mix(in srgb, var(--weplex-active) 12%, transparent); color: var(--weplex-active); }
-
   .detail-header h2 {
     font-size: 16px;
     font-weight: 700;
@@ -660,67 +592,81 @@
     font-family: var(--weplex-font-mono);
     margin: 0;
   }
-
   .detail-badge {
     font-size: 10px;
     font-weight: 600;
     padding: 2px 8px;
     border-radius: var(--weplex-radius-full, 999px);
+    background: var(--weplex-surface-hover);
+    color: var(--weplex-text-muted);
   }
-  .detail-badge.shared { background: color-mix(in srgb, var(--weplex-accent) 12%, transparent); color: var(--weplex-accent); }
-  .detail-badge.marketplace { background: color-mix(in srgb, var(--weplex-active) 12%, transparent); color: var(--weplex-active); }
-  .detail-badge.local { background: var(--weplex-surface-hover); color: var(--weplex-text-muted); }
-
-  .detail-actions { display: flex; gap: 6px; }
-
-  .drift-warning {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
-    margin-bottom: 16px;
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--weplex-warning, #f59e0b) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--weplex-warning, #f59e0b) 20%, transparent);
+  .detail-badge.differs {
+    background: color-mix(in srgb, var(--weplex-warning, #f59e0b) 12%, transparent);
     color: var(--weplex-warning, #f59e0b);
-    font-size: 12px;
   }
+  .detail-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
+  /* Profile tabs (for differs) */
+  .profile-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--weplex-border);
+  }
+  .profile-tab {
+    padding: 6px 12px;
+    border: none;
+    background: transparent;
+    color: var(--weplex-text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all var(--weplex-duration-fast);
+  }
+  .profile-tab:hover { color: var(--weplex-text); }
+  .profile-tab.active { color: var(--weplex-accent); border-bottom-color: var(--weplex-accent); }
 
   .detail-description {
     font-size: 13px;
     color: var(--weplex-text-secondary);
-    margin: 0 0 20px;
+    margin: 0 0 16px;
     line-height: 1.5;
   }
-
   .detail-meta {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-bottom: 20px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: var(--weplex-surface);
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-md);
   }
-
-  .meta-item {
-    display: flex;
-    gap: 12px;
-    font-size: 12px;
-  }
-
-  .meta-label {
-    width: 70px;
-    flex-shrink: 0;
-    color: var(--weplex-text-muted);
-    font-weight: 500;
-  }
-
-  .meta-value {
-    color: var(--weplex-text);
-  }
-  .meta-value.mono {
+  .meta-path {
     font-family: var(--weplex-font-mono);
     font-size: 11px;
-    opacity: 0.7;
+    color: var(--weplex-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  .meta-actions { display: flex; gap: 4px; }
+  .meta-btn {
+    border: none;
+    background: transparent;
+    color: var(--weplex-text-muted);
+    padding: 4px;
+    cursor: pointer;
+    border-radius: var(--weplex-radius-sm);
+    transition: all var(--weplex-duration-fast);
+  }
+  .meta-btn:hover { color: var(--weplex-error); background: color-mix(in srgb, var(--weplex-error) 10%, transparent); }
+  .meta-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Editor */
   .editor {
@@ -768,7 +714,9 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  .form-row input[type='text'], .form-row textarea {
+  .form-row input[type='text'],
+  .form-row textarea,
+  .form-row select {
     width: 100%;
     padding: 8px 10px;
     border: 1px solid var(--weplex-border);
@@ -780,12 +728,14 @@
     outline: none;
     transition: border-color var(--weplex-duration-fast);
   }
-  .form-row input:focus, .form-row textarea:focus { border-color: var(--weplex-accent); }
+  .form-row input:focus,
+  .form-row textarea:focus,
+  .form-row select:focus { border-color: var(--weplex-accent); }
   .form-row textarea { resize: vertical; line-height: 1.5; }
 
-  /* Delete dialog */
+  /* Confirm dialog */
   :global(.confirm-dialog) {
-    width: 340px;
+    width: 380px;
     padding: 20px;
     background: var(--weplex-surface);
     border: 1px solid var(--weplex-border);
@@ -793,7 +743,13 @@
     box-shadow: var(--weplex-shadow-overlay);
   }
   .confirm-text { font-size: 14px; margin: 0 0 6px; }
-  .confirm-hint { font-size: 12px; color: var(--weplex-text-muted); margin: 0 0 16px; }
+  .confirm-hint {
+    font-size: 11px;
+    color: var(--weplex-text-muted);
+    font-family: var(--weplex-font-mono);
+    margin: 0 0 16px;
+    word-break: break-all;
+  }
   .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
   /* Toast */
@@ -810,14 +766,8 @@
     animation: toast-in 0.2s ease-out;
     pointer-events: none;
   }
-  .toast-success {
-    background: var(--weplex-success, #10b981);
-    color: white;
-  }
-  .toast-error {
-    background: var(--weplex-error, #ef4444);
-    color: white;
-  }
+  .toast-success { background: var(--weplex-active, #10b981); color: white; }
+  .toast-error { background: var(--weplex-error, #ef4444); color: white; }
   @keyframes toast-in {
     from { opacity: 0; transform: translateX(-50%) translateY(8px); }
     to { opacity: 1; transform: translateX(-50%) translateY(0); }
