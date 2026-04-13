@@ -4,8 +4,10 @@
   import { getVersion } from '@tauri-apps/api/app';
   import { settingsStore } from '../../stores/settingsStore';
   import { profileStore } from '../../stores/profileStore';
+  import { resourceStore } from '../../stores/resourceStore.svelte';
   import { uiStore } from '../../stores/uiStore';
   import TeamSettings from './TeamSettings.svelte';
+  import ImportProfileDialog from './ImportProfileDialog.svelte';
   import {
     checkForUpdates,
     updateState,
@@ -51,9 +53,23 @@
     }
   }
 
-  function importProfile(dp: DiscoveredProfile) {
-    profileStore.create(dp.name, dp.path);
-    discoveredProfiles = discoveredProfiles.filter((d) => d.path !== dp.path);
+  // Import profile dialog state
+  let importTarget = $state<DiscoveredProfile | null>(null);
+  let importCounts = $derived({
+    agents: resourceStore.shared.filter((r) => r.resourceType === 'agent').length,
+    rules: resourceStore.shared.filter((r) => r.resourceType === 'rule').length,
+    skills: resourceStore.shared.filter((r) => r.resourceType === 'skill').length,
+  });
+
+  function startImport(dp: DiscoveredProfile) {
+    importTarget = dp;
+  }
+
+  function confirmImport(sync: boolean) {
+    if (!importTarget) return;
+    profileStore.create(importTarget.name, importTarget.path, sync);
+    discoveredProfiles = discoveredProfiles.filter((d) => d.path !== importTarget!.path);
+    importTarget = null;
   }
 
   // Profile editing state
@@ -208,7 +224,7 @@
                       >
                     </span>
                   </div>
-                  <button class="btn-sm import" onclick={() => importProfile(dp)}>Import</button>
+                  <button class="btn-sm import" onclick={() => startImport(dp)}>Import</button>
                 </div>
               </div>
             {/each}
@@ -345,6 +361,15 @@
       {/if}
   </div>
 </div>
+
+{#if importTarget}
+  <ImportProfileDialog
+    profileName={importTarget.name}
+    counts={importCounts}
+    onconfirm={confirmImport}
+    onclose={() => (importTarget = null)}
+  />
+{/if}
 
 <style>
   .settings-inner {

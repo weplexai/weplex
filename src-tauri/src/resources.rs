@@ -681,6 +681,23 @@ pub fn distribute_all_to_profile(config_dir: &str) -> Result<(), String> {
             continue;
         }
 
+        // Skip if target file already exists (don't overwrite user's own resources)
+        let target_path = format!(
+            "{}/{}/{}.md",
+            config_dir,
+            entry.resource_type.dir_name(),
+            entry.name
+        );
+        if std::path::Path::new(&target_path).exists() {
+            eprintln!(
+                "[weplex] skipping {}/{}: already exists in {}",
+                entry.resource_type.dir_name(),
+                entry.name,
+                config_dir
+            );
+            continue;
+        }
+
         match distribute_single(&entry.name, entry.resource_type, &content, config_dir) {
             Ok(target) => entry.distributed_to.push(target),
             Err(e) => eprintln!(
