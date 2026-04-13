@@ -12,7 +12,6 @@ mod pty_manager;
 mod resources;
 mod secure_store;
 mod session_summary;
-// mod weplex_agents; // Removed: Claude-first strategy, no agent-agnostic format
 
 use pty_manager::PtyManager;
 use std::io::BufRead;
