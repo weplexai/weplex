@@ -474,10 +474,13 @@ pub fn sanitize_name(name: &str) -> Result<String, String> {
                 '-'
             }
         })
-        .collect::<String>()
-        .replace("--", "-")
-        .trim_matches('-')
-        .to_string();
+        .collect::<String>();
+    // Collapse multiple dashes recursively
+    let mut sanitized = sanitized;
+    while sanitized.contains("--") {
+        sanitized = sanitized.replace("--", "-");
+    }
+    let sanitized = sanitized.trim_matches('-').to_string();
 
     if sanitized.is_empty() {
         return Err("Name cannot be empty".to_string());

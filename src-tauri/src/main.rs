@@ -2102,6 +2102,49 @@ fn sync_hooks_for_profile(config_dir: String) -> Result<(), String> {
 // Profile-first: profiles are source of truth, Weplex is viewer + copy tool.
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Validate all config dirs in a list of ProfileInfo.
+fn validate_profile_infos(profiles: &[resources::ProfileInfo]) -> Result<(), String> {
+    for p in profiles {
+        if let Some(ref dir) = p.config_dir {
+            if !dir.is_empty() {
+                validate_config_dir(dir)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate that a file path is a .md file inside a resource subdirectory (agents/rules/skills).
+fn validate_resource_path(file_path: &str) -> Result<String, String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let canonical = std::fs::canonicalize(file_path)
+        .map_err(|e| format!("Cannot resolve path: {}", e))?;
+    let canonical_str = canonical
+        .to_str()
+        .ok_or("Path not valid UTF-8")?;
+
+    // Must be under HOME
+    if !canonical_str.starts_with(&home) {
+        return Err("Path must be under HOME".to_string());
+    }
+
+    // Must end with .md
+    if !canonical_str.ends_with(".md") {
+        return Err("Path must be a .md file".to_string());
+    }
+
+    // Must contain a resource subdirectory
+    let has_resource_dir = canonical_str.contains("/agents/")
+        || canonical_str.contains("/rules/")
+        || canonical_str.contains("/skills/");
+    if !has_resource_dir {
+        return Err("Path must be inside agents/, rules/, or skills/".to_string());
+    }
+
+    Ok(canonical_str.to_string())
+}
+
 /// Resolve config dir: empty string = default profile ~/.claude/.
 fn resolve_config_dir(config_dir: &str) -> Result<String, String> {
     if config_dir.is_empty() {
@@ -2132,6 +2175,7 @@ fn discover_resources(
 fn count_profile_resources(
     profiles: Vec<resources::ProfileInfo>,
 ) -> Result<resources::ResourceCounts, String> {
+    validate_profile_infos(&profiles)?;
     resources::count_resources(&profiles)
 }
 
@@ -2143,19 +2187,9 @@ fn copy_resource_to_profile(
     name: String,
     overwrite: bool,
 ) -> Result<bool, String> {
-    // Validate source is under HOME
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
-    let canonical = std::fs::canonicalize(&source_path)
-        .map_err(|e| format!("Cannot resolve source: {}", e))?;
-    let canonical_str = canonical.to_str()
-        .ok_or("Source path not valid UTF-8")?;
-    if !canonical_str.starts_with(&home) {
-        return Err("Source path must be under HOME".to_string());
-    }
-
+    let validated_source = validate_resource_path(&source_path)?;
     let validated_target = resolve_config_dir(&target_config_dir)?;
-    resources::copy_resource(canonical_str, &validated_target, resource_type, &name, overwrite)
+    resources::copy_resource(&validated_source, &validated_target, resource_type, &name, overwrite)
 }
 
 #[tauri::command]
@@ -2163,6 +2197,7 @@ fn copy_all_resources_to_profile(
     source_profiles: Vec<resources::ProfileInfo>,
     target_config_dir: String,
 ) -> Result<u32, String> {
+    validate_profile_infos(&source_profiles)?;
     let validated_target = resolve_config_dir(&target_config_dir)?;
     resources::copy_all_to_profile(&source_profiles, &validated_target)
 }
@@ -2180,15 +2215,8 @@ fn create_resource_in_profile(
 
 #[tauri::command]
 fn delete_resource_file(file_path: String) -> Result<(), String> {
-    // Validate file is under HOME
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
-    let canonical = std::fs::canonicalize(&file_path)
-        .map_err(|e| format!("Cannot resolve path: {}", e))?;
-    if !canonical.starts_with(&home) {
-        return Err("File path must be under HOME".to_string());
-    }
-    resources::delete_resource(canonical.to_str().unwrap_or(&file_path))
+    let validated = validate_resource_path(&file_path)?;
+    resources::delete_resource(&validated)
 }
 
 /// Register or update the weplex MCP server entry in ~/.claude.json.
