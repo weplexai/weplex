@@ -202,6 +202,9 @@ pub fn copy_resource(
     name: &str,
     overwrite: bool,
 ) -> Result<bool, String> {
+    // Sanitize name to prevent path traversal (e.g. "../../.ssh/key")
+    let safe_name = sanitize_name(name)?;
+
     let content = std::fs::read_to_string(source_path)
         .map_err(|e| format!("Failed to read source: {}", e))?;
 
@@ -209,7 +212,7 @@ pub fn copy_resource(
     std::fs::create_dir_all(&target_dir)
         .map_err(|e| format!("Failed to create dir: {}", e))?;
 
-    let target_path = format!("{}/{}.md", target_dir, name);
+    let target_path = format!("{}/{}.md", target_dir, safe_name);
 
     // Check if target exists
     if std::path::Path::new(&target_path).exists() {

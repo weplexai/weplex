@@ -2159,14 +2159,7 @@ fn resolve_config_dir(config_dir: &str) -> Result<String, String> {
 fn discover_resources(
     profiles: Vec<resources::ProfileInfo>,
 ) -> Result<Vec<resources::UnifiedResource>, String> {
-    // Validate all profile config dirs before filesystem access
-    for p in &profiles {
-        if let Some(ref dir) = p.config_dir {
-            if !dir.is_empty() {
-                validate_config_dir(dir)?;
-            }
-        }
-    }
+    validate_profile_infos(&profiles)?;
     resources::discover(&profiles)
 }
 
