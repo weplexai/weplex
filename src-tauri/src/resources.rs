@@ -356,6 +356,18 @@ fn read_resources_from_dir(
 pub fn discover_all_resources(profiles: &[ProfileInfo]) -> Result<Vec<Resource>, String> {
     let home = std::env::var("HOME")
         .map_err(|_| "HOME environment variable not set".to_string())?;
+
+    // Auto-promote: if single profile and manifest empty, copy all resources
+    // to ~/.weplex/ so they're ready for sharing when a second profile is added.
+    if profiles.len() <= 1 {
+        let default_dir = format!("{}/.claude", home);
+        let config_dir = profiles
+            .first()
+            .and_then(|p| p.config_dir.as_deref())
+            .unwrap_or(&default_dir);
+        let _ = auto_promote_single_profile(config_dir);
+    }
+
     let manifest = load_manifest();
     let mut all_resources = Vec::new();
 
@@ -421,6 +433,84 @@ pub fn discover_all_resources(profiles: &[ProfileInfo]) -> Result<Vec<Resource>,
     });
 
     Ok(all_resources)
+}
+
+/// Auto-promote all profile-local resources to Weplex-managed when there's
+/// only one profile and the manifest is empty (first run / single profile).
+/// Copies files to ~/.weplex/, updates manifest. Originals stay untouched.
+pub fn auto_promote_single_profile(config_dir: &str) -> Result<bool, String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let manifest = load_manifest();
+
+    // Only auto-promote if manifest has no managed resources yet
+    if !manifest.resources.is_empty() {
+        return Ok(false);
+    }
+
+    let mut new_manifest = manifest;
+    let mut promoted = 0u32;
+
+    for rt in ResourceType::all() {
+        let profile_dir = format!("{}/{}", config_dir, rt.dir_name());
+        let dir = match std::fs::read_dir(&profile_dir) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let weplex_dir = format!("{}/.weplex/{}", home, rt.dir_name());
+        std::fs::create_dir_all(&weplex_dir)
+            .map_err(|e| format!("Failed to create dir: {}", e))?;
+
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let name = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(n) if !n.is_empty() => n.to_string(),
+                _ => continue,
+            };
+
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let hash = compute_hash(&content);
+            let weplex_path = format!("{}/{}.md", weplex_dir, name);
+
+            // Copy to ~/.weplex/ (atomic)
+            if let Err(e) = atomic_write(&weplex_path, &content) {
+                eprintln!("[weplex] auto-promote failed for {}: {}", name, e);
+                continue;
+            }
+
+            new_manifest.resources.push(ManifestEntry {
+                name: name.clone(),
+                resource_type: *rt,
+                source_path: weplex_path,
+                content_hash: hash.clone(),
+                origin: ResourceOrigin::WeplexManaged,
+                marketplace_id: None,
+                marketplace_version: None,
+                distributed_to: vec![DistributionTarget {
+                    profile_config_dir: config_dir.to_string(),
+                    target_path: path.to_string_lossy().to_string(),
+                    synced_hash: hash,
+                    synced_at: now_iso(),
+                }],
+            });
+            promoted += 1;
+        }
+    }
+
+    if promoted > 0 {
+        save_manifest(&new_manifest)?;
+        eprintln!("[weplex] auto-promoted {} resources from {}", promoted, config_dir);
+    }
+
+    Ok(promoted > 0)
 }
 
 /// Detect name conflicts: same name + type in multiple profiles with different content.
