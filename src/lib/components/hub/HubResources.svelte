@@ -28,6 +28,12 @@
   let operating = $state(false);
   let toast = $state<{ type: 'success' | 'error'; text: string } | null>(null);
   let confirmDelete = $state<{ name: string; filePath: string } | null>(null);
+  let confirmOverwrite = $state<{
+    resource: UnifiedResource;
+    sourceProfileId: string;
+    targetConfigDir: string;
+    targetName: string;
+  } | null>(null);
 
   // ─── Derived ──────────────────────────────────────────────────────────
 
@@ -101,7 +107,7 @@
         targetConfigDir,
         resource.resourceType,
         resource.name,
-        false, // don't overwrite
+        false,
       );
       if (copied) {
         showToast('success', `Copied ${resource.name}`);
@@ -111,11 +117,39 @@
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes('different content')) {
-        // TODO: overwrite confirmation dialog
-        showToast('error', `${resource.name} already exists with different content`);
+        const targetProfile = profileStore.profiles.find((p) => (p.configDir ?? '') === targetConfigDir);
+        confirmOverwrite = {
+          resource,
+          sourceProfileId: sourceProfile,
+          targetConfigDir,
+          targetName: targetProfile?.name ?? 'profile',
+        };
       } else {
         showToast('error', `Copy failed: ${msg}`);
       }
+    } finally {
+      operating = false;
+    }
+  }
+
+  async function overwriteConfirmed() {
+    if (!confirmOverwrite || operating) return;
+    const { resource, sourceProfileId, targetConfigDir } = confirmOverwrite;
+    const source = resource.profiles.find((p) => p.profileId === sourceProfileId);
+    if (!source) return;
+    confirmOverwrite = null;
+    operating = true;
+    try {
+      await resourceStore.copyTo(
+        source.filePath,
+        targetConfigDir,
+        resource.resourceType,
+        resource.name,
+        true, // overwrite
+      );
+      showToast('success', `Overwrote ${resource.name}`);
+    } catch (e) {
+      showToast('error', `Overwrite failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       operating = false;
     }
@@ -349,6 +383,17 @@
     <div class="confirm-actions">
       <Button variant="secondary" onclick={() => (confirmDelete = null)}>Cancel</Button>
       <Button variant="danger" disabled={operating} onclick={deleteConfirmed}>Delete</Button>
+    </div>
+  </Modal>
+{/if}
+
+{#if confirmOverwrite}
+  <Modal onclose={() => (confirmOverwrite = null)} position="center" label="Overwrite resource" class="confirm-dialog">
+    <p class="confirm-text">Overwrite <strong>{confirmOverwrite.resource.name}</strong> in {confirmOverwrite.targetName}?</p>
+    <p class="confirm-hint">This profile already has a different version of this resource. Copying will replace it.</p>
+    <div class="confirm-actions">
+      <Button variant="secondary" onclick={() => (confirmOverwrite = null)}>Cancel</Button>
+      <Button variant="primary" disabled={operating} onclick={overwriteConfirmed}>Overwrite</Button>
     </div>
   </Modal>
 {/if}
