@@ -435,20 +435,24 @@ pub fn discover_all_resources(profiles: &[ProfileInfo]) -> Result<Vec<Resource>,
     Ok(all_resources)
 }
 
-/// Auto-promote all profile-local resources to Weplex-managed when there's
-/// only one profile and the manifest is empty (first run / single profile).
-/// Copies files to ~/.weplex/, updates manifest. Originals stay untouched.
+/// Auto-promote on first run: if manifest is empty and single profile,
+/// promote all resources to Weplex-managed.
 pub fn auto_promote_single_profile(config_dir: &str) -> Result<bool, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
     let manifest = load_manifest();
-
-    // Only auto-promote if manifest has no managed resources yet
     if !manifest.resources.is_empty() {
         return Ok(false);
     }
+    promote_profile_resources(config_dir)
+}
 
-    let mut new_manifest = manifest;
+/// Promote unique resources from a profile to Weplex-managed.
+/// Copies .md files from {config_dir}/{agents,rules,skills}/ to ~/.weplex/.
+/// Skips files that already exist in ~/.weplex/ (no overwrites).
+/// Originals in profile stay untouched.
+pub fn promote_profile_resources(config_dir: &str) -> Result<bool, String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let mut manifest = load_manifest();
     let mut promoted = 0u32;
 
     for rt in ResourceType::all() {
@@ -472,27 +476,39 @@ pub fn auto_promote_single_profile(config_dir: &str) -> Result<bool, String> {
                 _ => continue,
             };
 
+            // Skip if already in ~/.weplex/ (existing version wins)
+            let weplex_path = format!("{}/{}.md", weplex_dir, name);
+            if std::path::Path::new(&weplex_path).exists() {
+                // Still register as distributed if not in manifest
+                if !manifest.resources.iter().any(|e| {
+                    e.name == name && e.resource_type == *rt
+                }) {
+                    // File exists but not in manifest — don't touch
+                }
+                continue;
+            }
+
+            // Skip if already tracked in manifest (promoted from another profile)
+            if manifest.resources.iter().any(|e| {
+                e.name == name && e.resource_type == *rt
+            }) {
+                continue;
+            }
+
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
 
             let hash = compute_hash(&content);
-            let weplex_path = format!("{}/{}.md", weplex_dir, name);
-
-            // Skip if target already exists (protect against manifest
-            // corruption overwriting previously customized files)
-            if std::path::Path::new(&weplex_path).exists() {
-                continue;
-            }
 
             // Copy to ~/.weplex/ (atomic)
             if let Err(e) = atomic_write(&weplex_path, &content) {
-                eprintln!("[weplex] auto-promote failed for {}: {}", name, e);
+                eprintln!("[weplex] promote failed for {}: {}", name, e);
                 continue;
             }
 
-            new_manifest.resources.push(ManifestEntry {
+            manifest.resources.push(ManifestEntry {
                 name: name.clone(),
                 resource_type: *rt,
                 source_path: weplex_path,
@@ -512,8 +528,8 @@ pub fn auto_promote_single_profile(config_dir: &str) -> Result<bool, String> {
     }
 
     if promoted > 0 {
-        save_manifest(&new_manifest)?;
-        eprintln!("[weplex] auto-promoted {} resources from {}", promoted, config_dir);
+        save_manifest(&manifest)?;
+        eprintln!("[weplex] promoted {} resources from {}", promoted, config_dir);
     }
 
     Ok(promoted > 0)

@@ -2297,6 +2297,18 @@ fn sync_resources_to_profile(config_dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn promote_profile_resources(config_dir: String) -> Result<bool, String> {
+    let validated = if config_dir.is_empty() {
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME environment variable not set".to_string())?;
+        format!("{}/.claude", home)
+    } else {
+        validate_config_dir(&config_dir)?
+    };
+    resources::promote_profile_resources(&validated)
+}
+
+#[tauri::command]
 fn check_resource_drift(
     profile_config_dirs: Vec<String>,
 ) -> Result<Vec<resources::DriftEntry>, String> {
@@ -2501,6 +2513,7 @@ fn main() {
             update_shared_resource,
             delete_shared_resource,
             sync_resources_to_profile,
+            promote_profile_resources,
             check_resource_drift,
             set_traffic_lights_visible,
             get_session_summary,

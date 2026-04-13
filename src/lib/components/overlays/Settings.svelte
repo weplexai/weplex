@@ -65,11 +65,22 @@
     importTarget = dp;
   }
 
-  function confirmImport(sync: boolean) {
+  async function confirmImport(sync: boolean) {
     if (!importTarget) return;
-    profileStore.create(importTarget.name, importTarget.path, sync);
-    discoveredProfiles = discoveredProfiles.filter((d) => d.path !== importTarget!.path);
+    const dp = importTarget;
     importTarget = null;
+
+    // 1. Always promote unique resources from this profile to ~/.weplex/
+    await invoke('promote_profile_resources', { configDir: dp.path }).catch((e) =>
+      console.warn('[weplex] promote failed:', e),
+    );
+
+    // 2. Create profile (sync=user's choice: copy shared resources TO this profile)
+    profileStore.create(dp.name, dp.path, sync);
+    discoveredProfiles = discoveredProfiles.filter((d) => d.path !== dp.path);
+
+    // 3. Refresh resource view
+    resourceStore.discover();
   }
 
   // Profile editing state
