@@ -480,6 +480,12 @@ pub fn auto_promote_single_profile(config_dir: &str) -> Result<bool, String> {
             let hash = compute_hash(&content);
             let weplex_path = format!("{}/{}.md", weplex_dir, name);
 
+            // Skip if target already exists (protect against manifest
+            // corruption overwriting previously customized files)
+            if std::path::Path::new(&weplex_path).exists() {
+                continue;
+            }
+
             // Copy to ~/.weplex/ (atomic)
             if let Err(e) = atomic_write(&weplex_path, &content) {
                 eprintln!("[weplex] auto-promote failed for {}: {}", name, e);
