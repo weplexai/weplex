@@ -12,7 +12,7 @@ mod pty_manager;
 mod resources;
 mod secure_store;
 mod session_summary;
-mod weplex_agents;
+// mod weplex_agents; // Removed: Claude-first strategy, no agent-agnostic format
 
 use pty_manager::PtyManager;
 use std::io::BufRead;
@@ -742,78 +742,8 @@ fn list_project_agents(cwd: String) -> Result<Vec<AgentConfig>, String> {
     Ok(agents)
 }
 
-/// Save an agent file to ~/.claude/agents/{name}.md
-#[tauri::command]
-fn save_agent(agent: AgentConfig) -> Result<String, String> {
-    let safe_name = sanitize_name(&agent.name)?;
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let agents_dir = format!("{}/.claude/agents", home);
-    std::fs::create_dir_all(&agents_dir).map_err(|e| e.to_string())?;
-
-    let path = format!("{}/{}.md", agents_dir, safe_name);
-
-    let mut frontmatter = format!(
-        "---\nname: {}\ndescription: {}\n",
-        yaml_escape(&agent.name),
-        yaml_escape(&agent.description)
-    );
-    if !agent.model.is_empty() {
-        frontmatter.push_str(&format!("model: {}\n", yaml_escape(&agent.model)));
-    }
-    if !agent.tools.is_empty() {
-        let escaped: Vec<String> = agent.tools.iter().map(|t| yaml_escape(t)).collect();
-        frontmatter.push_str(&format!("tools: [{}]\n", escaped.join(", ")));
-    }
-    if !agent.disallowed_tools.is_empty() {
-        let escaped: Vec<String> = agent
-            .disallowed_tools
-            .iter()
-            .map(|t| yaml_escape(t))
-            .collect();
-        frontmatter.push_str(&format!("disallowedTools: [{}]\n", escaped.join(", ")));
-    }
-    if let Some(ref pm) = agent.permission_mode {
-        frontmatter.push_str(&format!("permissionMode: {}\n", yaml_escape(pm)));
-    }
-    if let Some(ref mem) = agent.memory {
-        frontmatter.push_str(&format!("memory: {}\n", yaml_escape(mem)));
-    }
-    if let Some(mt) = agent.max_turns {
-        frontmatter.push_str(&format!("maxTurns: {}\n", mt));
-    }
-    if let Some(true) = agent.background {
-        frontmatter.push_str("background: true\n");
-    }
-    if let Some(ref iso) = agent.isolation {
-        frontmatter.push_str(&format!("isolation: {}\n", yaml_escape(iso)));
-    }
-    if !agent.skills.is_empty() {
-        frontmatter.push_str("skills:\n");
-        for skill in &agent.skills {
-            frontmatter.push_str(&format!("  - {}\n", yaml_escape(skill)));
-        }
-    }
-    frontmatter.push_str("---\n");
-
-    let content = format!("{}\n{}", frontmatter, agent.system_prompt);
-    std::fs::write(&path, content).map_err(|e| e.to_string())?;
-    Ok(path)
-}
-
-/// Delete an agent file.
-#[tauri::command]
-fn delete_agent(name: String) -> Result<(), String> {
-    let safe_name = sanitize_name(&name)?;
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let agents_dir = format!("{}/.claude/agents", home);
-    let path = format!("{}/{}.md", agents_dir, safe_name);
-    // Verify path is within agents dir before deleting
-    if std::path::Path::new(&path).exists() {
-        validate_path_within(&path, &agents_dir)?;
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
+// save_agent and delete_agent removed — replaced by resource system
+// (create_resource_in_profile, delete_resource_file)
 
 // ── Git integration ────────────────────────────────────────────────────────
 
@@ -1476,23 +1406,6 @@ fn load_store(app: tauri::AppHandle, key: String) -> Result<Option<String>, Stri
     }
 
     Ok(None)
-}
-
-// ── Weplex Agents (YAML, agent-agnostic) ──────────────────────────────────────
-
-#[tauri::command]
-fn list_weplex_agents() -> Result<Vec<weplex_agents::WeplexAgent>, String> {
-    weplex_agents::list()
-}
-
-#[tauri::command]
-fn save_weplex_agent(agent: weplex_agents::WeplexAgent) -> Result<String, String> {
-    weplex_agents::save(&agent)
-}
-
-#[tauri::command]
-fn delete_weplex_agent(name: String) -> Result<(), String> {
-    weplex_agents::delete(&name)
 }
 
 /// Save a marketplace package (agent/skill YAML) to local filesystem.
@@ -2433,8 +2346,6 @@ fn main() {
             discover_profiles,
             list_agents,
             list_project_agents,
-            save_agent,
-            delete_agent,
             ensure_default_commands,
             list_commands,
             save_command,
@@ -2447,9 +2358,6 @@ fn main() {
             read_skill_content,
             persist_store,
             load_store,
-            list_weplex_agents,
-            save_weplex_agent,
-            delete_weplex_agent,
             oauth_server::start_oauth_server,
             open_url,
             save_marketplace_package,
