@@ -1,38 +1,9 @@
 import type { Session, SessionStatus, AgentType, HyperspaceGroupBy } from '../types';
 import { HYPERSPACE_ID } from '../types';
 import { detectAgentType, detectSessionType } from '../utils/detection';
-import { durableSave, durableRemove } from '../utils/durablePersist';
+import { smartName, extractPrompt, buildAutoRenameLabel } from '../utils/sessionNaming';
+import { loadSessions, persistSessions } from '../utils/sessionPersistence';
 import { spaceStore } from './spaceStore';
-
-const STORAGE_KEY = 'weplex_sessions';
-const ACTIVE_KEY = 'weplex_active_session';
-
-// Load persisted state
-function loadSessions(): { sessions: Session[]; nextId: number; activeId: number | null } {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { sessions: [], nextId: 1, activeId: null };
-    const saved: Session[] = JSON.parse(raw);
-    const maxId = saved.reduce((max, s) => Math.max(max, s.id), 0);
-    const activeRaw = localStorage.getItem(ACTIVE_KEY);
-    const activeId = activeRaw
-      ? Number(activeRaw)
-      : saved.length > 0
-        ? saved[saved.length - 1].id
-        : null;
-    // Reset status — PTY connections are gone after restart
-    // Save previous status so resume logic can skip finished sessions
-    // Backfill order for sessions created before order field existed
-    for (const s of saved) {
-      s.previousStatus = s.status;
-      s.status = 'new';
-      if (s.order === undefined) s.order = s.createdAt;
-    }
-    return { sessions: saved, nextId: maxId + 1, activeId };
-  } catch {
-    return { sessions: [], nextId: 1, activeId: null };
-  }
-}
 
 const initial = loadSessions();
 let nextId = initial.nextId;
@@ -43,14 +14,7 @@ let activeSessionId = $state<number | null>(initial.activeId);
 const restoredSessionIds = new Set<number>(initial.sessions.map((s) => s.id));
 
 function persist() {
-  try {
-    durableSave(STORAGE_KEY, JSON.stringify(sessions));
-    if (activeSessionId !== null) {
-      durableSave(ACTIVE_KEY, String(activeSessionId));
-    } else {
-      durableRemove(ACTIVE_KEY);
-    }
-  } catch {}
+  persistSessions(sessions, activeSessionId);
 }
 
 export interface SessionGroup {
@@ -58,42 +22,6 @@ export interface SessionGroup {
   label: string;
   color?: string;
   sessions: Session[];
-}
-
-/** Extract prompt from -p flag in agent command. */
-function extractPrompt(command: string): string | undefined {
-  // Match: -p "some prompt" or -p 'some prompt' or --prompt "..."
-  const match = command.match(/(?:^|\s)(?:-p|--prompt)\s+(?:"([^"]+)"|'([^']+)')/);
-  if (match) {
-    const prompt = (match[1] || match[2]).trim();
-    // Truncate to first 40 chars, cut at word boundary
-    if (prompt.length <= 40) return prompt;
-    const truncated = prompt.slice(0, 40);
-    const lastSpace = truncated.lastIndexOf(' ');
-    return lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated;
-  }
-  return undefined;
-}
-
-/** Generate a meaningful session name from agent type, command, and cwd. */
-function smartName(agentType: AgentType | undefined, cwd: string | undefined, id: number, command?: string): string {
-  const prefix = agentType || 'session';
-
-  // Priority 1: extract task from -p flag
-  if (command) {
-    const prompt = extractPrompt(command);
-    if (prompt) return `${prefix}: ${prompt}`;
-  }
-
-  // Priority 2: use last dir component from cwd
-  if (cwd && cwd !== '~') {
-    const dir = cwd.replace(/\/+$/, '').split('/').pop();
-    if (dir && dir !== '~') {
-      return `${prefix}: ${dir}`;
-    }
-  }
-
-  return agentType || `session-${id}`;
 }
 
 /** Set of sessions that have been auto-renamed from first input. */
@@ -255,32 +183,18 @@ export const sessionStore = {
     const session = sessions.find((s) => s.id === id);
     if (!session || session.type !== 'agent' || !session.agentType) return;
 
-    // Only rename if current name is the default pattern (e.g., "claude: dirname")
+    // Only rename if current name is the default pattern
     const defaultName = smartName(session.agentType, session.cwd, id, session.command);
-    if (session.name !== defaultName) return; // user already renamed
+    if (session.name !== defaultName) return;
 
-    // Check if it was created with -p flag (already has good name)
+    // Skip if created with -p flag (already has good name)
     if (session.command && extractPrompt(session.command)) return;
 
-    // Clean up user input: trim, take first line, strip ANSI escape sequences, truncate
-    const cleaned = userInput.trim().split('\n')[0]
-      .replace(/\r/g, '')
-      .replace(/\x1b\[[0-9;?>=!]*[\x40-\x7e]/g, '') // CSI sequences (e.g. \x1b[?1;2c)
-      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '') // OSC sequences
-      .replace(/\x1bP[^\x1b]*\x1b\\/g, '')       // DCS sequences
-      .replace(/\x1b[^[\]P]/g, '')                // other ESC sequences
-      .replace(/\[\?[0-9;]*[\x40-\x7e]/g, '')    // orphaned CSI (require ? — DA responses)
-      .replace(/[\x00-\x1f\x7f-\x9f]/g, '')
-      .trim();
-    if (cleaned.length < 3 || cleaned.length > 200) return;
-
-    const prefix = session.agentType;
-    const label = cleaned.length <= 40
-      ? cleaned
-      : cleaned.slice(0, 40).replace(/\s+\S*$/, '');
+    const newName = buildAutoRenameLabel(session.agentType, userInput);
+    if (!newName) return;
 
     autoNamedSessions.add(id);
-    this.rename(id, `${prefix}: ${label}`);
+    this.rename(id, newName);
   },
 
   pin(id: number) {
