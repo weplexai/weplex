@@ -16,15 +16,29 @@
 weplex-client/
 ├── src-tauri/             # Rust backend (Tauri)
 │   ├── src/
-│   │   ├── main.rs        # Tauri entry, commands, hook scripts, git commands
-│   │   ├── pty_manager.rs # PTY management (portable-pty)
-│   │   ├── hook_server.rs      # Local HTTP server for Claude Code hook events
-│   │   ├── ipc_server.rs       # Unix socket pool for MCP cross-session tools
-│   │   ├── weplex_agents.rs    # Agent YAML format, resolution, command builder
-│   │   ├── session_summary.rs  # Session activity notes persistence
-│   │   ├── secure_store.rs     # Encrypted credential storage
-│   │   ├── oauth_server.rs     # Local OAuth callback server
-│   │   └── keychain.rs         # OS keychain integration
+│   │   ├── main.rs              # Tauri entry point, PTY commands, app setup (279 LOC)
+│   │   ├── agents.rs            # Agent config parsing and listing
+│   │   ├── claude.rs            # Session usage stats and state detection
+│   │   ├── commands.rs          # Claude command file CRUD
+│   │   ├── context.rs           # CLAUDE.local.md context injection
+│   │   ├── git.rs               # Git branch/status and project config
+│   │   ├── hooks.rs             # Hook script generation and profile sync
+│   │   ├── marketplace.rs       # Marketplace package/skill saving
+│   │   ├── mcp.rs               # MCP binary discovery and registration
+│   │   ├── platform.rs          # URL opening and macOS traffic lights
+│   │   ├── profile.rs           # Profile discovery and resource management
+│   │   ├── skills.rs            # Skill discovery and reading
+│   │   ├── store.rs             # Persistent JSON store with atomic writes
+│   │   ├── utils.rs             # Path resolution, validation, sanitization
+│   │   ├── yaml.rs              # YAML frontmatter parsing utilities
+│   │   ├── pty_manager.rs       # PTY management (portable-pty)
+│   │   ├── hook_server.rs       # Local HTTP server for Claude Code hook events
+│   │   ├── ipc_server.rs        # Unix socket pool for MCP cross-session tools
+│   │   ├── resources.rs         # Profile resource discovery/copy
+│   │   ├── session_summary.rs   # Session activity notes persistence
+│   │   ├── secure_store.rs      # Encrypted credential storage
+│   │   ├── oauth_server.rs      # Local OAuth callback server
+│   │   └── keychain.rs          # OS keychain integration
 │   ├── mcp-server/        # Weplex MCP Server binary (weplex-mcp)
 │   │   └── src/
 │   │       ├── main.rs          # JSON-RPC entry point
