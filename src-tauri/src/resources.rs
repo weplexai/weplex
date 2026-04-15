@@ -10,6 +10,13 @@ use std::collections::HashMap;
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
+/// Adding a new resource type? Update ALL of these:
+/// 1. Add variant here
+/// 2. Add arm in `dir_name()` below
+/// 3. Add element in `all()` below
+/// 4. Add field in `ResourceCounts` struct
+/// 5. Add arm in `count_resources()` match
+/// 6. Update frontend types.ts `ResourceType`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResourceType {
@@ -89,8 +96,7 @@ pub struct ResourceCounts {
 
 /// Discover all resources from all profiles and return a unified view.
 pub fn discover(profiles: &[ProfileInfo]) -> Result<Vec<UnifiedResource>, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let home = crate::utils::get_home();
     let default_dir = format!("{}/.claude", home);
 
     // 1. Scan all profiles, collect flat list
@@ -161,8 +167,7 @@ pub fn discover(profiles: &[ProfileInfo]) -> Result<Vec<UnifiedResource>, String
 
 /// Count resources by type for a set of profiles (for import dialog).
 pub fn count_resources(profiles: &[ProfileInfo]) -> Result<ResourceCounts, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let home = crate::utils::get_home();
     let default_dir = format!("{}/.claude", home);
 
     let mut counts = ResourceCounts {
@@ -246,8 +251,7 @@ pub fn copy_all_to_profile(
     source_profiles: &[ProfileInfo],
     target_config_dir: &str,
 ) -> Result<u32, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME environment variable not set".to_string())?;
+    let home = crate::utils::get_home();
     let default_dir = format!("{}/.claude", home);
     let mut copied = 0u32;
 
