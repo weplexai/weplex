@@ -2,32 +2,20 @@ import type { AuthUser, AuthTokens } from '../types';
 import { initApiClient, resolveApiEndpoint, getBaseUrl } from '../services/apiClient';
 import { authService } from '../services/authService';
 import { syncService } from '../services/syncService';
-import { invoke } from '@tauri-apps/api/core';
+import {
+  extractEmailFromJwt,
+  saveLastUserEmail,
+  keychainLoadTokens,
+  keychainSaveTokens,
+  keychainDeleteTokens,
+  fileSaveTokens,
+  fileLoadTokens,
+  fileDeleteTokens,
+} from '../services/tokenPersistence';
 import { teamStore } from './teamStore.svelte';
 import { presenceStore } from './presenceStore.svelte';
 import { chatStore } from './chatStore.svelte';
 import { wsService } from '../services/wsService';
-
-const KEYCHAIN_KEY = 'auth_tokens';
-const FILE_BACKUP_KEY = 'weplex_auth_tokens';
-const LAST_USER_KEY = 'weplex_last_user_email';
-
-/** Extract email from JWT access token without verification (client-side check only). */
-function extractEmailFromJwt(token: string): string | null {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    return payload.email || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Save last authenticated user email for cross-account protection. */
-function saveLastUserEmail(email: string): void {
-  localStorage.setItem(LAST_USER_KEY, email);
-  // Also persist to file backup so recoverStores() can verify ownership
-  invoke('persist_store', { key: LAST_USER_KEY, value: email }).catch(() => {});
-}
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -36,59 +24,6 @@ let tokens = $state<AuthTokens | null>(null);
 let loading = $state(false);
 let error = $state<string | null>(null);
 let focusRetryCleanup: (() => void) | null = null;
-
-// ── Persistence helpers (OS keychain) ──────────────────────────────────────
-
-async function keychainLoadTokens(): Promise<AuthTokens | null> {
-  try {
-    const raw = await invoke<string | null>('keychain_load', { key: KEYCHAIN_KEY });
-    if (!raw) return null;
-    return JSON.parse(raw) as AuthTokens;
-  } catch {
-    return null;
-  }
-}
-
-async function keychainSaveTokens(t: AuthTokens): Promise<void> {
-  await invoke('keychain_save', { key: KEYCHAIN_KEY, value: JSON.stringify(t) });
-}
-
-async function keychainDeleteTokens(): Promise<void> {
-  await invoke('keychain_delete', { key: KEYCHAIN_KEY });
-}
-
-// ── Persistence helpers (encrypted file backup) ──────────────────────────
-// Encrypted backup uses AES-256-GCM with a machine-derived key (hostname + username).
-// Primary storage is OS keychain; encrypted file is fallback for keychain failures.
-// Files stored in appDataDir/secure/ with 0600 permissions.
-
-async function fileSaveTokens(t: AuthTokens): Promise<void> {
-  try {
-    await invoke('secure_store_save', { key: FILE_BACKUP_KEY, value: JSON.stringify(t) });
-  } catch (e) {
-    console.warn('[auth] Encrypted backup save failed:', e);
-  }
-}
-
-async function fileLoadTokens(): Promise<AuthTokens | null> {
-  try {
-    const raw = await invoke<string | null>('secure_store_load', { key: FILE_BACKUP_KEY });
-    if (!raw) return null;
-    const decoded = JSON.parse(raw) as AuthTokens;
-    if (decoded.accessToken && decoded.refreshToken) return decoded;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function fileDeleteTokens(): Promise<void> {
-  try {
-    await invoke('secure_store_delete', { key: FILE_BACKUP_KEY });
-  } catch (e) {
-    console.warn('[auth] Encrypted backup delete failed:', e);
-  }
-}
 
 // ── Wire up apiClient token access ─────────────────────────────────────────
 
