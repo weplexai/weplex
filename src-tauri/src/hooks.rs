@@ -1,18 +1,7 @@
 /// Hook scripts generation and profile synchronization.
 
-/// Generate all hook scripts at ~/.weplex/hooks/.
-/// Each hook reads JSON from stdin (Claude Code hook protocol), resolves
-/// the Weplex session ID, and POSTs the event to the local hook server.
-pub fn ensure_hook_script() -> Result<(), String> {
-    let home = crate::utils::get_home();
-    let hooks_dir = format!("{}/.weplex/hooks", home);
-
-    std::fs::create_dir_all(&hooks_dir)
-        .map_err(|e| format!("Failed to create hooks dir: {}", e))?;
-
-    // Shared preamble: read stdin, resolve session ID, read hook-port + auth token.
-    // Uses jq for safe JSON parsing and construction (pre-installed on macOS).
-    let preamble = r#"#!/bin/bash
+/// Shared bash preamble for hooks that resolve session ID from session-map.
+const HOOK_PREAMBLE: &str = r#"#!/bin/bash
 # Weplex Hook — reads Claude Code hook JSON from stdin,
 # resolves Weplex session ID, POSTs event to local hook server.
 # Requires: jq, curl (both pre-installed on macOS).
@@ -46,159 +35,8 @@ TOKEN=""
 if [ -f "$TOKEN_FILE" ]; then TOKEN=$(cat "$TOKEN_FILE"); fi
 "#;
 
-    // ── PreToolUse hook ──
-    let pre_tool_script = format!(
-        r#"{}
-# Build safe JSON payload using jq
-PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "pre_tool_use" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
-  '{{
-    event_type: $evt,
-    session_id: ($sid | tonumber),
-    tool_name: (.tool_name // null),
-    file_path: (.file_path // null),
-    cwd: $cwd,
-    tool_input: ((.tool_input // "") | tostring | .[0:500])
-  }}' 2>/dev/null)
-
-if [ -z "$PAYLOAD" ]; then exit 0; fi
-
-curl -s -X POST "http://127.0.0.1:$PORT/hook" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "$PAYLOAD" \
-  --max-time 2 > /dev/null 2>&1
-
-exit 0
-"#,
-        preamble
-    );
-
-    // ── PostToolUse hook ──
-    let post_tool_script = format!(
-        r#"{}
-PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "post_tool_use" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
-  '{{
-    event_type: $evt,
-    session_id: ($sid | tonumber),
-    tool_name: (.tool_name // null),
-    file_path: (.file_path // null),
-    cwd: $cwd,
-    tool_output: ((.tool_output // "") | tostring | .[0:500])
-  }}' 2>/dev/null)
-
-if [ -z "$PAYLOAD" ]; then exit 0; fi
-
-curl -s -X POST "http://127.0.0.1:$PORT/hook" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "$PAYLOAD" \
-  --max-time 2 > /dev/null 2>&1
-
-exit 0
-"#,
-        preamble
-    );
-
-    // ── Stop hook ──
-    let stop_script = format!(
-        r#"{}
-PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "stop" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
-  '{{
-    event_type: $evt,
-    session_id: ($sid | tonumber),
-    cwd: $cwd
-  }}' 2>/dev/null)
-
-if [ -n "$PAYLOAD" ]; then
-  curl -s -X POST "http://127.0.0.1:$PORT/hook" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $TOKEN" \
-    -d "$PAYLOAD" \
-    --max-time 2 > /dev/null 2>&1
-fi
-
-# Check if running inside Weplex (WEPLEX_SESSION_ID set by PTY)
-# If not in Weplex, skip the notes check entirely
-if [ -z "$WEPLEX_SID" ]; then exit 0; fi
-
-# Check if Weplex hook server is reachable (port file exists)
-if [ ! -f "$PORT_FILE" ]; then exit 0; fi
-
-# Check if agent provided activity notes
-SUMMARY_FILE="$HOME/.weplex/summaries/${{WEPLEX_SID}}.json"
-if [ -f "$SUMMARY_FILE" ]; then
-  UPDATED_AT=$(jq -r '.updatedAt // 0' "$SUMMARY_FILE" 2>/dev/null || echo "0")
-  NOW=$(date +%s)
-  AGE=$(( NOW - UPDATED_AT ))
-  if [ "$AGE" -lt 300 ]; then exit 0; fi
-fi
-
-# Only request notes if deck_update_notes MCP tool is likely available
-# (Weplex MCP server must be registered and running)
-if [ ! -f "$HOME/.weplex/mcp-ready" ] && [ ! -S "$HOME/.weplex/ipc-global.sock" ]; then
-  exit 0
-fi
-
-echo "Please call the deck_update_notes tool to record what you accomplished before finishing." >&2
-exit 2
-"#,
-        preamble
-    );
-
-    // ── SubagentStart hook ──
-    let subagent_start_script = format!(
-        r#"{}
-PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "subagent_start" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
-  '{{
-    event_type: $evt,
-    session_id: ($sid | tonumber),
-    cwd: $cwd,
-    agent_type: (.agent_type // null),
-    agent_id: (.agent_id // null)
-  }}' 2>/dev/null)
-
-if [ -z "$PAYLOAD" ]; then exit 0; fi
-
-curl -s -X POST "http://127.0.0.1:$PORT/hook" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "$PAYLOAD" \
-  --max-time 2 > /dev/null 2>&1
-
-exit 0
-"#,
-        preamble
-    );
-
-    // ── SubagentStop hook ──
-    let subagent_stop_script = format!(
-        r#"{}
-PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "subagent_stop" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
-  '{{
-    event_type: $evt,
-    session_id: ($sid | tonumber),
-    cwd: $cwd,
-    agent_type: (.agent_type // null),
-    agent_id: (.agent_id // null)
-  }}' 2>/dev/null)
-
-if [ -z "$PAYLOAD" ]; then exit 0; fi
-
-curl -s -X POST "http://127.0.0.1:$PORT/hook" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d "$PAYLOAD" \
-  --max-time 2 > /dev/null 2>&1
-
-exit 0
-"#,
-        preamble
-    );
-
-    // ── SessionStart hook ──
-    // Unlike other hooks, SessionStart reads WEPLEX_SESSION_ID from env
-    // (set by PTY at spawn time) instead of session-map files.
-    let session_start_script = r#"#!/bin/bash
+/// SessionStart hook — standalone (reads WEPLEX_SESSION_ID from env, not session-map).
+const SESSION_START_SCRIPT: &str = r#"#!/bin/bash
 # Weplex Hook — SessionStart: captures Claude session ID and sends to Weplex.
 # Claude Code provides session_id (UUID) in stdin JSON at session start.
 # Weplex session ID comes from WEPLEX_SESSION_ID env var (set by PTY).
@@ -240,16 +78,89 @@ curl -s -X POST "http://127.0.0.1:$PORT/hook" \
   --max-time 2 > /dev/null 2>&1
 
 exit 0
-"#.to_string();
+"#;
 
-    // Write all scripts
+/// Extra bash appended to the stop hook (session notes prompt).
+const STOP_EXTRA: &str = r#"
+# Check if running inside Weplex (WEPLEX_SESSION_ID set by PTY)
+# If not in Weplex, skip the notes check entirely
+if [ -z "$WEPLEX_SID" ]; then exit 0; fi
+
+# Check if Weplex hook server is reachable (port file exists)
+if [ ! -f "$PORT_FILE" ]; then exit 0; fi
+
+# Check if agent provided activity notes
+SUMMARY_FILE="$HOME/.weplex/summaries/${WEPLEX_SID}.json"
+if [ -f "$SUMMARY_FILE" ]; then
+  UPDATED_AT=$(jq -r '.updatedAt // 0' "$SUMMARY_FILE" 2>/dev/null || echo "0")
+  NOW=$(date +%s)
+  AGE=$(( NOW - UPDATED_AT ))
+  if [ "$AGE" -lt 300 ]; then exit 0; fi
+fi
+
+# Only request notes if deck_update_notes MCP tool is likely available
+# (Weplex MCP server must be registered and running)
+if [ ! -f "$HOME/.weplex/mcp-ready" ] && [ ! -S "$HOME/.weplex/ipc-global.sock" ]; then
+  exit 0
+fi
+
+echo "Please call the deck_update_notes tool to record what you accomplished before finishing." >&2
+exit 2
+"#;
+
+/// Generate a hook script from template: preamble + jq payload + curl POST + optional extra bash.
+fn render_hook_script(event_type: &str, jq_fields: &str, extra_bash: &str) -> String {
+    format!(
+        r#"{preamble}
+PAYLOAD=$(echo "$INPUT" | jq -c --arg evt "{event}" --arg sid "$WEPLEX_SID" --arg cwd "$CWD_NORM" \
+  '{{
+    event_type: $evt,
+    session_id: ($sid | tonumber),
+    cwd: $cwd{fields}
+  }}' 2>/dev/null)
+
+if [ -z "$PAYLOAD" ]; then exit 0; fi
+
+curl -s -X POST "http://127.0.0.1:$PORT/hook" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "$PAYLOAD" \
+  --max-time 2 > /dev/null 2>&1
+{extra}
+exit 0
+"#,
+        preamble = HOOK_PREAMBLE,
+        event = event_type,
+        fields = jq_fields,
+        extra = extra_bash,
+    )
+}
+
+/// Generate all hook scripts at ~/.weplex/hooks/.
+pub fn ensure_hook_script() -> Result<(), String> {
+    let home = crate::utils::get_home();
+    let hooks_dir = format!("{}/.weplex/hooks", home);
+    std::fs::create_dir_all(&hooks_dir)
+        .map_err(|e| format!("Failed to create hooks dir: {}", e))?;
+
+    let tool_fields = ",\n    tool_name: (.tool_name // null),\n    file_path: (.file_path // null)";
+    let agent_fields = ",\n    agent_type: (.agent_type // null),\n    agent_id: (.agent_id // null)";
+
     let scripts = [
-        ("session-start.sh", session_start_script),
-        ("pre-tool-use.sh", pre_tool_script),
-        ("post-tool-use.sh", post_tool_script),
-        ("stop-hook.sh", stop_script),
-        ("subagent-start.sh", subagent_start_script),
-        ("subagent-stop.sh", subagent_stop_script),
+        ("session-start.sh", SESSION_START_SCRIPT.to_string()),
+        ("pre-tool-use.sh", render_hook_script(
+            "pre_tool_use",
+            &format!("{},\n    tool_input: ((.tool_input // \"\") | tostring | .[0:500])", tool_fields),
+            "",
+        )),
+        ("post-tool-use.sh", render_hook_script(
+            "post_tool_use",
+            &format!("{},\n    tool_output: ((.tool_output // \"\") | tostring | .[0:500])", tool_fields),
+            "",
+        )),
+        ("stop-hook.sh", render_hook_script("stop", "", STOP_EXTRA)),
+        ("subagent-start.sh", render_hook_script("subagent_start", agent_fields, "")),
+        ("subagent-stop.sh", render_hook_script("subagent_stop", agent_fields, "")),
     ];
 
     for (name, content) in &scripts {
@@ -260,8 +171,7 @@ exit 0
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o700);
-            std::fs::set_permissions(&path, perms)
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
                 .map_err(|e| format!("Failed to set permissions on {}: {}", name, e))?;
         }
     }
