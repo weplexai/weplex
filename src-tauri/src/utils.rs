@@ -45,18 +45,6 @@ pub fn sanitize_name(name: &str) -> Result<String, String> {
     Ok(sanitized)
 }
 
-/// Verify that a file path is within the expected directory (prevents path traversal).
-pub fn validate_path_within(file_path: &str, expected_dir: &str) -> Result<(), String> {
-    let canonical = std::fs::canonicalize(file_path)
-        .map_err(|_| format!("Path does not exist: {}", file_path))?;
-    let canonical_dir = std::fs::canonicalize(expected_dir)
-        .map_err(|_| format!("Directory does not exist: {}", expected_dir))?;
-    if !canonical.starts_with(&canonical_dir) {
-        return Err("Path traversal detected".to_string());
-    }
-    Ok(())
-}
-
 /// Validate that config_dir is an absolute path under $HOME.
 /// Resolves symlinks to prevent symlink attacks.
 pub fn validate_config_dir(config_dir: &str) -> Result<String, String> {

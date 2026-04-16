@@ -3,7 +3,7 @@
 //! Supports Chrome, Firefox, and Edge. Uses Chrome DevTools Protocol (CDP)
 //! for tab management, navigation, and extension access.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize)]
@@ -12,13 +12,6 @@ pub struct BrowserInfo {
     pub display_name: String,
     pub path: String,
     pub available: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BrowserTab {
-    pub id: String,
-    pub title: String,
-    pub url: String,
 }
 
 /// Detect installed browsers on macOS.

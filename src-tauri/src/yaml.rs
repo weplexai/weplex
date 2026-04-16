@@ -1,33 +1,4 @@
-/// YAML frontmatter utilities: escaping, list parsing.
-
-/// Escape a YAML string value: wrap in quotes if it contains special chars.
-pub fn yaml_escape(value: &str) -> String {
-    if value.is_empty() {
-        return "\"\"".to_string();
-    }
-    if value.contains(':')
-        || value.contains('#')
-        || value.contains('"')
-        || value.contains('\'')
-        || value.contains('\n')
-        || value.contains('\t')
-        || value.contains('{')
-        || value.contains('}')
-        || value.contains('[')
-        || value.contains(']')
-        || value.starts_with(' ')
-        || value.ends_with(' ')
-    {
-        // Use double-quoted YAML string, escape internal quotes, backslashes, and control chars
-        let escaped = value
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\t', "\\t");
-        return format!("\"{}\"", escaped);
-    }
-    value.to_string()
-}
+/// YAML frontmatter utilities: list parsing.
 
 /// Parse a YAML value that can be either:
 /// - Inline list: `[Read, Grep, Edit]` or `Read, Grep, Edit`
