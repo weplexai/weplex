@@ -233,7 +233,13 @@ fn handle_list_sessions(
     pty_manager: &Arc<Mutex<PtyManager>>,
     _app: &AppHandle,
 ) -> serde_json::Value {
-    let mgr = pty_manager.lock().unwrap_or_else(|p| p.into_inner());
+    let mgr = match pty_manager.lock() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+        }
+    };
     let ids = mgr.list_session_ids();
     let sessions: Vec<serde_json::Value> = ids
         .iter()
@@ -261,7 +267,13 @@ fn handle_create_session(
     static NEXT_MCP_SESSION_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(900_000);
     let session_id = NEXT_MCP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
 
-    let mut mgr = pty_manager.lock().unwrap_or_else(|p| p.into_inner());
+    let mut mgr = match pty_manager.lock() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+        }
+    };
     match mgr.create(session_id, 120, 40, command.clone(), cwd.clone(), None, app.clone()) {
         Ok(()) => {
             eprintln!("[weplex-ipc] created session {} via MCP (name: {}, cmd: {:?})", session_id, name, command);
@@ -295,7 +307,13 @@ fn handle_read_output(
 
     let last_n = params.get("last_n").and_then(|n| n.as_u64()).unwrap_or(50) as usize;
 
-    let mgr = pty_manager.lock().unwrap_or_else(|p| p.into_inner());
+    let mgr = match pty_manager.lock() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+        }
+    };
     match mgr.read_output(session_id, last_n) {
         Ok(lines) => serde_json::json!({
             "result": { "lines": lines, "count": lines.len() }
@@ -335,7 +353,13 @@ fn handle_send_input(
         });
     }
 
-    let mut mgr = pty_manager.lock().unwrap_or_else(|p| p.into_inner());
+    let mut mgr = match pty_manager.lock() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+        }
+    };
     match mgr.write(session_id, text) {
         Ok(()) => serde_json::json!({ "result": { "ok": true } }),
         Err(e) => serde_json::json!({

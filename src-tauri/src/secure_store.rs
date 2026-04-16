@@ -22,7 +22,7 @@ impl ring::hkdf::KeyType for HkdfLen {
 /// Derive a 256-bit encryption key from machine-specific data.
 /// Key = SHA-256(hostname + username + app_salt)
 /// This ties the encrypted file to this specific machine/user.
-fn derive_key() -> [u8; 32] {
+fn derive_key() -> Result<[u8; 32], String> {
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown-host".to_string());
@@ -38,16 +38,16 @@ fn derive_key() -> [u8; 32] {
     let prk = salt.extract(&ikm);
     let okm = prk
         .expand(&[b"weplex-token-encryption"], HkdfLen(32))
-        .expect("HKDF expand failed");
+        .map_err(|_| "HKDF expand failed")?;
     let mut key = [0u8; 32];
-    okm.fill(&mut key).expect("HKDF fill failed");
-    key
+    okm.fill(&mut key).map_err(|_| "HKDF fill failed")?;
+    Ok(key)
 }
 
 /// Encrypt plaintext with AES-256-GCM.
 /// Returns: nonce (12 bytes) || ciphertext (variable length)
 fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    let key = derive_key();
+    let key = derive_key()?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Cipher init: {}", e))?;
 
     // Generate random 96-bit nonce
@@ -77,7 +77,7 @@ fn decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
         return Err("Data too short for decryption".to_string());
     }
 
-    let key = derive_key();
+    let key = derive_key()?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("Cipher init: {}", e))?;
 
     let nonce = Nonce::from_slice(&data[..12]);

@@ -166,10 +166,12 @@ fn main() {
                 let state: tauri::State<AppState> = app.state();
                 let pty_arc = std::sync::Arc::clone(&state.pty_manager);
                 let app_handle = app.handle().clone();
-                let mut pool = state.ipc_pool.lock().unwrap_or_else(|p| p.into_inner());
-                match pool.start_global_socket(pty_arc, app_handle) {
-                    Ok(path) => eprintln!("[weplex] global MCP socket started: {}", path),
-                    Err(e) => eprintln!("[weplex] failed to start global MCP socket: {}", e),
+                match state.ipc_pool.lock() {
+                    Ok(mut pool) => match pool.start_global_socket(pty_arc, app_handle) {
+                        Ok(path) => eprintln!("[weplex] global MCP socket started: {}", path),
+                        Err(e) => eprintln!("[weplex] failed to start global MCP socket: {}", e),
+                    },
+                    Err(e) => eprintln!("[weplex] ipc_pool mutex poisoned on setup: {}", e),
                 }
             }
 
@@ -268,11 +270,10 @@ fn main() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 let state: State<AppState> = app.state();
-                let mut pool = state
-                    .ipc_pool
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                pool.cleanup_all();
+                match state.ipc_pool.lock() {
+                    Ok(mut pool) => pool.cleanup_all(),
+                    Err(e) => eprintln!("[weplex] ipc_pool mutex poisoned on exit: {}", e),
+                }
                 hook_server::cleanup_hook_files();
             }
         });

@@ -9,10 +9,15 @@ import { showNativeNotification } from '../utils/notifications';
 
 // ── Notification helpers ──────────────────────────────────────────────────
 
+/** Shared AudioContext — browsers limit to ~6 instances per document. */
+let sharedAudioCtx: AudioContext | null = null;
+
 /** Play a short subtle pop sound using Web Audio API. */
 function playNotificationSound(): void {
   try {
-    const ctx = new AudioContext();
+    if (!sharedAudioCtx) sharedAudioCtx = new AudioContext();
+    const ctx = sharedAudioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
