@@ -7,6 +7,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 
+// ── JSON-RPC helpers ──────────────────────────────────────────────────────
+
+fn rpc_ok(result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "result": result })
+}
+
+fn rpc_error(code: i32, message: impl std::fmt::Display) -> serde_json::Value {
+    serde_json::json!({ "error": { "code": code, "message": message.to_string() } })
+}
+
 // ── Socket pool ────────────────────────────────────────────────────────────
 
 struct RunSocket {
@@ -199,9 +209,7 @@ fn handle_global_connection(
         let request: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(e) => {
-                let resp = serde_json::json!({
-                    "error": { "code": -32700, "message": format!("Parse error: {}", e) }
-                });
+                let resp = rpc_error(-32700, format!("Parse error: {}", e));
                 let _ = writeln!(writer, "{}", resp);
                 let _ = writer.flush();
                 continue;
@@ -217,9 +225,7 @@ fn handle_global_connection(
             "read_output" => handle_read_output(&params, pty_manager),
             "send_input" => handle_send_input(&params, pty_manager),
             "get_context" => handle_get_context(app),
-            _ => serde_json::json!({
-                "error": { "code": -32601, "message": format!("Unknown method: {}", method) }
-            }),
+            _ => rpc_error(-32601, format!("Unknown method: {}", method)),
         };
 
         let _ = writeln!(writer, "{}", response);
@@ -237,7 +243,7 @@ fn handle_list_sessions(
         Ok(m) => m,
         Err(e) => {
             eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
-            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+            return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };
     let ids = mgr.list_session_ids();
@@ -271,7 +277,7 @@ fn handle_create_session(
         Ok(m) => m,
         Err(e) => {
             eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
-            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+            return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };
     match mgr.create(session_id, 120, 40, command.clone(), cwd.clone(), None, app.clone()) {
@@ -311,7 +317,7 @@ fn handle_read_output(
         Ok(m) => m,
         Err(e) => {
             eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
-            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+            return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };
     match mgr.read_output(session_id, last_n) {
@@ -357,11 +363,11 @@ fn handle_send_input(
         Ok(m) => m,
         Err(e) => {
             eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
-            return serde_json::json!({ "error": { "code": -32603, "message": "Internal error: mutex poisoned" } });
+            return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };
     match mgr.write(session_id, text) {
-        Ok(()) => serde_json::json!({ "result": { "ok": true } }),
+        Ok(()) => rpc_ok(serde_json::json!({ "ok": true })),
         Err(e) => serde_json::json!({
             "error": { "code": -32602, "message": format!("Session {}: {}", session_id, e) }
         }),
