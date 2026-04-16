@@ -51,173 +51,177 @@ function getOrCreateActivity(sessionId: number): SessionActivity {
   return activity;
 }
 
-function processEvent(event: HookEventPayload) {
-  lastEvent = event;
+// ── Event handlers (one per event type) ─────────────────────────────────────
 
-  const activity = getOrCreateActivity(event.session_id);
+function handleToolUse(event: HookEventPayload, activity: SessionActivity) {
+  const entry: ToolUseEntry = {
+    toolName: event.tool_name || 'unknown',
+    filePath: event.file_path || undefined,
+    timestamp: event.timestamp,
+    type: event.event_type === 'pre_tool_use' ? 'pre' : 'post',
+  };
 
-  if (event.event_type === 'pre_tool_use' || event.event_type === 'post_tool_use') {
-    const entry: ToolUseEntry = {
-      toolName: event.tool_name || 'unknown',
-      filePath: event.file_path || undefined,
-      timestamp: event.timestamp,
-      type: event.event_type === 'pre_tool_use' ? 'pre' : 'post',
-    };
+  if (event.event_type === 'post_tool_use') {
+    activity.totalToolCalls++;
+  }
 
-    // Only count on post (avoid double-counting)
+  const currentStatus = sessionStore.sessions.find((s) => s.id === event.session_id)?.status;
+  if (event.event_type === 'pre_tool_use' && (currentStatus === 'idle' || currentStatus === 'thinking')) {
+    sessionStore.updateStatus(event.session_id, 'active');
+  }
+
+  activity.toolUses.push(entry);
+  if (activity.toolUses.length > MAX_TOOL_USES) activity.toolUses.shift();
+
+  if (event.file_path && isFileModifyTool(event.tool_name)) {
+    if (!activity.filesTouched.includes(event.file_path)) {
+      activity.filesTouched.push(event.file_path);
+      if (activity.filesTouched.length > MAX_FILES_TOUCHED) activity.filesTouched.shift();
+    }
     if (event.event_type === 'post_tool_use') {
-      activity.totalToolCalls++;
+      trackFileEdit(event.file_path, event.session_id, event.timestamp);
     }
-
-    // Hook-driven status: agent is actively working when tools are being used
-    const currentStatus = sessionStore.sessions.find((s) => s.id === event.session_id)?.status;
-    if (event.event_type === 'pre_tool_use' && (currentStatus === 'idle' || currentStatus === 'thinking')) {
-      sessionStore.updateStatus(event.session_id, 'active');
-    }
-
-    // Add to recent tool uses (ring buffer)
-    activity.toolUses.push(entry);
-    if (activity.toolUses.length > MAX_TOOL_USES) {
-      activity.toolUses.shift();
-    }
-
-    // Track file touches (capped)
-    if (event.file_path && isFileModifyTool(event.tool_name)) {
-      if (!activity.filesTouched.includes(event.file_path)) {
-        activity.filesTouched.push(event.file_path);
-        if (activity.filesTouched.length > MAX_FILES_TOUCHED) {
-          activity.filesTouched.shift();
-        }
-      }
-
-      // Conflict detection: track which sessions touch which files
-      if (event.event_type === 'post_tool_use') {
-        trackFileEdit(event.file_path, event.session_id, event.timestamp);
-      }
-    }
-
-    // Trigger reactivity
-    activities = new Map(activities);
   }
 
-  if (event.event_type === 'stop') {
-    // Agent session finished — set to idle
-    sessionStore.updateStatus(event.session_id, 'idle');
+  activities = new Map(activities);
+}
 
-    // Parent session stopped — mark all running sub-agents as completed
-    const sessionSubs = subAgents.get(event.session_id);
-    if (sessionSubs) {
-      let changed = false;
-      for (const sub of sessionSubs) {
-        if (sub.status === 'running') {
-          sub.status = 'completed';
-          sub.finishedAt = event.timestamp;
-          changed = true;
-        }
+function handleStop(event: HookEventPayload) {
+  sessionStore.updateStatus(event.session_id, 'idle');
+
+  const sessionSubs = subAgents.get(event.session_id);
+  if (sessionSubs) {
+    let changed = false;
+    for (const sub of sessionSubs) {
+      if (sub.status === 'running') {
+        sub.status = 'completed';
+        sub.finishedAt = event.timestamp;
+        changed = true;
       }
-      if (changed) subAgents = new Map(subAgents);
     }
-    activities = new Map(activities);
+    if (changed) subAgents = new Map(subAgents);
+  }
+  activities = new Map(activities);
+}
+
+function handleSubagentStart(event: HookEventPayload) {
+  if (!event.agent_id) return;
+  const sessionSubs = subAgents.get(event.session_id) || [];
+  nativeSubagentSessions.add(event.session_id);
+
+  const parentStatus = sessionStore.sessions.find((s) => s.id === event.session_id)?.status;
+  if (parentStatus !== 'error') {
+    sessionStore.updateStatus(event.session_id, 'active');
   }
 
-  // ── Sub-agent tracking ──
-  // Uses SubagentStart/SubagentStop hooks as primary source.
-  // Falls back to PreToolUse(Agent) only if no native subagent events seen.
-
-  if (event.event_type === 'subagent_start' && event.agent_id) {
-    const sessionSubs = subAgents.get(event.session_id) || [];
-    // Mark session as having native subagent tracking
-    nativeSubagentSessions.add(event.session_id);
-    // Parent is active while sub-agents run (don't override error)
-    const parentStatus = sessionStore.sessions.find((s) => s.id === event.session_id)?.status;
-    if (parentStatus !== 'error') {
-      sessionStore.updateStatus(event.session_id, 'active');
+  const existing = sessionSubs.find((s) => s.agentId === event.agent_id);
+  if (existing) {
+    if (existing.agentType === 'unknown' && event.agent_type) {
+      existing.agentType = event.agent_type;
     }
-    // Check for existing entry (stop arrived before start — race condition fix)
-    const existing = sessionSubs.find((s) => s.agentId === event.agent_id);
-    if (existing) {
-      // Stop arrived first — just update the type if needed
-      if (existing.agentType === 'unknown' && event.agent_type) {
-        existing.agentType = event.agent_type;
-      }
-    } else {
-      sessionSubs.push({
-        agentId: event.agent_id,
-        agentType: event.agent_type || 'unknown',
-        sessionId: event.session_id,
-        startedAt: event.timestamp,
-        status: 'running',
-      });
-    }
-    capSubAgents(sessionSubs);
-    subAgents.set(event.session_id, sessionSubs);
-    subAgents = new Map(subAgents);
-  }
-
-  if (event.event_type === 'subagent_stop' && event.agent_id) {
-    nativeSubagentSessions.add(event.session_id);
-    const sessionSubs = subAgents.get(event.session_id) || [];
-
-    // Check if all sub-agents are done after this stop
-    const willBeRunning = sessionSubs.filter(
-      (s) => s.status === 'running' && s.agentId !== event.agent_id
-    );
-    if (willBeRunning.length === 0) {
-      // All sub-agents finished — parent goes back to active (processing results)
-      sessionStore.updateStatus(event.session_id, 'active');
-    }
-    const agent = sessionSubs.find((s) => s.agentId === event.agent_id);
-    if (agent) {
-      agent.finishedAt = event.timestamp;
-      agent.status = 'completed';
-    } else {
-      // Stop arrived before start — create completed entry
-      sessionSubs.push({
-        agentId: event.agent_id,
-        agentType: event.agent_type || 'unknown',
-        sessionId: event.session_id,
-        startedAt: event.timestamp,
-        finishedAt: event.timestamp,
-        status: 'completed',
-      });
-      capSubAgents(sessionSubs);
-    }
-    subAgents.set(event.session_id, sessionSubs);
-    subAgents = new Map(subAgents);
-  }
-
-  // Fallback: detect sub-agents from PreToolUse with tool_name="Agent"
-  // Only if this session hasn't received native SubagentStart/Stop events
-  if (event.tool_name === 'Agent' && event.event_type === 'pre_tool_use'
-      && !nativeSubagentSessions.has(event.session_id)) {
-    let agentType = 'Agent';
-    if (event.tool_input) {
-      try {
-        const input = JSON.parse(event.tool_input);
-        if (input.subagent_type) agentType = input.subagent_type;
-        else if (input.description) agentType = `Agent: ${input.description.slice(0, 30)}`;
-      } catch { /* ignore parse errors */ }
-    }
-    const sessionSubs = subAgents.get(event.session_id) || [];
+  } else {
     sessionSubs.push({
-      agentId: `tool-${event.timestamp}`,
-      agentType,
+      agentId: event.agent_id,
+      agentType: event.agent_type || 'unknown',
       sessionId: event.session_id,
       startedAt: event.timestamp,
       status: 'running',
     });
-    capSubAgents(sessionSubs);
-    subAgents.set(event.session_id, sessionSubs);
-    subAgents = new Map(subAgents);
+  }
+  capSubAgents(sessionSubs);
+  subAgents.set(event.session_id, sessionSubs);
+  subAgents = new Map(subAgents);
+}
+
+function handleSubagentStop(event: HookEventPayload) {
+  if (!event.agent_id) return;
+  nativeSubagentSessions.add(event.session_id);
+  const sessionSubs = subAgents.get(event.session_id) || [];
+
+  const willBeRunning = sessionSubs.filter(
+    (s) => s.status === 'running' && s.agentId !== event.agent_id,
+  );
+  if (willBeRunning.length === 0) {
+    sessionStore.updateStatus(event.session_id, 'active');
   }
 
-  // SessionStart: capture Claude session ID for --resume support
-  // Validate UUID format to prevent command injection (claudeSessionId is interpolated into shell command)
-  if (event.event_type === 'session_start' && event.claude_session_id) {
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-    if (UUID_RE.test(event.claude_session_id)) {
-      sessionStore.update(event.session_id, { claudeSessionId: event.claude_session_id });
-    }
+  const agent = sessionSubs.find((s) => s.agentId === event.agent_id);
+  if (agent) {
+    agent.finishedAt = event.timestamp;
+    agent.status = 'completed';
+  } else {
+    sessionSubs.push({
+      agentId: event.agent_id,
+      agentType: event.agent_type || 'unknown',
+      sessionId: event.session_id,
+      startedAt: event.timestamp,
+      finishedAt: event.timestamp,
+      status: 'completed',
+    });
+    capSubAgents(sessionSubs);
+  }
+  subAgents.set(event.session_id, sessionSubs);
+  subAgents = new Map(subAgents);
+}
+
+function handleAgentToolFallback(event: HookEventPayload) {
+  if (event.tool_name !== 'Agent' || event.event_type !== 'pre_tool_use') return;
+  if (nativeSubagentSessions.has(event.session_id)) return;
+
+  let agentType = 'Agent';
+  if (event.tool_input) {
+    try {
+      const input = JSON.parse(event.tool_input);
+      if (input.subagent_type) agentType = input.subagent_type;
+      else if (input.description) agentType = `Agent: ${input.description.slice(0, 30)}`;
+    } catch { /* ignore */ }
+  }
+
+  const sessionSubs = subAgents.get(event.session_id) || [];
+  sessionSubs.push({
+    agentId: `tool-${event.timestamp}`,
+    agentType,
+    sessionId: event.session_id,
+    startedAt: event.timestamp,
+    status: 'running',
+  });
+  capSubAgents(sessionSubs);
+  subAgents.set(event.session_id, sessionSubs);
+  subAgents = new Map(subAgents);
+}
+
+function handleSessionStart(event: HookEventPayload) {
+  if (!event.claude_session_id) return;
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  if (UUID_RE.test(event.claude_session_id)) {
+    sessionStore.update(event.session_id, { claudeSessionId: event.claude_session_id });
+  }
+}
+
+// ── Main event dispatcher ───────────────────────────────────────────────────
+
+function processEvent(event: HookEventPayload) {
+  lastEvent = event;
+  const activity = getOrCreateActivity(event.session_id);
+
+  switch (event.event_type) {
+    case 'pre_tool_use':
+    case 'post_tool_use':
+      handleToolUse(event, activity);
+      handleAgentToolFallback(event);
+      break;
+    case 'stop':
+      handleStop(event);
+      break;
+    case 'subagent_start':
+      handleSubagentStart(event);
+      break;
+    case 'subagent_stop':
+      handleSubagentStop(event);
+      break;
+    case 'session_start':
+      handleSessionStart(event);
+      break;
   }
 }
 
