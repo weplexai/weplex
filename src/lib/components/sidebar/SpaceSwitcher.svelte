@@ -76,22 +76,26 @@
     isDragging = false;
   }
 
-  // Close menu on click outside
+  // Close menu on click outside.
+  // Use AbortController instead of setTimeout(0) to avoid race between
+  // async listener attach and synchronous cleanup on re-run.
   $effect(() => {
     if (!showMenu) return;
-    function onClickOutside(e: MouseEvent) {
-      const target = e.target as HTMLElement;
-      if (!target.closest('.add-wrapper')) {
-        showMenu = false;
-      }
-    }
-    const timer = setTimeout(() => {
-      window.addEventListener('click', onClickOutside, { capture: true });
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener('click', onClickOutside, { capture: true });
-    };
+    const controller = new AbortController();
+    // Skip the current event loop tick so the click that opened the menu
+    // doesn't immediately close it.
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      window.addEventListener(
+        'click',
+        (e: MouseEvent) => {
+          const target = e.target as HTMLElement;
+          if (!target.closest('.add-wrapper')) showMenu = false;
+        },
+        { capture: true, signal: controller.signal },
+      );
+    });
+    return () => controller.abort();
   });
 
   function handleNewSession() {
