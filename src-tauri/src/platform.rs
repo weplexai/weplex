@@ -56,6 +56,14 @@ mod mac_utils {
     pub fn set_traffic_lights(app: &tauri::AppHandle, visible: bool) {
         if let Some(window) = app.get_webview_window("main") {
             if let Ok(ns_win) = window.ns_window() {
+                // SAFETY: The `ns_win` pointer is a live NSWindow* owned by Tauri's
+                // main thread webview. We only call Cocoa methods (`standardWindowButton:`
+                // and `setHidden:`) that are documented to be safe to call on an NSWindow
+                // from the main thread. `sel_registerName` with a null-terminated literal
+                // returns a valid selector. The `objc_msgSend` transmutes use the exact
+                // argument/return types specified by the Cocoa ABI for these selectors.
+                // No data escapes this scope; no aliasing. Null-button check prevents
+                // sending to a dangling pointer if the window style masks the button.
                 unsafe {
                     let ns_win = ns_win as *mut std::ffi::c_void;
                     let sel_button = sel_registerName(b"standardWindowButton:\0".as_ptr());

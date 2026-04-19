@@ -11,6 +11,7 @@ import {
   fileSaveTokens,
   fileLoadTokens,
   fileDeleteTokens,
+  LAST_USER_KEY,
 } from '../services/tokenPersistence';
 import { teamStore } from './teamStore.svelte';
 import { presenceStore } from './presenceStore.svelte';
@@ -32,11 +33,11 @@ initApiClient(
   (newTokens) => {
     tokens = newTokens;
     if (newTokens) {
-      keychainSaveTokens(newTokens).catch(console.error);
-      fileSaveTokens(newTokens).catch(console.error);
+      keychainSaveTokens(newTokens).catch((e) => console.warn('[auth] token save failed:', e));
+      fileSaveTokens(newTokens).catch((e) => console.warn('[auth] file save failed:', e));
     } else {
-      keychainDeleteTokens().catch(console.error);
-      fileDeleteTokens().catch(console.error);
+      keychainDeleteTokens().catch((e) => console.warn('[auth] token delete failed:', e));
+      fileDeleteTokens().catch((e) => console.warn('[auth] file delete failed:', e));
     }
   },
 );
@@ -73,7 +74,7 @@ export const authStore = {
       saved = await fileLoadTokens();
       if (saved) {
         await keychainSaveTokens(saved).catch(() => {});
-        console.log('[auth] Restored tokens from file backup');
+        if (import.meta.env.DEV) console.log('[auth] Restored tokens from file backup');
       }
     }
     if (!saved) return;
@@ -81,7 +82,7 @@ export const authStore = {
     // SECURITY: Verify loaded tokens belong to the last logged-in user.
     // Prevents cross-account contamination if tokens from another account
     // somehow ended up in keychain or encrypted file backup.
-    const lastEmail = localStorage.getItem('weplex_last_user_email');
+    const lastEmail = localStorage.getItem(LAST_USER_KEY);
     const tokenEmail = extractEmailFromJwt(saved.accessToken);
     if (lastEmail && tokenEmail && tokenEmail !== lastEmail) {
       console.warn(`[auth] Token mismatch: expected ${lastEmail}, got ${tokenEmail}. Discarding foreign tokens.`);
@@ -120,10 +121,11 @@ export const authStore = {
       chatStore.init();
       // Ensure file backup is in sync
       fileSaveTokens(tokens!).catch(() => {});
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Only clear tokens on confirmed auth failure (401)
       // Network errors, timeouts, server errors — keep tokens, retry later
-      const status = e?.status || e?.response?.status;
+      const err = e as { status?: number; response?: { status?: number } };
+      const status = err?.status || err?.response?.status;
       if (status === 401) {
         tokens = null;
         user = null;
@@ -163,7 +165,8 @@ export const authStore = {
           focusRetryCleanup();
           focusRetryCleanup = null;
         }
-      } catch (err: any) {
+      } catch (e: unknown) {
+        const err = e as { status?: number; response?: { status?: number } };
         const status = err?.status || err?.response?.status;
         if (status === 401) {
           // Confirmed auth failure — clean up

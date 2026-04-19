@@ -272,11 +272,20 @@ fn handle_update_notes(arguments: &Value, session_id: &str) -> Result<Value, Str
 
     let path = dir.join(format!("{}.json", session_id));
 
-    // Read existing file or start fresh
-    let mut payload: Value = if let Ok(content) = std::fs::read_to_string(&path) {
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
+    // Read existing file or start fresh. Log when existing data is corrupt
+    // (we recover by resetting, but the user should know we dropped notes).
+    let mut payload: Value = match std::fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "[weplex-mcp] session summary {} corrupt, resetting: {}",
+                    session_id, e
+                );
+                serde_json::json!({})
+            }
+        },
+        Err(_) => serde_json::json!({}),
     };
 
     // Ensure notes array exists and append (max 200 entries to prevent unbounded growth)

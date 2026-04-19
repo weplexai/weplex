@@ -88,7 +88,7 @@ pub fn list_plugins() -> Vec<PluginInfo> {
         let content = match std::fs::read_to_string(&manifest_path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[weplex] failed to read plugin manifest {:?}: {}", manifest_path, e);
+                log::warn!("failed to read plugin manifest {:?}: {}", manifest_path, e);
                 continue;
             }
         };
@@ -96,7 +96,7 @@ pub fn list_plugins() -> Vec<PluginInfo> {
         let manifest: PluginManifest = match serde_json::from_str(&content) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("[weplex] invalid plugin manifest {:?}: {}", manifest_path, e);
+                log::warn!("invalid plugin manifest {:?}: {}", manifest_path, e);
                 continue;
             }
         };
@@ -104,7 +104,29 @@ pub fn list_plugins() -> Vec<PluginInfo> {
         // Check if active (activation state stored in config)
         let active = is_plugin_active(&manifest.id);
 
-        let entry_path = path.join(&manifest.entry).to_string_lossy().to_string();
+        // Canonicalize entry path and ensure it stays inside the plugin directory.
+        // This prevents a malicious manifest like `"entry": "../../etc/passwd"`
+        // from escaping the plugin sandbox.
+        let raw_entry = path.join(&manifest.entry);
+        let canonical_entry = match std::fs::canonicalize(&raw_entry) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("plugin entry path invalid {:?}: {}", raw_entry, e);
+                continue;
+            }
+        };
+        let canonical_plugin_dir = match std::fs::canonicalize(&path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !canonical_entry.starts_with(&canonical_plugin_dir) {
+            log::warn!(
+                "plugin entry escapes plugin dir: {:?} -> {:?}",
+                manifest.id, canonical_entry
+            );
+            continue;
+        }
+        let entry_path = canonical_entry.to_string_lossy().to_string();
 
         plugins.push(PluginInfo {
             manifest,

@@ -139,7 +139,7 @@ fn global_socket_listener(
     let listener = match UnixListener::bind(&socket_path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[weplex-ipc] failed to bind global socket: {}", e);
+            log::error!("IPC failed to bind global socket: {}", e);
             return;
         }
     };
@@ -152,9 +152,9 @@ fn global_socket_listener(
 
     listener
         .set_nonblocking(true)
-        .unwrap_or_else(|e| eprintln!("[weplex-ipc] non-blocking error: {}", e));
+        .unwrap_or_else(|e| log::warn!("IPC non-blocking error: {}", e));
 
-    eprintln!("[weplex-ipc] global socket listening on {:?}", socket_path);
+    log::info!("IPC global socket listening on {:?}", socket_path);
 
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -172,7 +172,7 @@ fn global_socket_listener(
             }
             Err(e) => {
                 if !shutdown.load(Ordering::Relaxed) {
-                    eprintln!("[weplex-ipc] global accept error: {}", e);
+                    log::error!("IPC global accept error: {}", e);
                 }
                 break;
             }
@@ -180,7 +180,7 @@ fn global_socket_listener(
     }
 
     let _ = std::fs::remove_file(&socket_path);
-    eprintln!("[weplex-ipc] global socket stopped");
+    log::info!("IPC global socket stopped");
 }
 
 fn handle_global_connection(
@@ -242,7 +242,7 @@ fn handle_list_sessions(
     let mgr = match pty_manager.lock() {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            log::error!("IPC pty_manager mutex poisoned: {}", e);
             return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };
@@ -269,20 +269,28 @@ fn handle_create_session(
     let cwd = params.get("cwd").and_then(|c| c.as_str()).map(|s| s.to_string());
     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("mcp-session");
 
-    // Generate a unique session ID using atomic counter (avoids collision)
+    // Generate a unique session ID using atomic counter (avoids collision).
+    // Starts at 900_000 to leave room for frontend session IDs below that range.
+    // Guard against overflow: u32::MAX / 2 sessions would be ~2.1B — practically
+    // unreachable in a single process lifetime, but we check to fail loudly
+    // rather than silently wrap and collide with old IDs.
     static NEXT_MCP_SESSION_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(900_000);
+    const MAX_MCP_SESSION_ID: u32 = u32::MAX - 1;
     let session_id = NEXT_MCP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+    if session_id >= MAX_MCP_SESSION_ID {
+        return rpc_error(-32603, "Session ID counter exhausted; restart required");
+    }
 
     let mut mgr = match pty_manager.lock() {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            log::error!("IPC pty_manager mutex poisoned: {}", e);
             return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };
     match mgr.create(session_id, 120, 40, command.clone(), cwd.clone(), None, app.clone()) {
         Ok(()) => {
-            eprintln!("[weplex-ipc] created session {} via MCP (name: {}, cmd: {:?})", session_id, name, command);
+            log::debug!("IPC created session {} via MCP (name: {}, cmd: {:?})", session_id, name, command);
             serde_json::json!({
                 "result": {
                     "session_id": session_id,
@@ -316,7 +324,7 @@ fn handle_read_output(
     let mgr = match pty_manager.lock() {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            log::error!("IPC pty_manager mutex poisoned: {}", e);
             return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };
@@ -362,7 +370,7 @@ fn handle_send_input(
     let mut mgr = match pty_manager.lock() {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("[weplex-ipc] pty_manager mutex poisoned: {}", e);
+            log::error!("IPC pty_manager mutex poisoned: {}", e);
             return rpc_error(-32603, "Internal error: mutex poisoned");
         }
     };

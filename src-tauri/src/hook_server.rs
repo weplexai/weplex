@@ -108,7 +108,7 @@ pub fn start_hook_server(app_handle: tauri::AppHandle) -> Result<u16, String> {
     let server = Arc::new(server);
     let expected_token = format!("Bearer {}", token);
 
-    eprintln!("[weplex] hook server listening on 127.0.0.1:{}", port);
+    log::info!("hook server listening on 127.0.0.1:{}", port);
 
     // Spawn listener thread
     let app = app_handle.clone();
@@ -125,6 +125,14 @@ fn write_hook_files(port: u16, token: &str) -> Result<(), String> {
     let weplex_dir = format!("{}/.weplex", home);
     std::fs::create_dir_all(&weplex_dir)
         .map_err(|e| format!("Failed to create ~/.weplex: {}", e))?;
+
+    // Harden directory permissions (owner-only) so other local users
+    // cannot list files inside, even if umask is permissive.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&weplex_dir, std::fs::Permissions::from_mode(0o700));
+    }
 
     let port_path = format!("{}/hook-port", weplex_dir);
     let token_path = format!("{}/hook-token", weplex_dir);
@@ -220,8 +228,8 @@ fn run_hook_server(server: Arc<tiny_http::Server>, app: tauri::AppHandle, expect
                         .as_millis() as u64,
                 };
 
-                eprintln!(
-                    "[weplex] hook event: {:?} session={} tool={:?}",
+                log::debug!(
+                    "hook event: {:?} session={} tool={:?}",
                     event.event_type, event.session_id, event.tool_name
                 );
 
@@ -233,7 +241,7 @@ fn run_hook_server(server: Arc<tiny_http::Server>, app: tauri::AppHandle, expect
                 let _ = request.respond(response);
             }
             Err(e) => {
-                eprintln!("[weplex] invalid hook payload: {}", e);
+                log::warn!("invalid hook payload: {}", e);
                 let response = tiny_http::Response::from_string(format!("Invalid JSON: {}", e))
                     .with_status_code(400);
                 let _ = request.respond(response);

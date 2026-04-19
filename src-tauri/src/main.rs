@@ -27,6 +27,7 @@ mod store;
 mod utils;
 mod yaml;
 
+use log::{info, error};
 use pty_manager::PtyManager;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -78,12 +79,23 @@ fn kill_pty(state: State<AppState>, session_id: u32) -> Result<(), String> {
     manager.kill(session_id).map_err(|e| e.to_string())
 }
 
-/// Clean all session-map files on startup (stale from previous runs).
+/// Clean stale session-map files on startup.
+///
+/// Only removes files older than 1 hour to avoid racing with `write_session_map`
+/// that may run concurrently on the main thread when the frontend boots up
+/// immediately and starts creating sessions before this background task fires.
 fn clean_session_map() -> Result<(), String> {
     let home = utils::get_home();
     let map_dir = format!("{}/.weplex/session-map", home);
-    if let Ok(entries) = std::fs::read_dir(&map_dir) {
-        for entry in entries.flatten() {
+    let Ok(entries) = std::fs::read_dir(&map_dir) else {
+        return Ok(());
+    };
+    let now = std::time::SystemTime::now();
+    let one_hour = std::time::Duration::from_secs(3600);
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        if now.duration_since(modified).unwrap_or_default() > one_hour {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -148,6 +160,9 @@ fn browser_launch(browser: String, url: String) -> Result<serde_json::Value, Str
 // ── Application entry point ───────────────────────────────────────────────
 
 fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("weplex=info"))
+        .init();
+
     tauri::Builder::default()
         .manage(AppState {
             pty_manager: std::sync::Arc::new(Mutex::new(PtyManager::new())),
@@ -168,18 +183,18 @@ fn main() {
                 let app_handle = app.handle().clone();
                 match state.ipc_pool.lock() {
                     Ok(mut pool) => match pool.start_global_socket(pty_arc, app_handle) {
-                        Ok(path) => eprintln!("[weplex] global MCP socket started: {}", path),
-                        Err(e) => eprintln!("[weplex] failed to start global MCP socket: {}", e),
+                        Ok(path) => info!("global MCP socket started: {}", path),
+                        Err(e) => error!("failed to start global MCP socket: {}", e),
                     },
-                    Err(e) => eprintln!("[weplex] ipc_pool mutex poisoned on setup: {}", e),
+                    Err(e) => error!("ipc_pool mutex poisoned on setup: {}", e),
                 }
             }
 
             // Start hook event listener (must be before hook registration)
             let hook_handle = app.handle().clone();
             match hook_server::start_hook_server(hook_handle) {
-                Ok(port) => eprintln!("[weplex] hook server started on port {}", port),
-                Err(e) => eprintln!("[weplex] failed to start hook server: {}", e),
+                Ok(port) => info!("hook server started on port {}", port),
+                Err(e) => error!("failed to start hook server: {}", e),
             }
 
             // Register MCP server, generate hook scripts and source.
@@ -272,7 +287,7 @@ fn main() {
                 let state: State<AppState> = app.state();
                 match state.ipc_pool.lock() {
                     Ok(mut pool) => pool.cleanup_all(),
-                    Err(e) => eprintln!("[weplex] ipc_pool mutex poisoned on exit: {}", e),
+                    Err(e) => error!("ipc_pool mutex poisoned on exit: {}", e),
                 }
                 hook_server::cleanup_hook_files();
             }

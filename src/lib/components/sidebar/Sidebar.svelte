@@ -129,19 +129,30 @@
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
 
+  // Throttle resize to one store update per animation frame (~60fps)
+  let pendingResizeWidth: number | null = null;
+  let resizeRaf: number | null = null;
+
   function handleResizeMove(e: PointerEvent) {
     if (!isResizing) return;
     const delta = e.clientX - resizeStartX;
-    const newWidth = resizeStartWidth + delta;
+    pendingResizeWidth = resizeStartWidth + delta;
 
-    if (newWidth < uiStore.MIN_WIDTH) {
-      // Below minimum — hide sidebar
-      uiStore.hideSidebar();
-      isResizing = false;
-    } else {
-      if (uiStore.sidebarHidden) uiStore.showSidebar();
-      uiStore.setSidebarWidth(newWidth);
-    }
+    if (resizeRaf !== null) return;
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = null;
+      if (pendingResizeWidth === null || !isResizing) return;
+      const newWidth = pendingResizeWidth;
+      pendingResizeWidth = null;
+
+      if (newWidth < uiStore.MIN_WIDTH) {
+        uiStore.hideSidebar();
+        isResizing = false;
+      } else {
+        if (uiStore.sidebarHidden) uiStore.showSidebar();
+        uiStore.setSidebarWidth(newWidth);
+      }
+    });
   }
 
   function handleResizeEnd() {

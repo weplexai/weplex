@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 const KEYCHAIN_KEY = 'auth_tokens';
 const FILE_BACKUP_KEY = 'weplex_auth_tokens';
-const LAST_USER_KEY = 'weplex_last_user_email';
+export const LAST_USER_KEY = 'weplex_last_user_email';
 
 /** Extract email from JWT access token without verification (client-side check only). */
 export function extractEmailFromJwt(token: string): string | null {
