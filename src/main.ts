@@ -1,7 +1,14 @@
 import { recoverStores, STORE_KEYS } from './lib/utils/durablePersist';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { initAnalytics } from './lib/services/analytics';
+import { featureFlags } from './lib/stores/featureFlagsStore.svelte';
 
 async function init() {
+  // PostHog: init early so feature flags load in parallel with other startup work
+  initAnalytics();
+  // Don't await — flags resolve asynchronously and UI reacts via the store
+  featureFlags.bootstrap();
+
   // Recover stores from file backup before loading any Svelte stores
   await recoverStores();
 

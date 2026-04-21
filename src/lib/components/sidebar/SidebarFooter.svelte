@@ -2,6 +2,7 @@
   import { Layers, Settings, User } from 'lucide-svelte';
   import { uiStore } from '../../stores/uiStore';
   import { authStore } from '../../stores/authStore.svelte';
+  import { featureFlags } from '../../stores/featureFlagsStore.svelte';
 
   function openAccount() {
     uiStore.enterHubMode('account');
@@ -10,13 +11,15 @@
 
 <div class="footer">
   <div class="footer-actions">
-    <button
-      class="icon-btn"
-      title="Resources (⌘⇧A)"
-      onclick={() => uiStore.enterHubMode('resources')}
-    >
-      <Layers size={15} />
-    </button>
+    {#if featureFlags.resources}
+      <button
+        class="icon-btn"
+        title="Resources (⌘⇧A)"
+        onclick={() => uiStore.enterHubMode('resources')}
+      >
+        <Layers size={15} />
+      </button>
+    {/if}
     <button class="icon-btn" title="Settings (⌘,)" onclick={() => uiStore.enterHubMode('settings')}>
       <Settings size={15} />
     </button>

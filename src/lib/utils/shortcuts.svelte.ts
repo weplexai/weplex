@@ -3,6 +3,7 @@ import { sessionStore } from '../stores/sessionStore';
 import { spaceStore } from '../stores/spaceStore';
 import { uiStore } from '../stores/uiStore';
 import { splitStore } from '../stores/splitStore';
+import { featureFlags } from '../stores/featureFlagsStore.svelte';
 
 interface Shortcut {
   key: string;
@@ -53,7 +54,9 @@ const shortcuts: Shortcut[] = [
     key: 'a',
     meta: true,
     shift: true,
-    action: () => uiStore.enterHubMode('resources'),
+    action: () => {
+      if (featureFlags.resources) uiStore.enterHubMode('resources');
+    },
     label: 'Resources',
     category: 'navigation',
   },

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { uiStore } from '../../stores/uiStore';
+  import { featureFlags } from '../../stores/featureFlagsStore.svelte';
   import { invoke } from '@tauri-apps/api/core';
   import {
     Bot,
@@ -77,13 +78,16 @@
     invoke('set_traffic_lights_visible', { visible: true }).catch(() => {});
   });
 
-  // Primary sections (features)
-  const mainSections: { id: HubSection; label: string; icon: typeof Bot }[] = [
-    { id: 'resources', label: 'Resources', icon: Bot },
-    { id: 'commands', label: 'Commands', icon: Zap },
-    { id: 'marketplace', label: 'Marketplace', icon: Store },
-    { id: 'spaces', label: 'Spaces', icon: LayoutGrid },
-  ];
+  // Primary sections (features). Resources/Commands/Marketplace are gated
+  // behind feature flags — hidden for alpha until each feature is ready.
+  const mainSections = $derived(
+    [
+      featureFlags.resources ? { id: 'resources' as HubSection, label: 'Resources', icon: Bot } : null,
+      featureFlags.commands ? { id: 'commands' as HubSection, label: 'Commands', icon: Zap } : null,
+      featureFlags.marketplace ? { id: 'marketplace' as HubSection, label: 'Marketplace', icon: Store } : null,
+      { id: 'spaces' as HubSection, label: 'Spaces', icon: LayoutGrid },
+    ].filter((s): s is { id: HubSection; label: string; icon: typeof Bot } => s !== null),
+  );
 
   // Utility sections
   const utilSections: { id: HubSection; label: string; icon: typeof Bot }[] = [

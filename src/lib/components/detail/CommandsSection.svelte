@@ -6,6 +6,7 @@
   import { commandStore, type Command } from '../../stores/commandStore.svelte';
   import { sessionStore } from '../../stores/sessionStore.svelte';
   import { contextInjectionStore } from '../../stores/contextInjectionStore.svelte';
+  import { featureFlags } from '../../stores/featureFlagsStore.svelte';
   import type { Session } from '../../types';
 
   let { session }: { session: Session } = $props();
@@ -53,44 +54,46 @@
   {/if}
 </section>
 
-<!-- User Commands -->
-{#if commands.user.length > 0}
-  <section class="section">
-    <h3 class="section-title">Commands</h3>
-    <div class="cmd-list">
-      {#each commands.user as cmd (cmd.name)}
-        <button class="cmd-btn" class:disabled={isBusy || executing} onclick={() => execute(cmd)}>
-          <span class="cmd-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">{cmd.icon}</span>
-          <span class="cmd-name">{cmd.name}</span>
-          <span class="cmd-slash">/{cmd.name}</span>
-        </button>
-      {/each}
-    </div>
-  </section>
-{/if}
+{#if featureFlags.commands}
+  <!-- User Commands -->
+  {#if commands.user.length > 0}
+    <section class="section">
+      <h3 class="section-title">Commands</h3>
+      <div class="cmd-list">
+        {#each commands.user as cmd (cmd.name)}
+          <button class="cmd-btn" class:disabled={isBusy || executing} onclick={() => execute(cmd)}>
+            <span class="cmd-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">{cmd.icon}</span>
+            <span class="cmd-name">{cmd.name}</span>
+            <span class="cmd-slash">/{cmd.name}</span>
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
-<!-- Project Commands -->
-{#if commands.project.length > 0}
-  <div class="divider"></div>
-  <section class="section">
-    <h3 class="section-title">Project Commands</h3>
-    <div class="cmd-list">
-      {#each commands.project as cmd (cmd.name)}
-        <button class="cmd-btn" class:disabled={isBusy || executing} onclick={() => execute(cmd)}>
-          <span class="cmd-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">{cmd.icon}</span>
-          <span class="cmd-name">{cmd.name}</span>
-          <span class="cmd-slash">/{cmd.name}</span>
-        </button>
-      {/each}
-    </div>
-  </section>
-{/if}
+  <!-- Project Commands -->
+  {#if commands.project.length > 0}
+    <div class="divider"></div>
+    <section class="section">
+      <h3 class="section-title">Project Commands</h3>
+      <div class="cmd-list">
+        {#each commands.project as cmd (cmd.name)}
+          <button class="cmd-btn" class:disabled={isBusy || executing} onclick={() => execute(cmd)}>
+            <span class="cmd-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">{cmd.icon}</span>
+            <span class="cmd-name">{cmd.name}</span>
+            <span class="cmd-slash">/{cmd.name}</span>
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
-{#if commands.user.length === 0 && commands.project.length === 0}
-  <section class="section">
-    <h3 class="section-title">Commands</h3>
-    <p class="empty-hint">No commands found. Create them in Hub or add .md files to ~/.claude/commands/</p>
-  </section>
+  {#if commands.user.length === 0 && commands.project.length === 0}
+    <section class="section">
+      <h3 class="section-title">Commands</h3>
+      <p class="empty-hint">No commands found. Create them in Hub or add .md files to ~/.claude/commands/</p>
+    </section>
+  {/if}
 {/if}
 
 <style>

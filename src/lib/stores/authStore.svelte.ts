@@ -17,6 +17,8 @@ import { teamStore } from './teamStore.svelte';
 import { presenceStore } from './presenceStore.svelte';
 import { chatStore } from './chatStore.svelte';
 import { wsService } from '../services/wsService';
+import { identifyUser, resetAnalytics, capture } from '../services/analytics';
+import { featureFlags } from './featureFlagsStore.svelte';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -113,6 +115,11 @@ export const authStore = {
         }
         saveLastUserEmail(user.email);
       }
+      // Re-identify for analytics (app relaunch with saved session)
+      if (user?.id) {
+        identifyUser(user.id, user.email);
+        featureFlags.bootstrap();
+      }
       // Pull remote settings silently after login
       syncService.pull().catch((e) => console.warn('[Weplex] Settings sync failed after init:', e));
       // Initialize team collaboration after auth
@@ -204,6 +211,11 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       if (user?.email) saveLastUserEmail(user.email);
+      if (user?.id) {
+        identifyUser(user.id, user.email);
+        capture('user_logged_in', { method: 'email' });
+        featureFlags.bootstrap();
+      }
       await keychainSaveTokens(tokens);
       await fileSaveTokens(tokens);
       syncService
@@ -229,6 +241,11 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       if (user?.email) saveLastUserEmail(user.email);
+      if (user?.id) {
+        identifyUser(user.id, user.email);
+        capture('user_registered', { method: 'email' });
+        featureFlags.bootstrap();
+      }
       await keychainSaveTokens(tokens);
       await fileSaveTokens(tokens);
     } catch (e) {
@@ -272,6 +289,11 @@ export const authStore = {
       tokens = { accessToken: res.accessToken, refreshToken: res.refreshToken };
       user = res.user;
       if (user?.email) saveLastUserEmail(user.email);
+      if (user?.id) {
+        identifyUser(user.id, user.email);
+        capture('user_logged_in', { method: provider });
+        featureFlags.bootstrap();
+      }
       await keychainSaveTokens(tokens);
       await fileSaveTokens(tokens);
       syncService
@@ -301,6 +323,7 @@ export const authStore = {
   },
 
   async logout(): Promise<void> {
+    capture('user_logged_out');
     try {
       await authService.logout();
     } catch {
@@ -311,6 +334,7 @@ export const authStore = {
     presenceStore.reset();
     chatStore.reset();
     wsService.disconnect();
+    resetAnalytics();
 
     // Clean up any pending retry listener
     if (focusRetryCleanup) {

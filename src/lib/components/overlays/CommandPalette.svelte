@@ -2,6 +2,7 @@
   import { sessionStore } from '../../stores/sessionStore';
   import { spaceStore } from '../../stores/spaceStore';
   import { uiStore } from '../../stores/uiStore';
+  import { featureFlags } from '../../stores/featureFlagsStore.svelte';
   import { shortcuts, getShortcutHint } from '../../utils/shortcuts';
   import { Modal } from '../ui';
 
@@ -83,25 +84,33 @@
             uiStore.closeOverlay();
           },
         },
-        {
-          id: 'resources',
-          label: 'Resources',
-          hint: '⇧⌘A',
-          category: 'Actions',
-          action: () => {
-            uiStore.closeOverlay();
-            uiStore.enterHubMode('resources');
-          },
-        },
-        {
-          id: 'marketplace',
-          label: 'Marketplace',
-          category: 'Actions',
-          action: () => {
-            uiStore.closeOverlay();
-            uiStore.enterHubMode('marketplace');
-          },
-        },
+        ...(featureFlags.resources
+          ? [
+              {
+                id: 'resources',
+                label: 'Resources',
+                hint: '⇧⌘A',
+                category: 'Actions',
+                action: () => {
+                  uiStore.closeOverlay();
+                  uiStore.enterHubMode('resources');
+                },
+              },
+            ]
+          : []),
+        ...(featureFlags.marketplace
+          ? [
+              {
+                id: 'marketplace',
+                label: 'Marketplace',
+                category: 'Actions',
+                action: () => {
+                  uiStore.closeOverlay();
+                  uiStore.enterHubMode('marketplace');
+                },
+              },
+            ]
+          : []),
         {
           id: 'new-project-dashboard',
           label: 'New Project Dashboard',

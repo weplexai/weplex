@@ -7,6 +7,7 @@
   import { folderStore } from '../../stores/folderStore';
   import { uiStore } from '../../stores/uiStore';
   import { dragStore } from '../../stores/dragStore';
+  import { featureFlags } from '../../stores/featureFlagsStore.svelte';
   import { Plus, X, User, Settings, Download, RotateCw, MessageSquare } from 'lucide-svelte';
   import { authStore } from '../../stores/authStore.svelte';
   import { wsService } from '../../services/wsService';
@@ -338,8 +339,12 @@
         <!-- Hub preview slide (visible during swipe, triggers hub mode) -->
         <div class="slider-slide hub-preview-slide">
           <div class="hub-preview-nav">
-            <div class="hub-preview-item">Agents</div>
-            <div class="hub-preview-item">Marketplace</div>
+            {#if featureFlags.resources}
+              <div class="hub-preview-item">Agents</div>
+            {/if}
+            {#if featureFlags.marketplace}
+              <div class="hub-preview-item">Marketplace</div>
+            {/if}
             <div class="hub-preview-item">Spaces</div>
             <div class="hub-preview-divider"></div>
             <div class="hub-preview-item">Settings</div>

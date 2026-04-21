@@ -1,5 +1,6 @@
 <script lang="ts">
   import { uiStore } from '../../stores/uiStore';
+  import { featureFlags } from '../../stores/featureFlagsStore.svelte';
   import {
     Bot,
     Store,
@@ -39,11 +40,11 @@
 <div class="hub-content" class:exiting={uiStore.hubExiting}>
   {#key slideKey}
     <div class="hub-section-view">
-      {#if uiStore.hubSection === 'resources'}
+      {#if uiStore.hubSection === 'resources' && featureFlags.resources}
         <HubResources />
-      {:else if uiStore.hubSection === 'commands'}
+      {:else if uiStore.hubSection === 'commands' && featureFlags.commands}
         <HubCommands />
-      {:else if uiStore.hubSection === 'marketplace'}
+      {:else if uiStore.hubSection === 'marketplace' && featureFlags.marketplace}
         <MarketplacePanel />
       {:else if uiStore.hubSection === 'settings'}
         <SettingsPanel />
