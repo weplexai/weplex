@@ -15,9 +15,26 @@
     restartToUpdate,
   } from '../../utils/updater';
   import type { DiscoveredProfile } from '../../types';
+  import {
+    isAnalyticsOptedOut,
+    optInAnalytics,
+    optOutAnalytics,
+  } from '../../services/analytics';
 
   let appVersion = $state('');
   getVersion().then((v) => (appVersion = v));
+
+  let analyticsOptOut = $state(isAnalyticsOptedOut());
+
+  function toggleAnalytics(shareEnabled: boolean) {
+    if (shareEnabled) {
+      optInAnalytics();
+      analyticsOptOut = false;
+    } else {
+      optOutAnalytics();
+      analyticsOptOut = true;
+    }
+  }
 
   let updateChecking = $state(false);
   async function handleCheckUpdates() {
@@ -109,6 +126,7 @@
     { id: 'profiles', label: 'Profiles' },
     { id: 'team', label: 'Team' },
     { id: 'sessions', label: 'Sessions' },
+    { id: 'privacy', label: 'Privacy' },
     { id: 'about', label: 'About' },
   ];
 
@@ -347,6 +365,24 @@
               settingsStore.update({ persistSessions: (e.target as HTMLInputElement).checked })}
           />
         </div>
+      {:else if activeTab === 'privacy'}
+        <h3 class="section-title">Privacy</h3>
+        <div class="setting">
+          <label class="setting-label" for="set-analytics">Share usage data</label>
+          <input
+            id="set-analytics"
+            type="checkbox"
+            checked={!analyticsOptOut}
+            onchange={(e) => toggleAnalytics((e.target as HTMLInputElement).checked)}
+          />
+        </div>
+        <p class="about-text muted" style="margin-top: 4px; font-size: 12px;">
+          When on, Weplex sends anonymous login/logout events and your
+          account ID to PostHog so we can measure usage and roll out
+          features gradually. No code, terminal output, or prompts are
+          sent.
+          <a href="https://weplex.ai/privacy" target="_blank" rel="noopener">Details</a>
+        </p>
       {:else if activeTab === 'about'}
         <h3 class="section-title">About</h3>
         <p class="about-text"><strong>Weplex</strong> v{appVersion}</p>

@@ -13,6 +13,13 @@ import posthog from 'posthog-js';
 const POSTHOG_KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
 const POSTHOG_HOST = (import.meta.env.VITE_POSTHOG_HOST as string) || 'https://us.i.posthog.com';
 
+/**
+ * localStorage key for the user's opt-out choice. Persisted outside PostHog
+ * so we can honor it before the SDK even initializes (first load after
+ * toggle, no race with SDK bootstrap).
+ */
+const OPT_OUT_KEY = 'weplex_analytics_opt_out';
+
 export type FeatureFlag =
   | 'feature_marketplace'
   | 'feature_commands'
@@ -22,6 +29,14 @@ let initialized = false;
 let enabled = false;
 let bootstrapPromise: Promise<void> | null = null;
 let flagsReady = false;
+
+function isOptedOut(): boolean {
+  try {
+    return localStorage.getItem(OPT_OUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 /** Initialize PostHog. Safe to call multiple times — second call is a no-op. */
 export function initAnalytics(): void {
@@ -43,6 +58,9 @@ export function initAnalytics(): void {
       capture_pageleave: false,
       disable_session_recording: true,
       persistence: 'localStorage',
+      // If user previously opted out, start the SDK in opted-out state so
+      // nothing fires between init() and the loaded callback.
+      opt_out_capturing_by_default: isOptedOut(),
       loaded: () => {
         flagsReady = true;
       },
@@ -50,6 +68,45 @@ export function initAnalytics(): void {
     enabled = true;
   } catch (e) {
     console.warn('[analytics] PostHog init failed:', e);
+  }
+}
+
+/** User's current analytics preference. True = data collection is OFF. */
+export function isAnalyticsOptedOut(): boolean {
+  return isOptedOut();
+}
+
+/**
+ * Turn analytics off: persist the choice, tell PostHog to stop capturing,
+ * and clear the stored distinct ID so no identifier survives.
+ */
+export function optOutAnalytics(): void {
+  try {
+    localStorage.setItem(OPT_OUT_KEY, '1');
+  } catch {
+    // ignore — the SDK call below is still the primary enforcement
+  }
+  if (!enabled) return;
+  try {
+    posthog.opt_out_capturing();
+    posthog.reset();
+  } catch (e) {
+    console.warn('[analytics] opt-out failed:', e);
+  }
+}
+
+/** Turn analytics back on. */
+export function optInAnalytics(): void {
+  try {
+    localStorage.removeItem(OPT_OUT_KEY);
+  } catch {
+    // ignore
+  }
+  if (!enabled) return;
+  try {
+    posthog.opt_in_capturing();
+  } catch (e) {
+    console.warn('[analytics] opt-in failed:', e);
   }
 }
 
