@@ -3,6 +3,7 @@ import { SPACE_COLORS, HYPERSPACE_ID } from '../types';
 import { durableSave } from '../utils/durablePersist';
 import { spaceService } from '../services/spaceService';
 import { wsService } from '../services/wsService';
+import { capture } from '../services/analytics';
 
 const STORAGE_KEY = 'weplex_spaces';
 const ACTIVE_KEY = 'weplex_active_space';
@@ -152,6 +153,7 @@ export const spaceStore = {
     };
     spaces.push(space);
     persist();
+    capture('space_created', { shared: false, kind: 'personal' });
     return space;
   },
 
@@ -366,11 +368,18 @@ export const spaceStore = {
 
   remove(id: string) {
     if (id === 'default') return;
+    const existing = spaces.find((s) => s.id === id);
     spaces = spaces.filter((s) => s.id !== id);
     if (activeSpaceId === id) {
       activeSpaceId = 'default';
     }
     delete spaceSessions[id];
     persist();
+    if (existing) {
+      capture('space_deleted', {
+        shared: existing.shared ?? false,
+        kind: existing.type ?? 'personal',
+      });
+    }
   },
 };

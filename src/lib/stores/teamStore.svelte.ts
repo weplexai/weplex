@@ -2,6 +2,7 @@ import type { TeamInfo } from '../types';
 import { teamService } from '../services/teamService';
 import { wsService } from '../services/wsService';
 import { spaceStore } from './spaceStore.svelte';
+import { capture } from '../services/analytics';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -137,6 +138,7 @@ export const teamStore = {
       activeTeamId = newTeam.id;
       // Join WS room for the new team
       wsService.joinTeamRoom(newTeam.id);
+      capture('team_created');
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to create team';
       throw e;
@@ -155,6 +157,7 @@ export const teamStore = {
       // Join WS room + sync shared spaces for the new team
       wsService.joinTeamRoom(joined.id);
       spaceStore.syncSharedSpaces(joined.id).catch(() => {});
+      capture('team_joined');
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to join team';
       throw e;
@@ -173,6 +176,7 @@ export const teamStore = {
       if (activeTeamId === teamId) {
         selectNextTeam(teamId);
       }
+      capture('team_left');
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to leave team';
       throw e;

@@ -6,6 +6,12 @@ import { spaceService } from '../services/spaceService';
 import { authStore } from './authStore.svelte';
 import { settingsStore } from './settingsStore.svelte';
 import { showNativeNotification } from '../utils/notifications';
+import { capture } from '../services/analytics';
+
+// Track which spaces we've already reported a first-message for,
+// so chat analytics is aggregate (once per space per app session)
+// rather than one event per message.
+const firstMessageSent = new Set<string>();
 
 // ── Notification helpers ──────────────────────────────────────────────────
 
@@ -184,6 +190,10 @@ export const chatStore = {
   send(serverId: string, text: string): void {
     wsService.sendChatMessage(serverId, text, replyingTo?.id);
     replyingTo = null;
+    if (!firstMessageSent.has(serverId)) {
+      firstMessageSent.add(serverId);
+      capture('chat_first_message', { has_reply: !!replyingTo });
+    }
   },
 
   /** Subscribe to WebSocket chat events. Call once after WS connects. */

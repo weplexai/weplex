@@ -4,6 +4,7 @@ import { detectAgentType, detectSessionType } from '../utils/detection';
 import { smartName, extractPrompt, buildAutoRenameLabel } from '../utils/sessionNaming';
 import { loadSessions, persistSessions } from '../utils/sessionPersistence';
 import { spaceStore } from './spaceStore';
+import { capture } from '../services/analytics';
 
 const initial = loadSessions();
 let nextId = initial.nextId;
@@ -94,6 +95,15 @@ export const sessionStore = {
     activeSessionId = id;
     spaceStore.setActiveSession(session.spaceId, id);
     persist();
+
+    // Analytics: only generic properties, no name/cwd/command text
+    capture('session_created', {
+      type,
+      agent_type: agentType ?? null,
+      has_parent: !!opts.parentId,
+      has_workflow: !!workflowId,
+    });
+
     return session;
   },
 
@@ -209,12 +219,21 @@ export const sessionStore = {
     const idx = sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;
 
+    const session = sessions[idx];
+    const durationMs = Date.now() - session.createdAt;
+
     // Promote orphaned children to top level
     for (const s of sessions) {
       if (s.parentId === id) {
         s.parentId = undefined;
       }
     }
+
+    capture('session_closed', {
+      type: session.type,
+      agent_type: session.agentType ?? null,
+      duration_ms: durationMs,
+    });
 
     // Kill the PTY backend
     import('@tauri-apps/api/core')

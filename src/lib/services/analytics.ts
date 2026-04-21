@@ -11,7 +11,7 @@
 import posthog from 'posthog-js';
 
 const POSTHOG_KEY = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
-const POSTHOG_HOST = (import.meta.env.VITE_POSTHOG_HOST as string) || 'https://us.i.posthog.com';
+const POSTHOG_HOST = (import.meta.env.VITE_POSTHOG_HOST as string) || 'https://ph.weplex.ai';
 
 /**
  * localStorage key for the user's opt-out choice. Persisted outside PostHog
@@ -134,11 +134,22 @@ export function readyFlags(): Promise<void> {
   return bootstrapPromise;
 }
 
-/** Identify the current user. Call on login and when profile loads. */
+/**
+ * Identify the current user. Call on login and when profile loads.
+ *
+ * Also calls `alias(email)` so anonymous landing-page events captured with
+ * `identify(email)` (see weplex-web) are merged into the same PostHog person
+ * as this desktop identity. Without the alias, a user who pays on the landing
+ * and then signs up in the app shows up as two separate profiles.
+ */
 export function identifyUser(userId: string, email?: string): void {
   if (!enabled) return;
   try {
     posthog.identify(userId, email ? { email } : undefined);
+    if (email) {
+      // Safe to call repeatedly — PostHog dedupes aliases
+      posthog.alias(email);
+    }
   } catch (e) {
     console.warn('[analytics] identify failed:', e);
   }
