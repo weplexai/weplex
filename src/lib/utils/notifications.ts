@@ -32,7 +32,7 @@ export async function showNativeNotification(title: string, body: string): Promi
   }
 
   if (!notificationAvailable) {
-    console.log(`[Notification] ${title}: ${body}`);
+    if (import.meta.env.DEV) console.log(`[Notification] ${title}: ${body}`);
     return;
   }
 
@@ -40,6 +40,6 @@ export async function showNativeNotification(title: string, body: string): Promi
     const { sendNotification } = await import('@tauri-apps/plugin-notification');
     sendNotification({ title, body });
   } catch {
-    console.log(`[Notification] ${title}: ${body}`);
+    if (import.meta.env.DEV) console.log(`[Notification] ${title}: ${body}`);
   }
 }

@@ -1,5 +1,7 @@
 // API client with bearer auth injection and single-flight token refresh
 
+import { logger } from '../utils/logger';
+
 const API_ENDPOINTS = import.meta.env.VITE_API_URL
   ? [import.meta.env.VITE_API_URL as string]
   : ['https://api.weplex.ai', 'https://api.weplex.xyz'];
@@ -15,7 +17,7 @@ export async function resolveApiEndpoint(): Promise<string | null> {
       });
       if (res.ok) {
         resolvedBaseUrl = endpoint;
-        console.log(`[Weplex] API endpoint: ${endpoint}`);
+        logger.info(`API endpoint: ${endpoint}`);
         return endpoint;
       }
     } catch {

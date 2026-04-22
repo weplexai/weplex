@@ -2,6 +2,7 @@
 
 import { io, type Socket } from 'socket.io-client';
 import { getBaseUrl } from './apiClient';
+import { logger } from '../utils/logger';
 import type { SessionMeta, MemberPresence, TeamMember, ServerSpace, ChatMessage } from '../types';
 
 let socket: Socket | null = null;
@@ -27,7 +28,7 @@ export const wsService = {
     });
 
     socket.on('connect', () => {
-      console.log('[Weplex] WS connected');
+      logger.info('WS connected');
       // Re-join all rooms on reconnect
       for (const [spaceId, displayName] of joinedSpaces) {
         socket?.emit('join-space', { spaceId, displayName });
@@ -38,7 +39,7 @@ export const wsService = {
     });
 
     socket.on('disconnect', (reason) => {
-      console.log(`[Weplex] WS disconnected: ${reason}`);
+      logger.info(`WS disconnected: ${reason}`);
     });
 
     socket.on('connect_error', (err) => {

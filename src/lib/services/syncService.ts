@@ -196,7 +196,7 @@ export const syncService = {
       // Check size before sending (server enforces 50KB)
       const size = new Blob([JSON.stringify(blob)]).size;
       if (size > 48 * 1024) {
-        console.warn(`[Weplex] Sync blob too large (${(size / 1024).toFixed(1)}KB), skipping`);
+        if (import.meta.env.DEV) console.warn(`[Weplex] Sync blob too large (${(size / 1024).toFixed(1)}KB), skipping`);
         currentStatus = 'error';
         return;
       }

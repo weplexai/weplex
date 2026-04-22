@@ -99,7 +99,7 @@
     try {
       await teamStore.regenerateCode(teamId);
     } catch (e: unknown) {
-      console.error('Regenerate failed:', e);
+      console.error('[Weplex] Regenerate invite code failed:', e);
     } finally {
       regenLoading = null;
     }
@@ -110,7 +110,7 @@
     try {
       await teamStore.removeMember(teamId, memberId);
     } catch (e: unknown) {
-      console.error('Remove failed:', e);
+      console.error('[Weplex] Remove member failed:', e);
     } finally {
       removingMemberId = null;
     }
@@ -122,7 +122,7 @@
       await teamStore.leaveTeam(teamId);
       if (expandedTeamId === teamId) expandedTeamId = null;
     } catch (e: unknown) {
-      console.error('Leave failed:', e);
+      console.error('[Weplex] Leave team failed:', e);
     } finally {
       leaveLoading = null;
     }
@@ -134,7 +134,7 @@
       await teamStore.deleteTeam(teamId);
       if (expandedTeamId === teamId) expandedTeamId = null;
     } catch (e: unknown) {
-      console.error('Delete failed:', e);
+      console.error('[Weplex] Delete team failed:', e);
     } finally {
       deleteLoading = null;
     }

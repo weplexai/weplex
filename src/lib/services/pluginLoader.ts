@@ -13,6 +13,7 @@
 
 import { pluginStore, type PluginInfo } from '../stores/pluginStore.svelte';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { logger } from '../utils/logger';
 
 /** Plugin module interface — what a plugin's index.js must export. */
 export interface DeckPlugin {
@@ -65,7 +66,7 @@ export async function loadPlugin(plugin: PluginInfo): Promise<DeckPlugin | null>
     // Store loaded module
     pluginStore.setLoadedModule(plugin.manifest.id, pluginModule);
 
-    console.log(`[Weplex] Plugin loaded: ${pluginModule.name} v${pluginModule.version}`);
+    logger.info(`Plugin loaded: ${pluginModule.name} v${pluginModule.version}`);
     return pluginModule;
   } catch (e) {
     console.error(`[Weplex] Failed to load plugin ${plugin.manifest.id}:`, e);
