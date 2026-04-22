@@ -153,7 +153,7 @@ impl PtyManager {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Store in ring buffer for deck_read_output
+                        // Store in ring buffer for weplex_read_output
                         // Use lossy conversion to handle binary data gracefully
                         {
                             let text = String::from_utf8_lossy(&buf[..n]);

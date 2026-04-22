@@ -12,7 +12,7 @@ const MAX_SUMMARY_SIZE: usize = 10 * 1024;
 /// Activity notes tool definition — available in all contexts.
 fn update_notes_tool() -> Value {
     serde_json::json!({
-        "name": "deck_update_notes",
+        "name": "weplex_update_notes",
         "description": "Record what you accomplished. Notes are appended chronologically and visible to your team in real time. Call at natural breakpoints, when finishing a task, or before stopping work.",
         "inputSchema": {
             "type": "object",
@@ -41,7 +41,7 @@ fn update_notes_tool() -> Value {
 fn v2_tools() -> Vec<Value> {
     vec![
         serde_json::json!({
-            "name": "deck_list_sessions",
+            "name": "weplex_list_sessions",
             "description": "List all active terminal sessions in Weplex. Returns session IDs and their status (alive/dead). Use this to discover what sessions are running before reading output or sending input.",
             "inputSchema": {
                 "type": "object",
@@ -49,7 +49,7 @@ fn v2_tools() -> Vec<Value> {
             }
         }),
         serde_json::json!({
-            "name": "deck_create_session",
+            "name": "weplex_create_session",
             "description": "Create a new terminal session in Weplex. The session appears in the sidebar and runs the specified command. Use this to spawn parallel workers, test runners, or build watchers.",
             "inputSchema": {
                 "type": "object",
@@ -70,14 +70,14 @@ fn v2_tools() -> Vec<Value> {
             }
         }),
         serde_json::json!({
-            "name": "deck_read_output",
+            "name": "weplex_read_output",
             "description": "Read recent terminal output from another session. Returns the last N lines from the session's output buffer. Use this to check test results, build output, or what another agent is doing.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "session_id": {
                         "type": "number",
-                        "description": "ID of the session to read from (get IDs from deck_list_sessions)."
+                        "description": "ID of the session to read from (get IDs from weplex_list_sessions)."
                     },
                     "last_n": {
                         "type": "number",
@@ -88,7 +88,7 @@ fn v2_tools() -> Vec<Value> {
             }
         }),
         serde_json::json!({
-            "name": "deck_send_input",
+            "name": "weplex_send_input",
             "description": "Send text input to another session's terminal. The text is written to the session's PTY as if the user typed it. Use this to interact with running processes, answer prompts, or send commands.",
             "inputSchema": {
                 "type": "object",
@@ -106,7 +106,7 @@ fn v2_tools() -> Vec<Value> {
             }
         }),
         serde_json::json!({
-            "name": "deck_get_context",
+            "name": "weplex_get_context",
             "description": "Get information about the Weplex workspace: platform, home directory, and system info. Use this for workspace awareness.",
             "inputSchema": {
                 "type": "object",
@@ -118,7 +118,7 @@ fn v2_tools() -> Vec<Value> {
 
 /// Return the list of available MCP tools.
 /// Tools available depend on context:
-/// - Always: deck_update_notes
+/// - Always: weplex_update_notes
 /// - With global socket: v2 cross-session tools (list/create/read/send/context)
 pub fn list_tools(global_socket_path: &str) -> Value {
     let mut tools = vec![update_notes_tool()];
@@ -142,10 +142,10 @@ pub fn call_tool(
 ) -> Result<Value, String> {
     match tool_name {
         // Notes (always available)
-        "deck_update_notes" | "deck_session_summary" => handle_update_notes(arguments, session_id),
+        "weplex_update_notes" => handle_update_notes(arguments, session_id),
         // Cross-session tools (v2) — require global socket
-        "deck_list_sessions" | "deck_create_session" | "deck_read_output"
-        | "deck_send_input" | "deck_get_context" => {
+        "weplex_list_sessions" | "weplex_create_session" | "weplex_read_output"
+        | "weplex_send_input" | "weplex_get_context" => {
             let gipc = global_ipc.as_mut().ok_or(
                 "Cross-session tools require Weplex to be running. Global MCP socket not available."
                     .to_string(),
@@ -164,11 +164,11 @@ fn handle_v2_tool(
 ) -> Result<Value, String> {
     // Map tool name to IPC method
     let method = match tool_name {
-        "deck_list_sessions" => "list_sessions",
-        "deck_create_session" => "create_session",
-        "deck_read_output" => "read_output",
-        "deck_send_input" => "send_input",
-        "deck_get_context" => "get_context",
+        "weplex_list_sessions" => "list_sessions",
+        "weplex_create_session" => "create_session",
+        "weplex_read_output" => "read_output",
+        "weplex_send_input" => "send_input",
+        "weplex_get_context" => "get_context",
         _ => return Err(format!("Unknown v2 tool: {}", tool_name)),
     };
 

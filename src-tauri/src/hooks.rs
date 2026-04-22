@@ -98,13 +98,13 @@ if [ -f "$SUMMARY_FILE" ]; then
   if [ "$AGE" -lt 300 ]; then exit 0; fi
 fi
 
-# Only request notes if deck_update_notes MCP tool is likely available
+# Only request notes if weplex_update_notes MCP tool is likely available
 # (Weplex MCP server must be registered and running)
 if [ ! -f "$HOME/.weplex/mcp-ready" ] && [ ! -S "$HOME/.weplex/ipc-global.sock" ]; then
   exit 0
 fi
 
-echo "Please call the deck_update_notes tool to record what you accomplished before finishing." >&2
+echo "Please call the weplex_update_notes tool to record what you accomplished before finishing." >&2
 exit 2
 "#;
 
