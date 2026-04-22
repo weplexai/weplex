@@ -80,34 +80,6 @@ curl -s -X POST "http://127.0.0.1:$PORT/hook" \
 exit 0
 "#;
 
-/// Extra bash appended to the stop hook (session notes prompt).
-const STOP_EXTRA: &str = r#"
-# Check if running inside Weplex (WEPLEX_SESSION_ID set by PTY)
-# If not in Weplex, skip the notes check entirely
-if [ -z "$WEPLEX_SID" ]; then exit 0; fi
-
-# Check if Weplex hook server is reachable (port file exists)
-if [ ! -f "$PORT_FILE" ]; then exit 0; fi
-
-# Check if agent provided activity notes
-SUMMARY_FILE="$HOME/.weplex/summaries/${WEPLEX_SID}.json"
-if [ -f "$SUMMARY_FILE" ]; then
-  UPDATED_AT=$(jq -r '.updatedAt // 0' "$SUMMARY_FILE" 2>/dev/null || echo "0")
-  NOW=$(date +%s)
-  AGE=$(( NOW - UPDATED_AT ))
-  if [ "$AGE" -lt 300 ]; then exit 0; fi
-fi
-
-# Only request notes if weplex_update_notes MCP tool is likely available
-# (Weplex MCP server must be registered and running)
-if [ ! -f "$HOME/.weplex/mcp-ready" ] && [ ! -S "$HOME/.weplex/ipc-global.sock" ]; then
-  exit 0
-fi
-
-echo "Please call the weplex_update_notes tool to record what you accomplished before finishing." >&2
-exit 2
-"#;
-
 /// Generate a hook script from template: preamble + jq payload + curl POST + optional extra bash.
 fn render_hook_script(event_type: &str, jq_fields: &str, extra_bash: &str) -> String {
     format!(
@@ -158,7 +130,7 @@ pub fn ensure_hook_script() -> Result<(), String> {
             &format!("{},\n    tool_output: ((.tool_output // \"\") | tostring | .[0:500])", tool_fields),
             "",
         )),
-        ("stop-hook.sh", render_hook_script("stop", "", STOP_EXTRA)),
+        ("stop-hook.sh", render_hook_script("stop", "", "")),
         ("subagent-start.sh", render_hook_script("subagent_start", agent_fields, "")),
         ("subagent-stop.sh", render_hook_script("subagent_stop", agent_fields, "")),
     ];
