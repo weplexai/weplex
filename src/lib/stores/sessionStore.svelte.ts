@@ -1,7 +1,7 @@
 import type { Session, SessionStatus, AgentType, HyperspaceGroupBy } from '../types';
 import { HYPERSPACE_ID } from '../types';
 import { detectAgentType, detectSessionType } from '../utils/detection';
-import { smartName, extractPrompt, buildAutoRenameLabel } from '../utils/sessionNaming';
+import { smartName } from '../utils/sessionNaming';
 import { loadSessions, persistSessions } from '../utils/sessionPersistence';
 import { spaceStore } from './spaceStore';
 import { capture } from '../services/analytics';
@@ -24,9 +24,6 @@ export interface SessionGroup {
   color?: string;
   sessions: Session[];
 }
-
-/** Set of sessions that have been auto-renamed from first input. */
-const autoNamedSessions = new Set<number>();
 
 export const sessionStore = {
   get sessions() {
@@ -182,29 +179,6 @@ export const sessionStore = {
   rename(id: number, name: string) {
     this.update(id, { name });
     persist();
-  },
-
-  /**
-   * Auto-rename from first user input in interactive agent sessions.
-   * Only fires once per session, and only if the session still has its default name.
-   */
-  autoRenameFromInput(id: number, userInput: string) {
-    if (autoNamedSessions.has(id)) return;
-    const session = sessions.find((s) => s.id === id);
-    if (!session || session.type !== 'agent' || !session.agentType) return;
-
-    // Only rename if current name is the default pattern
-    const defaultName = smartName(session.agentType, session.cwd, id, session.command);
-    if (session.name !== defaultName) return;
-
-    // Skip if created with -p flag (already has good name)
-    if (session.command && extractPrompt(session.command)) return;
-
-    const newName = buildAutoRenameLabel(session.agentType, userInput);
-    if (!newName) return;
-
-    autoNamedSessions.add(id);
-    this.rename(id, newName);
   },
 
   pin(id: number) {

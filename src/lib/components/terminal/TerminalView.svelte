@@ -149,9 +149,6 @@
       fitAddon.fit();
     }
 
-    // Accumulate user input for smart naming (first prompt only)
-    let inputBuffer = '';
-
     disposables.push(
       term.onData((data) => {
         // ── Slash command interception (agent sessions only) ──
@@ -167,23 +164,6 @@
             const isEscapeResponse = data.includes('\x1b[') || /^\[\?[0-9;]*[\x40-\x7e]/.test(data);
             if (!isEscapeResponse) {
               sessionStore.updateStatus(sessionId, 'thinking');
-            }
-            // Auto-rename from first prompt input
-            if (inputBuffer.length > 0) {
-              sessionStore.autoRenameFromInput(sessionId, inputBuffer);
-              inputBuffer = '';
-            } else if (data.length > 5 && !isEscapeResponse) {
-              // Pasted text with newline
-              sessionStore.autoRenameFromInput(sessionId, data.replace(/[\r\n]+/g, ' '));
-            }
-            inputBuffer = ''; // always reset on Enter/submit
-          } else {
-            // Accumulate typed characters (not Enter/control)
-            if (data.length === 1 && data.charCodeAt(0) >= 32) {
-              inputBuffer += data;
-            } else if (data.charCodeAt(0) === 127 || data.charCodeAt(0) === 8) {
-              // Backspace — remove last char
-              inputBuffer = inputBuffer.slice(0, -1);
             }
           }
           scheduleTransition();

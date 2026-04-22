@@ -41,29 +41,3 @@ export function smartName(
   return agentType || `session-${id}`;
 }
 
-/** Strip ANSI escape sequences from terminal output. */
-export function stripAnsi(input: string): string {
-  return input
-    .replace(/\x1b\[[0-9;?>=!]*[\x40-\x7e]/g, '') // CSI sequences
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '') // OSC sequences
-    .replace(/\x1bP[^\x1b]*\x1b\\/g, '')           // DCS sequences
-    .replace(/\x1b[^[\]P]/g, '')                    // other ESC sequences
-    .replace(/\[\?[0-9;]*[\x40-\x7e]/g, '')         // orphaned CSI (DA responses)
-    .replace(/[\x00-\x1f\x7f-\x9f]/g, '');          // control chars
-}
-
-/** Build auto-rename label from first user input. Returns null if input is unsuitable. */
-export function buildAutoRenameLabel(
-  agentType: string,
-  userInput: string,
-): string | null {
-  const cleaned = userInput.trim().split('\n')[0];
-  const stripped = stripAnsi(cleaned).replace(/\r/g, '').trim();
-  if (stripped.length < 3 || stripped.length > 200) return null;
-
-  const label = stripped.length <= 40
-    ? stripped
-    : stripped.slice(0, 40).replace(/\s+\S*$/, '');
-
-  return `${agentType}: ${label}`;
-}
