@@ -60,7 +60,10 @@
   let recentTools = $derived(
     hookActivity?.toolUses.filter((t) => t.type === 'post').slice(-10).reverse() || [],
   );
-  let sessionSubAgents = $derived(hookStore.getSubAgents(session.id));
+  const NOISE_AGENT_TYPES = new Set(['unknown', 'general-purpose', 'Agent']);
+  let sessionSubAgents = $derived(
+    hookStore.getSubAgents(session.id).filter((s) => !NOISE_AGENT_TYPES.has(s.agentType)),
+  );
   let runningSubAgents = $derived(sessionSubAgents.filter((s) => s.status === 'running'));
   let completedSubAgents = $derived(sessionSubAgents.filter((s) => s.status === 'completed'));
 
