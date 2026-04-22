@@ -23,7 +23,7 @@ export interface PluginManifest {
   entry: string;
   rust_plugin: string | null;
   permissions: string[];
-  min_deck_version: string;
+  min_weplex_version: string;
   session_type: PluginSessionType | null;
 }
 

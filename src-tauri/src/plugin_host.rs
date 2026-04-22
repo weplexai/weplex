@@ -28,7 +28,7 @@ pub struct PluginManifest {
     pub permissions: Vec<String>,
     /// Minimum Weplex version required
     #[serde(default)]
-    pub min_deck_version: String,
+    pub min_weplex_version: String,
     /// Whether this plugin provides a new session type
     #[serde(default)]
     pub session_type: Option<PluginSessionType>,
