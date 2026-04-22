@@ -236,12 +236,7 @@ pub fn copy_resource(
     // Atomic write
     atomic_write(&target_path, &content)?;
 
-    eprintln!(
-        "[weplex] copied {}/{} to {}",
-        resource_type.dir_name(),
-        name,
-        target_config_dir
-    );
+    log::info!("copied {}/{} to {}", resource_type.dir_name(), name, target_config_dir);
     Ok(true)
 }
 
@@ -286,7 +281,7 @@ pub fn copy_all_to_profile(
                 match copy_resource(&r.file_path, target_config_dir, *rt, &r.name, false) {
                     Ok(true) => copied += 1,
                     Ok(false) => {} // identical, skipped
-                    Err(e) => eprintln!("[weplex] copy failed: {}", e),
+                    Err(e) => log::warn!("copy failed: {}", e),
                 }
             }
         }
@@ -317,12 +312,7 @@ pub fn create_resource(
 
     atomic_write(&path, content)?;
 
-    eprintln!(
-        "[weplex] created {}/{} in {}",
-        resource_type.dir_name(),
-        safe_name,
-        config_dir
-    );
+    log::info!("created {}/{} in {}", resource_type.dir_name(), safe_name, config_dir);
     Ok(path)
 }
 
@@ -333,7 +323,7 @@ pub fn delete_resource(file_path: &str) -> Result<(), String> {
     }
     std::fs::remove_file(file_path)
         .map_err(|e| format!("Failed to delete: {}", e))?;
-    eprintln!("[weplex] deleted {}", file_path);
+    log::info!("deleted {}", file_path);
     Ok(())
 }
 

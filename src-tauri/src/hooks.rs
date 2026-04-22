@@ -176,7 +176,7 @@ pub fn ensure_hook_script() -> Result<(), String> {
         }
     }
 
-    eprintln!("[weplex] hook scripts written to {}", hooks_dir);
+    log::info!("hook scripts written to {}", hooks_dir);
     Ok(())
 }
 
@@ -243,7 +243,7 @@ pub fn write_weplex_hooks_source() -> Result<(), String> {
     let json_str = serde_json::to_string_pretty(&source).map_err(|e| e.to_string())?;
     std::fs::write(&source_path, json_str).map_err(|e| e.to_string())?;
 
-    eprintln!("[weplex] hooks source written to {}", source_path);
+    log::info!("hooks source written to {}", source_path);
     Ok(())
 }
 
@@ -341,7 +341,7 @@ fn sync_hooks_to_profile(config_dir: &str) -> Result<(), String> {
     std::fs::rename(&tmp_path, &settings_path)
         .map_err(|e| format!("Failed to rename temp settings: {}", e))?;
 
-    eprintln!("[weplex] hooks synced to {}", settings_path);
+    log::info!("hooks synced to {}", settings_path);
     Ok(())
 }
 
@@ -358,7 +358,7 @@ pub fn sync_hooks_for_profiles(profile_config_dirs: Vec<String>) -> Result<(), S
     // Always sync default profile (~/.claude/)
     let default_dir = format!("{}/.claude", home);
     if let Err(e) = sync_hooks_to_profile(&default_dir) {
-        eprintln!("[weplex] failed to sync hooks to default profile: {}", e);
+        log::warn!("failed to sync hooks to default profile: {}", e);
     }
 
     // Sync each custom profile
@@ -369,10 +369,10 @@ pub fn sync_hooks_for_profiles(profile_config_dirs: Vec<String>) -> Result<(), S
         match crate::utils::validate_config_dir(config_dir) {
             Ok(validated) => {
                 if let Err(e) = sync_hooks_to_profile(&validated) {
-                    eprintln!("[weplex] failed to sync hooks to {}: {}", validated, e);
+                    log::warn!("failed to sync hooks to {}: {}", validated, e);
                 }
             }
-            Err(e) => eprintln!("[weplex] skipping invalid profile dir {}: {}", config_dir, e),
+            Err(e) => log::warn!("skipping invalid profile dir {}: {}", config_dir, e),
         }
     }
 

@@ -25,7 +25,7 @@ pub fn inject_context_block(cwd: String, context_block: String) -> Result<String
             let separator = if gitignore.ends_with('\n') || gitignore.is_empty() { "" } else { "\n" };
             std::fs::write(&gitignore_path, format!("{}{}{}\n", gitignore, separator, "CLAUDE.local.md"))
                 .map_err(|e| format!("Failed to update .gitignore: {}", e))?;
-            eprintln!("[weplex] added CLAUDE.local.md to .gitignore");
+            log::info!("added CLAUDE.local.md to .gitignore");
         }
     }
 
@@ -56,7 +56,7 @@ pub fn inject_context_block(cwd: String, context_block: String) -> Result<String
     std::fs::write(&config_path, &new_content)
         .map_err(|e| format!("Failed to write CLAUDE.local.md: {}", e))?;
 
-    eprintln!("[weplex] injected context into {}", config_path);
+    log::info!("injected context into {}", config_path);
     Ok(config_path)
 }
 

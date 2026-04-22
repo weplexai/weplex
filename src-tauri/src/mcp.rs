@@ -51,7 +51,7 @@ pub fn do_register_mcp_in_claude(app: &tauri::AppHandle) -> Result<(), String> {
     let binary_path = match find_mcp_binary(app) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[weplex] MCP registration skipped: {}", e);
+            log::warn!("MCP registration skipped: {}", e);
             return Ok(()); // Don't fail startup if binary not found
         }
     };
@@ -93,9 +93,6 @@ pub fn do_register_mcp_in_claude(app: &tauri::AppHandle) -> Result<(), String> {
     let json_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&claude_json_path, json_str).map_err(|e| e.to_string())?;
 
-    eprintln!(
-        "[weplex] MCP server registered in ~/.claude.json (binary: {})",
-        binary_path
-    );
+    log::info!("MCP server registered in ~/.claude.json (binary: {})", binary_path);
     Ok(())
 }

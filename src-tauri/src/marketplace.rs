@@ -25,7 +25,7 @@ pub fn save_marketplace_package(dir: String, name: String, content: String) -> R
     std::fs::write(&path, &content)
         .map_err(|e| format!("Failed to write package: {}", e))?;
 
-    eprintln!("[weplex] marketplace package saved: {}", path);
+    log::info!("marketplace package saved: {}", path);
     Ok(())
 }
 
@@ -46,6 +46,6 @@ pub fn save_marketplace_skill(name: String, content: String) -> Result<(), Strin
     std::fs::write(&path, &content)
         .map_err(|e| format!("Failed to write skill: {}", e))?;
 
-    eprintln!("[weplex] marketplace skill saved: {}", path);
+    log::info!("marketplace skill saved: {}", path);
     Ok(())
 }
