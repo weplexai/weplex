@@ -3,6 +3,20 @@
   import { invoke } from '@tauri-apps/api/core';
   import { timeAgo } from '../../utils/time';
 
+  // Svelte action: move the element into <body> on mount, remove on destroy.
+  // Prevents position: fixed from being captured by an ancestor containing
+  // block (the sidebar's .slider-track has `will-change: transform`, which
+  // creates one — so without this portal the preview clips inside the
+  // sidebar instead of overlaying the viewport.
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      },
+    };
+  }
+
   let {
     session,
     anchorEl,
@@ -17,7 +31,11 @@
 
   let notes = $state<NoteEntry[]>([]);
   let loaded = $state(false);
-  let pos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
+  let pos = $state<{ top: number; left: number; width: number }>({
+    top: 0,
+    left: 0,
+    width: 280,
+  });
 
   async function fetchNotes() {
     try {
@@ -34,18 +52,43 @@
 
   function reposition() {
     const rect = anchorEl.getBoundingClientRect();
-    // Place to the right of the sidebar item; stay within viewport.
-    const PREVIEW_WIDTH = 280;
+    const PREFERRED_WIDTH = 280;
     const MARGIN = 8;
-    let left = rect.right + MARGIN;
-    if (left + PREVIEW_WIDTH > window.innerWidth - 8) {
-      left = Math.max(8, rect.left - PREVIEW_WIDTH - MARGIN);
+    const PAD = 8;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    // Shrink the preview if the window is narrower than 280 + padding.
+    const width = Math.min(PREFERRED_WIDTH, viewportWidth - 2 * PAD);
+
+    // First choice: to the right of the anchor.
+    const fitsRight = rect.right + MARGIN + width <= viewportWidth - PAD;
+    // Second choice: to the left of the anchor.
+    const fitsLeft = rect.left - MARGIN - width >= PAD;
+
+    let left: number;
+    let top: number;
+
+    if (fitsRight) {
+      left = rect.right + MARGIN;
+      top = rect.top;
+    } else if (fitsLeft) {
+      left = rect.left - width - MARGIN;
+      top = rect.top;
+    } else {
+      // Too narrow for either side — drop below the anchor, full width,
+      // centred horizontally within the viewport.
+      left = Math.max(PAD, Math.round((viewportWidth - width) / 2));
+      top = rect.bottom + MARGIN;
     }
-    let top = rect.top;
-    // Clamp to viewport (if preview would overflow bottom, pull it up).
-    const maxTop = window.innerHeight - 120;
-    if (top > maxTop) top = Math.max(8, maxTop);
-    pos = { top, left };
+
+    // Final clamp so nothing escapes the viewport regardless of which
+    // branch ran above.
+    left = Math.max(PAD, Math.min(left, viewportWidth - width - PAD));
+    const maxTop = viewportHeight - 120;
+    if (top > maxTop) top = Math.max(PAD, maxTop);
+
+    pos = { top, left, width };
   }
 
   $effect(() => {
@@ -63,9 +106,11 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
+  use:portal
   class="preview"
   style:top="{pos.top}px"
   style:left="{pos.left}px"
+  style:width="{pos.width}px"
   role="tooltip"
   {onmouseenter}
   {onmouseleave}
@@ -104,7 +149,6 @@
   .preview {
     position: fixed;
     z-index: 1000;
-    width: 280px;
     max-width: calc(100vw - 16px);
     background: var(--weplex-bg);
     border: 1px solid var(--weplex-border);
