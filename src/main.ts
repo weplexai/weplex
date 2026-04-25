@@ -4,6 +4,29 @@ import { invoke } from '@tauri-apps/api/core';
 import { initAnalytics } from './lib/services/analytics';
 import { featureFlags } from './lib/stores/featureFlagsStore.svelte';
 
+// Dev-only console.warn filter for known HMR-related Tauri noise.
+// HMR reloads orphan in-flight invoke() callbacks and the macOS WebKit IPC
+// custom-protocol fallback fires every page load — both produce dozens of
+// warnings per save that drown out real problems. Bypass with
+// `__weplexShowAllWarnings = true` in DevTools when debugging the noise itself.
+if (import.meta.env.DEV) {
+  const NOISE_PATTERNS = [
+    /\[TAURI\] Couldn't find callback id/,
+    /IPC custom protocol failed/,
+  ];
+  (window as { __weplexShowAllWarnings?: boolean }).__weplexShowAllWarnings = false;
+  const origWarn = console.warn.bind(console);
+  console.warn = (...args: unknown[]) => {
+    if ((window as { __weplexShowAllWarnings?: boolean }).__weplexShowAllWarnings) {
+      origWarn(...args);
+      return;
+    }
+    const msg = String(args[0] ?? '');
+    if (NOISE_PATTERNS.some((re) => re.test(msg))) return;
+    origWarn(...args);
+  };
+}
+
 async function init() {
   // PostHog: init early so feature flags load in parallel with other startup work
   initAnalytics();
