@@ -433,6 +433,13 @@ fn fragment_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
 /// doesn't exist yet (first install), so the *parent* must already be
 /// canonical for the allowlist comparison to be symlink-safe. Bypassing
 /// `Manifest::resolve_target` breaks the safety story.
+///
+/// Symlink rejection: when the target itself exists as a symlink we
+/// refuse it outright. Two canonicalize calls (one on `target`, one on
+/// the allowlisted entry) would follow the same symlink and accept it
+/// as "equal" — even when the link redirects to an attacker-controlled
+/// file outside HOME. We require the target to be either a regular
+/// file or absent (first install).
 fn section_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
     debug_assert!(
         target.is_absolute(),
@@ -442,13 +449,31 @@ fn section_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
     let home_path = PathBuf::from(&home);
     let canon_home = std::fs::canonicalize(&home_path).unwrap_or(home_path);
 
-    // Compare the target as canonical-paths so symlinks can't sneak
-    // past the allowlist.
+    // Reject if the target itself is a symlink. lstat (symlink_metadata)
+    // doesn't follow links, so a hostile `~/.codex/AGENTS.md → ~/.zshrc`
+    // is caught even though both paths canonicalize the same.
+    if let Ok(meta) = std::fs::symlink_metadata(target) {
+        if meta.file_type().is_symlink() {
+            return false;
+        }
+    }
+
+    // Compare the target as canonical-paths so a parent-dir symlink
+    // can't sneak past the allowlist.
     let canon_target = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
 
     // User-level allowlist.
     for entry in SECTION_ALLOWLIST_USER {
         let user_target = canon_home.join(entry);
+        // Reject if the allowlist entry itself exists as a symlink (an
+        // attacker pre-planting the target file as a symlink before
+        // we install). symlink_metadata catches this even when both
+        // paths canonicalize identically.
+        if let Ok(meta) = std::fs::symlink_metadata(&user_target) {
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+        }
         let canon_user = std::fs::canonicalize(&user_target).unwrap_or(user_target);
         if canon_user == canon_target {
             return true;
@@ -2875,6 +2900,57 @@ agents:
         }
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn section_target_symlink_to_outside_rejected() {
+        // ~/.codex/AGENTS.md exists as a symlink pointing OUTSIDE the
+        // allowed root. The allowlist must reject it because canonical
+        // resolution follows the symlink — even though the symlink's
+        // own filename matches the allowlist entry.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("symlink-allowed-name-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        // Create a victim file outside HOME for the symlink to point at.
+        let outside_dir = std::env::temp_dir().join(format!(
+            "weplex-symlink-target-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let canon_outside = std::fs::canonicalize(&outside_dir).unwrap();
+        let victim = canon_outside.join("attacker-controlled");
+        std::fs::write(&victim, "attacker bytes\n").unwrap();
+
+        // Build the symlink at a path whose own filename matches the
+        // allowlist (~/.codex/AGENTS.md).
+        let codex = canon_home.join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let symlink = codex.join("AGENTS.md");
+        std::os::unix::fs::symlink(&victim, &symlink).unwrap();
+
+        // The allowlist call should refuse this — canon_target follows
+        // the symlink to /tmp/.../attacker-controlled, which is not
+        // inside the allowlisted ~/.codex/AGENTS.md canonical path.
+        assert!(
+            !section_target_allowed(&symlink, None),
+            "symlink whose canonical points outside HOME passed the allowlist"
+        );
+
+        let _ = std::fs::remove_file(&symlink);
+        let _ = std::fs::remove_file(&victim);
+        let _ = std::fs::remove_dir_all(&outside_dir);
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
