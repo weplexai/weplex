@@ -411,9 +411,54 @@ fn infer_mode(path: &Path, harness: &str) -> RenderMode {
 
 // ─── Install ledger (fragment-mode tracking) ───────────────────────────
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+const LEDGER_VERSION: u32 = 1;
+
+/// One tracked file installed by a previous compile. We pair the path
+/// with a SHA-256 of the content we wrote — on cleanup we re-hash the
+/// file before deleting it, so a tampered ledger pointing at e.g.
+/// `~/.bashrc` cannot trick the orphan loop into removing user data.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerEntry {
+    pub path: String,
+    pub sha256: String,
+}
+
+/// Persisted compile state. The synthetic key `__sections__` keeps a
+/// list of section-mode target files so we can scan them for orphan
+/// markers on next run, even when no manifest claims them anymore.
+/// Section entries store empty hashes — we never `remove_file()` a
+/// shared file, only splice marker blocks out of it.
+#[derive(Debug, Clone, Default)]
 struct InstallLedger {
-    /// Map manifest id → list of absolute target paths we've installed.
+    /// On-disk format version. Kept for future migrations and so we
+    /// can refuse to cleanup based on a future-format ledger we don't
+    /// fully understand. Currently unread by the compiler — but we
+    /// preserve it across loads so save_ledger can stamp the right
+    /// number.
+    #[allow(dead_code)]
+    version: u32,
+    entries: BTreeMap<String, Vec<LedgerEntry>>,
+    /// True when the on-disk ledger predates `version` + per-entry
+    /// hashing. We accept it (so a fresh deploy doesn't crash) but
+    /// refuse destructive cleanup until the next normal compile rewrites
+    /// it in v1 form.
+    legacy: bool,
+}
+
+/// On-disk shape for v1+. Plain serde — `version` and `entries` are
+/// the only fields that ship.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct LedgerOnDiskV1 {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    entries: BTreeMap<String, Vec<LedgerEntry>>,
+}
+
+/// Legacy v0 ledgers stored entries as plain path strings, no hashes.
+/// Recognised so a freshly-upgraded install doesn't lose its inventory.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct LedgerOnDiskV0 {
     entries: BTreeMap<String, Vec<String>>,
 }
 
@@ -421,13 +466,82 @@ fn ledger_path(profile_dir: &str) -> PathBuf {
     PathBuf::from(profile_dir).join(".weplex").join("compile-ledger.json")
 }
 
+/// SHA-256 of `content` as lowercase hex. Used to detect post-install
+/// tampering of installed fragments before we delete them.
+fn sha256_hex(content: &[u8]) -> String {
+    let d = ring::digest::digest(&ring::digest::SHA256, content);
+    let mut hex = String::with_capacity(d.as_ref().len() * 2);
+    for b in d.as_ref() {
+        use std::fmt::Write;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    hex
+}
+
 fn load_ledger(profile_dir: &str) -> InstallLedger {
     let path = ledger_path(profile_dir);
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(_) => return InstallLedger::default(),
+        Err(_) => return InstallLedger {
+            version: LEDGER_VERSION,
+            ..Default::default()
+        },
     };
-    serde_json::from_str(&raw).unwrap_or_default()
+
+    // Try v1+ first.
+    if let Ok(v1) = serde_json::from_str::<LedgerOnDiskV1>(&raw) {
+        if v1.version > LEDGER_VERSION {
+            // Future format — refuse to act on it. Treat as if the
+            // ledger was empty so we don't accidentally delete files
+            // we don't know how to validate. We log so the developer
+            // sees what happened.
+            log::warn!(
+                "compile ledger at {} has future version {}; ignoring",
+                path.display(),
+                v1.version
+            );
+            return InstallLedger {
+                version: LEDGER_VERSION,
+                entries: BTreeMap::new(),
+                legacy: false,
+            };
+        }
+        if v1.version >= 1 {
+            return InstallLedger {
+                version: v1.version,
+                entries: v1.entries,
+                legacy: false,
+            };
+        }
+    }
+
+    // Fall back to legacy v0 (no version, entries are Vec<String>).
+    if let Ok(v0) = serde_json::from_str::<LedgerOnDiskV0>(&raw) {
+        let mut converted: BTreeMap<String, Vec<LedgerEntry>> = BTreeMap::new();
+        for (id, paths) in v0.entries {
+            converted.insert(
+                id,
+                paths
+                    .into_iter()
+                    .map(|p| LedgerEntry { path: p, sha256: String::new() })
+                    .collect(),
+            );
+        }
+        return InstallLedger {
+            version: 0,
+            entries: converted,
+            legacy: true,
+        };
+    }
+
+    log::warn!(
+        "compile ledger at {} could not be parsed in any known format; treating as empty",
+        path.display()
+    );
+    InstallLedger {
+        version: LEDGER_VERSION,
+        ..Default::default()
+    }
 }
 
 fn save_ledger(profile_dir: &str, ledger: &InstallLedger) -> Result<(), CompileError> {
@@ -436,10 +550,64 @@ fn save_ledger(profile_dir: &str, ledger: &InstallLedger) -> Result<(), CompileE
         std::fs::create_dir_all(parent)
             .map_err(|e| CompileError::Io(format!("create ledger parent: {}", e)))?;
     }
-    let json = serde_json::to_string_pretty(ledger)
+    let on_disk = LedgerOnDiskV1 {
+        version: LEDGER_VERSION,
+        entries: ledger.entries.clone(),
+    };
+    let json = serde_json::to_string_pretty(&on_disk)
         .map_err(|e| CompileError::Io(format!("serialize ledger: {}", e)))?;
     crate::utils::atomic_write_owner_only(&path.to_string_lossy(), &json)
         .map_err(|e| CompileError::Io(format!("write ledger: {}", e)))
+}
+
+/// Re-validate a path read out of the install ledger before we touch
+/// the filesystem with it. The ledger lives in a user-writable
+/// directory, so a malicious rewrite can claim arbitrary paths — we
+/// only proceed if the path canonicalises under HOME (or a project
+/// root we already canonicalised).
+fn ledger_path_is_safe(p: &Path, project_root: Option<&Path>) -> bool {
+    // Reject paths with `..` components.
+    for c in p.components() {
+        if matches!(c, std::path::Component::ParentDir) {
+            return false;
+        }
+    }
+
+    let home = crate::utils::get_home();
+    let home_path = PathBuf::from(&home);
+    let canon_home = std::fs::canonicalize(&home_path).unwrap_or(home_path);
+
+    // Canonicalise as much of the path as exists; missing tail is fine
+    // (the file may have been deleted out from under us).
+    let canon = if p.exists() {
+        match std::fs::canonicalize(p) {
+            Ok(c) => c,
+            Err(_) => return false,
+        }
+    } else if let Some(parent) = p.parent() {
+        if parent.as_os_str().is_empty() {
+            return false;
+        }
+        match std::fs::canonicalize(parent) {
+            Ok(c) => match p.file_name() {
+                Some(n) => c.join(n),
+                None => return false,
+            },
+            Err(_) => return false,
+        }
+    } else {
+        return false;
+    };
+
+    if canon.starts_with(&canon_home) {
+        return true;
+    }
+    if let Some(pr) = project_root {
+        if canon.starts_with(pr) {
+            return true;
+        }
+    }
+    false
 }
 
 // ─── Section-mode renderer ─────────────────────────────────────────────
@@ -842,7 +1010,10 @@ fn compile_profile_internal(
 
     // ── Phase 3: fragment writes ───────────────────────────────────────
 
-    let mut new_ledger = InstallLedger::default();
+    let mut new_ledger = InstallLedger {
+        version: LEDGER_VERSION,
+        ..Default::default()
+    };
     for (id, target, body) in &fragment_writes {
         let outcome = if dry_run {
             // For idempotency reporting in dry-run: compare against existing.
@@ -865,11 +1036,10 @@ fn compile_profile_internal(
                 .targets_unchanged
                 .push(target.to_string_lossy().to_string()),
         }
-        new_ledger
-            .entries
-            .entry(id.clone())
-            .or_default()
-            .push(target.to_string_lossy().to_string());
+        new_ledger.entries.entry(id.clone()).or_default().push(LedgerEntry {
+            path: target.to_string_lossy().to_string(),
+            sha256: sha256_hex(body.as_bytes()),
+        });
     }
 
     // ── Phase 4: orphan cleanup ────────────────────────────────────────
@@ -880,29 +1050,83 @@ fn compile_profile_internal(
     // The synthetic "__sections__" key is for section-target tracking
     // (handled below), not a real id — never delete its paths as
     // fragments.
-    for (id, paths) in &prev_ledger.entries {
+    //
+    // Hardening: the ledger is JSON in a user-writable directory, so we
+    // do NOT trust it. Two checks gate every delete:
+    //   1. The path must canonicalise inside HOME (or the project root).
+    //   2. The current file content must match the SHA-256 we wrote at
+    //      install time. If the user edited the file we keep our hands
+    //      off; if a malicious ledger forged the path, the hash won't
+    //      match either.
+    // Legacy v0 ledgers have no hashes — we accept their inventory but
+    // refuse to delete based on it; a normal compile rewrites them in
+    // v1 form.
+    for (id, entries) in &prev_ledger.entries {
         if id == "__sections__" || current_ids.contains(id) {
             continue;
         }
-        for p in paths {
-            let path = PathBuf::from(p);
-            if dry_run {
-                if path.exists() {
-                    report.orphans_removed.push(p.clone());
+        for entry in entries {
+            let path = PathBuf::from(&entry.path);
+            if !ledger_path_is_safe(&path, project_root) {
+                log::warn!(
+                    "compile: refusing to act on ledger entry outside HOME/project: {}",
+                    entry.path
+                );
+                continue;
+            }
+            if !path.exists() {
+                // File already gone — nothing to do, just let the
+                // entry drop from the new ledger.
+                continue;
+            }
+            if prev_ledger.legacy {
+                log::warn!(
+                    "compile: legacy ledger has no hash for {}; refusing to delete",
+                    entry.path
+                );
+                continue;
+            }
+            // Re-read and compare hash. Mismatch = user edited (or
+            // ledger tampered) — leave the file alone.
+            let current = match std::fs::read(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("compile: cannot read fragment {}: {}", path.display(), e);
+                    continue;
                 }
+            };
+            if sha256_hex(&current) != entry.sha256 {
+                log::warn!(
+                    "compile: fragment {} no longer matches install hash; leaving in place",
+                    path.display()
+                );
+                continue;
+            }
+            if dry_run {
+                report.orphans_removed.push(entry.path.clone());
             } else if remove_fragment(&path)? {
-                report.orphans_removed.push(p.clone());
+                report.orphans_removed.push(entry.path.clone());
             }
         }
     }
 
     // Section orphans: scan every target we know about (from this run
     // AND from prior section targets recorded in the ledger under the
-    // synthetic key "__sections__").
+    // synthetic key "__sections__"). Paths from the ledger are
+    // re-validated before we open the file — a tampered ledger pointing
+    // at e.g. `/etc/sudoers` must NOT cause us to read that file.
     let mut all_section_targets: HashSet<PathBuf> = section_groups.keys().cloned().collect();
     if let Some(prev_sections) = prev_ledger.entries.get("__sections__") {
-        for s in prev_sections {
-            all_section_targets.insert(PathBuf::from(s));
+        for entry in prev_sections {
+            let p = PathBuf::from(&entry.path);
+            if ledger_path_is_safe(&p, project_root) {
+                all_section_targets.insert(p);
+            } else {
+                log::warn!(
+                    "compile: dropping unsafe __sections__ entry from ledger: {}",
+                    entry.path
+                );
+            }
         }
     }
     let orphan_section_ids: HashSet<String> = prev_ledger
@@ -963,10 +1187,17 @@ fn compile_profile_internal(
 
     if !dry_run {
         // Track section targets under a synthetic key so future runs can
-        // find them even if no manifests target them anymore.
-        let section_paths: Vec<String> = all_section_targets
+        // find them even if no manifests target them anymore. Section
+        // entries carry empty hashes — we never `remove_file()` a shared
+        // file; orphan cleanup splices markers out instead. Skip any
+        // path that wouldn't pass the safety check on the next read.
+        let section_paths: Vec<LedgerEntry> = all_section_targets
             .iter()
-            .map(|p| p.to_string_lossy().to_string())
+            .filter(|p| ledger_path_is_safe(p, project_root))
+            .map(|p| LedgerEntry {
+                path: p.to_string_lossy().to_string(),
+                sha256: String::new(),
+            })
             .collect();
         if !section_paths.is_empty() {
             new_ledger
@@ -1424,6 +1655,248 @@ agents:
             Err(CompileError::InvalidBody(_)) => {}
             other => panic!("expected InvalidBody, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn ledger_tampered_path_outside_home_rejected_on_cleanup() {
+        // Forge a v1 ledger that claims a file outside HOME belongs to
+        // an absent manifest id. Compile must NOT touch that file.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ledger-tamper-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("ledger-tamper-profile");
+        let weplex_dir = profile.join(".weplex");
+        std::fs::create_dir_all(&weplex_dir).unwrap();
+
+        // Create a "victim" file outside HOME.
+        let victim = std::env::temp_dir().join(format!(
+            "weplex-victim-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&victim, "DO NOT DELETE\n").unwrap();
+
+        // Forge a v1 ledger pointing at the victim under id "ghost".
+        let forged = format!(
+            r#"{{"version":1,"entries":{{"ghost":[{{"path":"{}","sha256":"{}"}}]}}}}"#,
+            victim.to_string_lossy(),
+            sha256_hex(b"DO NOT DELETE\n"),
+        );
+        std::fs::write(weplex_dir.join("compile-ledger.json"), forged).unwrap();
+
+        // No manifests in the profile → "ghost" is an orphan id, so the
+        // cleanup loop will consider deleting its files. The path safety
+        // check must reject the victim before any I/O happens to it.
+        let _ = compile_profile(profile.to_str().unwrap(), None).unwrap();
+
+        // Victim untouched.
+        assert!(
+            victim.exists(),
+            "tampered ledger entry caused deletion of {}",
+            victim.display()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "DO NOT DELETE\n"
+        );
+
+        let _ = std::fs::remove_file(&victim);
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn ledger_hash_mismatch_refuses_delete() {
+        // Install a fragment, then user-edit it. Remove the manifest
+        // and recompile: orphan cleanup must NOT remove the edited file.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ledger-hash-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("ledger-hash-profile");
+        let skills = profile.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+
+        // Install a fragment (opencode default).
+        std::fs::write(
+            skills.join("greet.weplex.yaml"),
+            "id: greet\nversion: 1.0.0\nagents:\n  opencode: {}\n",
+        )
+        .unwrap();
+        std::fs::write(skills.join("greet.md"), "Original body\n").unwrap();
+        let _ = compile_profile(profile.to_str().unwrap(), None).unwrap();
+
+        let frag = canon_home.join(".config/opencode/skills/greet.md");
+        assert!(frag.exists(), "fragment not installed");
+
+        // User edits the fragment.
+        std::fs::write(&frag, "USER EDITED THIS FILE\n").unwrap();
+
+        // Remove the manifest and recompile.
+        std::fs::remove_file(skills.join("greet.weplex.yaml")).unwrap();
+        std::fs::remove_file(skills.join("greet.md")).unwrap();
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+
+        // Orphan was NOT reported as removed (we refused).
+        assert!(
+            !report.orphans_removed.iter().any(|p| p == frag.to_string_lossy().as_ref()),
+            "edited orphan should not be removed: {:?}",
+            report.orphans_removed
+        );
+        // File still there with user content.
+        assert!(frag.exists(), "edited fragment was deleted");
+        assert_eq!(std::fs::read_to_string(&frag).unwrap(), "USER EDITED THIS FILE\n");
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn ledger_legacy_format_does_not_delete_files() {
+        // A v0 (no version, paths as plain strings) ledger must NOT be
+        // used to delete files — we lack hashes to verify what we
+        // installed. A normal compile rewrites the ledger in v1 form.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ledger-legacy-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("ledger-legacy-profile");
+        let weplex_dir = profile.join(".weplex");
+        std::fs::create_dir_all(&weplex_dir).unwrap();
+
+        // Create a real file that the legacy ledger claims as a fragment.
+        let frag_dir = canon_home.join(".config/opencode/skills");
+        std::fs::create_dir_all(&frag_dir).unwrap();
+        let frag = frag_dir.join("ghost.md");
+        std::fs::write(&frag, "legacy file content\n").unwrap();
+
+        // Legacy v0 ledger format.
+        let legacy = format!(
+            r#"{{"entries":{{"ghost":["{}"]}}}}"#,
+            frag.to_string_lossy()
+        );
+        std::fs::write(weplex_dir.join("compile-ledger.json"), legacy).unwrap();
+
+        // No manifests → ghost is an orphan id, but legacy=true must
+        // suppress destructive cleanup.
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        assert!(
+            report.orphans_removed.is_empty(),
+            "legacy ledger triggered deletion: {:?}",
+            report.orphans_removed
+        );
+        assert!(frag.exists(), "legacy ledger deleted file");
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn sections_synthetic_path_outside_home_rejected() {
+        // A forged __sections__ entry pointing outside HOME must NOT
+        // cause the compiler to read or modify that file.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("sections-tamper-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("sections-tamper-profile");
+        let weplex_dir = profile.join(".weplex");
+        std::fs::create_dir_all(&weplex_dir).unwrap();
+
+        // Victim file outside HOME.
+        let victim = std::env::temp_dir().join(format!(
+            "weplex-sections-victim-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Use marker-shaped content so we'd try to "remove" something
+        // if the path safety check didn't reject the path first.
+        let victim_content = "user-content\n# weplex:begin ghost\nimportant\n# weplex:end ghost\nmore\n";
+        std::fs::write(&victim, victim_content).unwrap();
+
+        let forged = format!(
+            r#"{{"version":1,"entries":{{"__sections__":[{{"path":"{}","sha256":""}}]}}}}"#,
+            victim.to_string_lossy()
+        );
+        std::fs::write(weplex_dir.join("compile-ledger.json"), forged).unwrap();
+
+        // No manifests at all → "ghost" is unknown id, would have been
+        // splice-removed if we trusted the ledger.
+        let _ = compile_profile(profile.to_str().unwrap(), None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            victim_content,
+            "tampered __sections__ entry mutated victim file"
+        );
+
+        let _ = std::fs::remove_file(&victim);
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn ledger_future_version_ignored() {
+        // A ledger with version > LEDGER_VERSION must be treated as
+        // empty. We don't know the schema and refuse to act.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ledger-future-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("ledger-future-profile");
+        let weplex_dir = profile.join(".weplex");
+        std::fs::create_dir_all(&weplex_dir).unwrap();
+
+        let frag_dir = canon_home.join(".config/opencode/skills");
+        std::fs::create_dir_all(&frag_dir).unwrap();
+        let frag = frag_dir.join("ghost.md");
+        std::fs::write(&frag, "ghost\n").unwrap();
+
+        let future = format!(
+            r#"{{"version":99,"entries":{{"ghost":[{{"path":"{}","sha256":"{}"}}]}}}}"#,
+            frag.to_string_lossy(),
+            sha256_hex(b"ghost\n"),
+        );
+        std::fs::write(weplex_dir.join("compile-ledger.json"), future).unwrap();
+
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        assert!(report.orphans_removed.is_empty());
+        assert!(frag.exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
     }
 
     #[test]
