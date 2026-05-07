@@ -473,12 +473,7 @@ pub fn list_profile_manifests(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Some tests mutate $HOME. This mutex serializes them; without it,
-    /// parallel cargo tests would race on the env var. Keep the mutex
-    /// at module scope so tests in this module share it.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::utils::test_support::HOME_ENV_LOCK as ENV_LOCK;
 
     fn tmpdir(label: &str) -> std::path::PathBuf {
         let base = std::env::temp_dir().join(format!(

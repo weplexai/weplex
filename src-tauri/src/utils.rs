@@ -83,6 +83,15 @@ fn atomic_write_with_mode(path: &str, contents: &str, _mode: u32) -> Result<(), 
     Ok(())
 }
 
+/// Process-level lock for tests that mutate `$HOME`. Tests in any module
+/// that override HOME via `set_var` MUST take this lock first; otherwise
+/// parallel `cargo test` runs will race and produce flaky failures.
+#[cfg(test)]
+pub mod test_support {
+    use std::sync::Mutex;
+    pub static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+}
+
 #[cfg(test)]
 mod atomic_write_tests {
     use super::*;
