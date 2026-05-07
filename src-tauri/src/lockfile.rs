@@ -965,13 +965,18 @@ pub fn export_profile_to_archive(
 
     // Build the tarball.
     use flate2::Compression;
-    use flate2::write::GzEncoder;
+    use flate2::GzBuilder;
     use std::fs::File;
 
     let out_file = File::create(output_path).map_err(|e| {
         LockfileError::Io(format!("create archive {}: {}", output_path, e))
     })?;
-    let enc = GzEncoder::new(out_file, Compression::default());
+    // Zero the gzip header MTIME so two exports of the same lockfile state
+    // produce byte-identical archives (the default `GzEncoder::new` writes
+    // wall-clock time, breaking reproducibility).
+    let enc = GzBuilder::new()
+        .mtime(0)
+        .write(out_file, Compression::default());
     let mut tar_builder = tar::Builder::new(enc);
 
     for (rel, abs) in &entries {
@@ -2137,6 +2142,47 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn export_two_runs_byte_identical() {
+        // W2 regression: two exports of the same lockfile state must
+        // produce byte-identical archives. The gzip header MTIME must be
+        // zero — wall-clock time would break reproducibility.
+        let src = tmpdir("export-reproducible");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "hello".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let archive_a = src.join("out-a.tar.gz");
+        let archive_b = src.join("out-b.tar.gz");
+        export_profile_to_archive(
+            src.to_str().unwrap(),
+            archive_a.to_str().unwrap(),
+        )
+        .unwrap();
+        // Sleep briefly to guarantee a wall-clock tick — if MTIME were
+        // wall-clock based, this would surface a difference.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        export_profile_to_archive(
+            src.to_str().unwrap(),
+            archive_b.to_str().unwrap(),
+        )
+        .unwrap();
+        let bytes_a = std::fs::read(&archive_a).unwrap();
+        let bytes_b = std::fs::read(&archive_b).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "two exports of the same lockfile state must be byte-identical"
+        );
+        let _ = std::fs::remove_dir_all(&src);
     }
 
     #[test]
