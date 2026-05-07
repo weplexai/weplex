@@ -1271,18 +1271,68 @@ fn resolve_body_for_spec(
 
 // ─── Tauri commands ─────────────────────────────────────────────────────
 
+/// Validate inputs from the renderer before handing them to the
+/// compiler. The renderer is sandboxed but compromise is in scope —
+/// raw paths must canonicalise inside HOME and (for project_root)
+/// must not be HOME itself, otherwise a `${PROJECT}/.cursorrules`
+/// target would write to `~/.cursorrules`.
+fn validate_compile_inputs(
+    profile_config_dir: String,
+    project_root: Option<String>,
+) -> Result<(String, Option<PathBuf>), String> {
+    let profile_dir = if profile_config_dir.is_empty() {
+        format!("{}/.claude", crate::utils::get_home())
+    } else {
+        crate::utils::validate_config_dir(&profile_config_dir)
+            .map_err(|e| format!("invalid profile_config_dir: {}", e))?
+    };
+
+    let project_root_canon = match project_root {
+        None => None,
+        Some(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                let p = PathBuf::from(&s);
+                if !p.is_dir() {
+                    return Err(format!("project_root is not a directory: {}", s));
+                }
+                let canon = std::fs::canonicalize(&p)
+                    .map_err(|e| format!("failed to canonicalize project_root: {}", e))?;
+
+                let home = PathBuf::from(crate::utils::get_home());
+                let canon_home = std::fs::canonicalize(&home).unwrap_or(home);
+
+                // Project root must be under HOME (cheapest sane policy
+                // for v1; private workspaces live elsewhere).
+                if !canon.starts_with(&canon_home) {
+                    return Err(format!(
+                        "project_root must be under HOME directory; got: {}",
+                        canon.display()
+                    ));
+                }
+                // Reject HOME itself — a `${PROJECT}/.cursorrules`
+                // target with project_root == HOME would write to
+                // `~/.cursorrules`, hijacking the global user file.
+                if canon == canon_home {
+                    return Err("project_root cannot be HOME itself".to_string());
+                }
+                Some(canon)
+            }
+        }
+    };
+
+    Ok((profile_dir, project_root_canon))
+}
+
 #[tauri::command]
 pub fn compile_profile_to_external_agents(
     profile_config_dir: String,
     project_root: Option<String>,
 ) -> Result<CompileReport, String> {
-    let profile_dir = if profile_config_dir.is_empty() {
-        format!("{}/.claude", crate::utils::get_home())
-    } else {
-        profile_config_dir
-    };
-    let project_root_buf = project_root.map(PathBuf::from);
-    compile_profile(&profile_dir, project_root_buf.as_deref())
+    let (profile_dir, project_root_canon) =
+        validate_compile_inputs(profile_config_dir, project_root)?;
+    compile_profile(&profile_dir, project_root_canon.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -1291,13 +1341,10 @@ pub fn dry_run_compile_profile(
     profile_config_dir: String,
     project_root: Option<String>,
 ) -> Result<CompileReport, String> {
-    let profile_dir = if profile_config_dir.is_empty() {
-        format!("{}/.claude", crate::utils::get_home())
-    } else {
-        profile_config_dir
-    };
-    let project_root_buf = project_root.map(PathBuf::from);
-    dry_run_compile(&profile_dir, project_root_buf.as_deref()).map_err(|e| e.to_string())
+    let (profile_dir, project_root_canon) =
+        validate_compile_inputs(profile_config_dir, project_root)?;
+    dry_run_compile(&profile_dir, project_root_canon.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────
@@ -1655,6 +1702,138 @@ agents:
             Err(CompileError::InvalidBody(_)) => {}
             other => panic!("expected InvalidBody, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn tauri_command_rejects_project_root_outside_home() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("tauri-pr-outside-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        // Some other dir well outside HOME.
+        let outside = tmpdir("tauri-pr-outside-pr");
+        let outside_canon = std::fs::canonicalize(&outside).unwrap();
+        // Sanity: outside is not under canon_home.
+        assert!(!outside_canon.starts_with(&canon_home));
+
+        let res = validate_compile_inputs(
+            String::new(),
+            Some(outside_canon.to_string_lossy().into_owned()),
+        );
+        assert!(res.is_err(), "expected rejection, got {:?}", res);
+        let msg = res.unwrap_err();
+        assert!(
+            msg.contains("must be under HOME"),
+            "unexpected error message: {}",
+            msg
+        );
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn tauri_command_rejects_project_root_equal_home() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("tauri-pr-equal-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let res = validate_compile_inputs(
+            String::new(),
+            Some(canon_home.to_string_lossy().into_owned()),
+        );
+        assert!(res.is_err(), "expected rejection, got {:?}", res);
+        let msg = res.unwrap_err();
+        assert!(
+            msg.contains("cannot be HOME"),
+            "unexpected error message: {}",
+            msg
+        );
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tauri_command_rejects_invalid_profile_dir() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("tauri-bad-profile-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        // Profile dir outside HOME.
+        let bad = tmpdir("tauri-bad-profile-dir");
+        let bad_canon = std::fs::canonicalize(&bad).unwrap();
+        assert!(!bad_canon.starts_with(&canon_home));
+
+        let res = validate_compile_inputs(
+            bad_canon.to_string_lossy().into_owned(),
+            None,
+        );
+        assert!(res.is_err(), "expected rejection, got {:?}", res);
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&bad);
+    }
+
+    #[test]
+    fn tauri_command_canonicalizes_project_root_symlink() {
+        // A symlink pointing inside HOME must canonicalise; a symlink
+        // chain that escapes HOME must be rejected after canonicalising.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("tauri-pr-symlink-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        // A real subdir inside HOME — should be accepted.
+        let real = canon_home.join("real-project");
+        std::fs::create_dir_all(&real).unwrap();
+        let res = validate_compile_inputs(
+            String::new(),
+            Some(real.to_string_lossy().into_owned()),
+        )
+        .unwrap();
+        let canon = res.1.unwrap();
+        assert!(canon.starts_with(&canon_home));
+
+        // A symlink inside HOME that points to a path OUTSIDE HOME —
+        // canonicalisation must follow it and we reject after the fact.
+        let outside = tmpdir("tauri-pr-symlink-target");
+        let outside_canon = std::fs::canonicalize(&outside).unwrap();
+        let symlink = canon_home.join("escape-link");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside_canon, &symlink).unwrap();
+            let res = validate_compile_inputs(
+                String::new(),
+                Some(symlink.to_string_lossy().into_owned()),
+            );
+            assert!(
+                res.is_err(),
+                "symlink to outside HOME should be rejected, got {:?}",
+                res
+            );
+        }
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]
