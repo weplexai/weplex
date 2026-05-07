@@ -194,6 +194,20 @@ Plan the implementation:
 
 Do not write code — only the plan.
 "#),
+        ("pipeline-feature", r#"---
+type: pipeline
+description: Standard feature pipeline (plan → review → ship)
+allowed-tools: Read, Grep, Glob, Bash, Agent
+---
+
+Run these commands in order. Do NOT skip steps. Do NOT spawn other agents headless.
+
+1. /plan
+2. /review
+3. /review-iterate
+
+Stop when /review-iterate reports all areas pass.
+"#),
     ];
 
     // Sidecar manifests for cross-agent rendering. Mirrors the .md
@@ -256,6 +270,25 @@ agents:
   opencode: {}
 permissions:
   - read_files
+mcp_servers: []
+"#,
+        ),
+        (
+            "pipeline-feature",
+            r#"id: pipeline-feature
+version: 1.0.0
+author: weplex
+agents:
+  claude:
+    source: ./pipeline-feature.md
+  codex:
+    section: Feature Pipeline
+  cursor:
+    section: Feature Pipeline
+  opencode: {}
+permissions:
+  - read_files
+  - run_bash
 mcp_servers: []
 "#,
         ),
@@ -715,13 +748,13 @@ mod tests {
         unsafe { std::env::set_var("HOME", &canon_home); }
 
         let result = ensure_default_commands(None).unwrap();
-        // Three default commands ship: review, review-iterate, plan.
-        assert_eq!(result.md_created, 3);
-        assert_eq!(result.sidecars_created, 3);
+        // Four default commands ship: review, review-iterate, plan, pipeline-feature.
+        assert_eq!(result.md_created, 4);
+        assert_eq!(result.sidecars_created, 4);
         assert!(result.sidecar_warnings.is_empty());
 
         let cmd_dir = canon_home.join(".claude").join("commands");
-        for name in ["review", "review-iterate", "plan"] {
+        for name in ["review", "review-iterate", "plan", "pipeline-feature"] {
             assert!(cmd_dir.join(format!("{}.md", name)).exists());
             assert!(cmd_dir.join(format!("{}.weplex.yaml", name)).exists());
         }
@@ -775,11 +808,43 @@ mod tests {
         // Builtin source marker.
         let profile_dir = canon_home.join(".claude");
         let lf = crate::lockfile::load_lockfile(profile_dir.to_str().unwrap());
-        assert_eq!(lf.resources.len(), 3);
+        assert_eq!(lf.resources.len(), 4);
         for entry in &lf.resources {
             assert_eq!(entry.source, crate::lockfile::ResourceSource::Builtin);
             assert!(entry.id.starts_with("commands/"));
         }
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn ensure_default_commands_pipeline_feature_has_pipeline_type() {
+        // The shipped pipeline-feature.md must declare type: pipeline so the
+        // frontend renders it as a pipeline, not as a regular command.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ensure-pipeline-type");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let _ = ensure_default_commands(None).unwrap();
+
+        let md_path = canon_home
+            .join(".claude")
+            .join("commands")
+            .join("pipeline-feature.md");
+        let content = std::fs::read_to_string(&md_path).unwrap();
+        assert!(
+            content.contains("type: pipeline\n"),
+            "pipeline-feature.md must declare type: pipeline"
+        );
+
+        // And it must round-trip through parse_command_file as a pipeline.
+        let parsed = parse_command_file(&content, md_path.to_str().unwrap(), "user");
+        assert_eq!(parsed.command_type, "pipeline");
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
