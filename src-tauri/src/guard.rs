@@ -722,6 +722,13 @@ fn scan_body_internal(body: &str) -> Vec<GuardFinding> {
     scan_one(body, &[], &[])
 }
 
+/// Maximum body size we'll ingest for scanning. A 100MB body would
+/// otherwise be loaded fully into memory, which is both unnecessary
+/// (resource bodies are markdown / YAML, not binaries) and a soft DoS
+/// vector. Anything over this cap returns a single `body-too-large`
+/// finding (Block) and short-circuits the rest of the rule pipeline.
+const MAX_BODY_SIZE_BYTES: u64 = 1024 * 1024; // 1 MiB
+
 /// Build a verdict for a single resource. Used by `scan_resource` (and,
 /// once the orchestrator lands, by `scan_profile`).
 fn scan_resource_inner(
@@ -738,6 +745,46 @@ fn scan_resource_inner(
         .copied()
         .find(|k| manifest.manifest_path.contains(&format!("/{}/", k.dir_name())))
         .unwrap_or(ResourceKind::Skill);
+
+    // Body size precheck (W-8). Refuse to load anything over the cap into
+    // memory. Returns a single Block finding so the user sees why their
+    // resource didn't get a clean verdict.
+    let metadata = std::fs::metadata(&manifest.body_path)
+        .map_err(|e| GuardError::Io(format!("body metadata {}: {}", manifest.body_path, e)))?;
+    if metadata.len() > MAX_BODY_SIZE_BYTES {
+        let resource_path = manifest.body_path.clone();
+        // Compute a sha-of-the-path as a stand-in body sha so the finding
+        // is bound to the file at all (overrides won't ever match — by
+        // design, you can't override "this file is too big").
+        let body_sha = crate::utils::sha256_hex(resource_path.as_bytes());
+        let finding = GuardFinding {
+            rule_id: "body-too-large".into(),
+            severity: Severity::Block,
+            message: format!(
+                "Resource body exceeds {} bytes (got {})",
+                MAX_BODY_SIZE_BYTES,
+                metadata.len()
+            ),
+            explanation:
+                "Resource bodies must fit within 1 MiB to be scanned. Large \
+                 binaries or generated artefacts have no business sitting in \
+                 a Weplex resource — split the body or move the data out of \
+                 the manifest."
+                    .into(),
+            snippet: None,
+            location: None,
+        };
+        return Ok(ResourceVerdict {
+            resource_path,
+            manifest_path: manifest.manifest_path,
+            resource_id: manifest.id,
+            kind,
+            body_sha256: body_sha,
+            verdict: GuardVerdict::Red,
+            findings: vec![finding],
+            overridden_findings: Vec::new(),
+        });
+    }
 
     let body_bytes = std::fs::read(&manifest.body_path)
         .map_err(|e| GuardError::Io(format!("read body {}: {}", manifest.body_path, e)))?;
@@ -2352,6 +2399,63 @@ mod tests {
         assert_eq!(
             report.deep_scan_skipped_reason.as_deref(),
             Some("binary-missing")
+        );
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    // ── W-8: oversized body rejection ───────────────────────────────
+
+    #[test]
+    fn scan_rejects_oversized_body() {
+        let profile = tmpdir("oversize");
+        let agents = profile.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let manifest_path = agents.join("big.weplex.yaml");
+        let body_path = agents.join("big.md");
+        std::fs::write(&manifest_path, "id: big\nversion: 1.0.0\n").unwrap();
+        // Write 1 MiB + 1 byte — just over the cap.
+        let payload = vec![b'x'; (MAX_BODY_SIZE_BYTES as usize) + 1];
+        std::fs::write(&body_path, &payload).unwrap();
+
+        let verdict = scan_resource_inner(
+            profile.to_str().unwrap(),
+            manifest_path.to_str().unwrap(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(verdict.verdict, GuardVerdict::Red);
+        assert_eq!(verdict.findings.len(), 1);
+        assert_eq!(verdict.findings[0].rule_id, "body-too-large");
+        assert_eq!(verdict.findings[0].severity, Severity::Block);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn scan_accepts_body_at_cap() {
+        let profile = tmpdir("at-cap");
+        let agents = profile.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let manifest_path = agents.join("at.weplex.yaml");
+        let body_path = agents.join("at.md");
+        std::fs::write(&manifest_path, "id: at\nversion: 1.0.0\n").unwrap();
+        // Exactly at the cap — should still be accepted.
+        let payload = vec![b'x'; MAX_BODY_SIZE_BYTES as usize];
+        std::fs::write(&body_path, &payload).unwrap();
+
+        let verdict = scan_resource_inner(
+            profile.to_str().unwrap(),
+            manifest_path.to_str().unwrap(),
+            &[],
+        )
+        .unwrap();
+        // No secrets / wildcards / ToS hits in plain `xxxx...`, so green.
+        assert!(
+            verdict
+                .findings
+                .iter()
+                .all(|f| f.rule_id != "body-too-large"),
+            "at-cap body should not be flagged: {:?}",
+            verdict.findings
         );
         let _ = std::fs::remove_dir_all(&profile);
     }
