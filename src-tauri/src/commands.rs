@@ -108,6 +108,12 @@ fn read_commands_from_dir(dir_path: &str, scope: &str) -> Vec<CommandFile> {
 }
 
 /// Create default command files in ~/.claude/commands/ if they don't exist.
+///
+/// Each default ships with a sibling `<name>.weplex.yaml` cross-agent
+/// manifest. The sidecar is written ONLY when the .md is freshly created
+/// — we never overwrite a user-edited file. If sidecar write fails we
+/// log a warning but keep the .md (backward-compat: .md alone still
+/// works as Claude-only).
 #[tauri::command]
 pub fn ensure_default_commands() -> Result<u32, String> {
     let home = crate::utils::get_home();
@@ -152,12 +158,102 @@ Do not write code — only the plan.
 "#),
     ];
 
+    // Sidecar manifests for cross-agent rendering. Mirrors the .md
+    // ordering above so we can match by name. Each manifest:
+    // - id == name (matches filename basename, validated by manifest::load)
+    // - claude.source points at the sibling .md (Claude reads it directly)
+    // - codex/cursor get a section heading; opencode gets the default
+    //   per-id fragment file.
+    let default_sidecars: Vec<(&str, &str)> = vec![
+        (
+            "review",
+            r#"id: review
+version: 1.0.0
+author: weplex
+agents:
+  claude:
+    source: ./review.md
+  codex:
+    section: Code Review
+  cursor:
+    section: Code Review
+  opencode: {}
+permissions:
+  - read_files
+  - run_bash
+mcp_servers: []
+"#,
+        ),
+        (
+            "review-iterate",
+            r#"id: review-iterate
+version: 1.0.0
+author: weplex
+agents:
+  claude:
+    source: ./review-iterate.md
+  codex:
+    section: Iterate Review
+  cursor:
+    section: Iterate Review
+  opencode: {}
+permissions:
+  - read_files
+  - run_bash
+mcp_servers: []
+"#,
+        ),
+        (
+            "plan",
+            r#"id: plan
+version: 1.0.0
+author: weplex
+agents:
+  claude:
+    source: ./plan.md
+  codex:
+    section: Implementation Plan
+  cursor:
+    section: Implementation Plan
+  opencode: {}
+permissions:
+  - read_files
+mcp_servers: []
+"#,
+        ),
+    ];
+
+    let sidecar_for = |name: &str| -> Option<&'static str> {
+        for (n, body) in &default_sidecars {
+            if *n == name {
+                return Some(*body);
+            }
+        }
+        None
+    };
+
     let mut created = 0u32;
     for (name, content) in defaults {
         let path = format!("{}/{}.md", dir, name);
         if !std::path::Path::new(&path).exists() {
             std::fs::write(&path, content).map_err(|e| e.to_string())?;
             created += 1;
+
+            // Best-effort: drop the sibling sidecar manifest. Failures
+            // here must NOT break the .md write (which already succeeded
+            // and is what Claude needs). Log and continue.
+            if let Some(sidecar_body) = sidecar_for(name) {
+                let sidecar_path = format!("{}/{}.weplex.yaml", dir, name);
+                if !std::path::Path::new(&sidecar_path).exists() {
+                    if let Err(e) = std::fs::write(&sidecar_path, sidecar_body) {
+                        log::warn!(
+                            "ensure_default_commands: failed to write sidecar {}: {}",
+                            sidecar_path,
+                            e
+                        );
+                    }
+                }
+            }
         }
     }
     Ok(created)
