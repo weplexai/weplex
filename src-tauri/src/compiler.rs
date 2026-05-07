@@ -750,6 +750,68 @@ fn ledger_path_is_safe(p: &Path, project_root: Option<&Path>) -> bool {
     false
 }
 
+// ─── Interstitial padding helper ────────────────────────────────────────
+
+/// Compute the interstitial vector for a section file when `added_count`
+/// new marker blocks are appended after the existing `original_blocks_count`
+/// blocks.
+///
+/// Input invariants:
+/// - `original_interstitials.len() == original_blocks_count + 1`.
+/// - `added_count >= 0`.
+///
+/// Output guarantee:
+/// - returned vector has length `original_blocks_count + added_count + 1`.
+/// - the slot at index `original_blocks_count` (which sits immediately
+///   before the first appended block) is patched to ensure a blank-line
+///   separator above the appended block when the existing content has
+///   user-visible bytes there.
+/// - between each pair of appended blocks a single `"\n"` separator slot
+///   keeps blocks visually separated.
+/// - the final slot is empty (the per-block trailing `\n` is added during
+///   reassembly).
+///
+/// This is pure: same inputs → same output, no I/O, no path dependence.
+fn pad_interstitials_for_appended_blocks(
+    original_interstitials: &[String],
+    original_blocks_count: usize,
+    added_count: usize,
+) -> Vec<String> {
+    debug_assert_eq!(original_interstitials.len(), original_blocks_count + 1);
+
+    let mut interstitials: Vec<String> = original_interstitials.to_vec();
+    if added_count == 0 {
+        return interstitials;
+    }
+
+    // Patch the slot that sits immediately before the first appended
+    // block (the LAST element of the current interstitial list). When
+    // it has user content but no trailing blank line, add one so the
+    // appended block starts on a fresh paragraph.
+    let last_idx = interstitials.len() - 1;
+    let final_inter = &mut interstitials[last_idx];
+    if !final_inter.is_empty() && !final_inter.ends_with("\n\n") {
+        if final_inter.ends_with('\n') {
+            final_inter.push('\n');
+        } else {
+            final_inter.push_str("\n\n");
+        }
+    }
+
+    // Append `added_count` slots: (added_count - 1) "\n" separators
+    // between adjacent appended blocks, and one final "" trailing slot.
+    for _ in 0..added_count.saturating_sub(1) {
+        interstitials.push("\n".to_string());
+    }
+    interstitials.push(String::new());
+
+    debug_assert_eq!(
+        interstitials.len(),
+        original_blocks_count + added_count + 1
+    );
+    interstitials
+}
+
 // ─── Section-mode renderer ─────────────────────────────────────────────
 
 /// Apply all desired sections to one shared target file. Updates only
@@ -814,52 +876,14 @@ fn apply_sections_to_target(
         }
     }
 
-    // Reassemble. The parsed.interstitials originally has len = blocks+1.
-    // We are appending `added` new blocks at the end of the list; the
-    // current final interstitial keeps its position (between the LAST
-    // original block and the FIRST new block, or — when there were no
-    // original blocks — before the first new block).
-    //
-    // We need `new_blocks.len() + 1` interstitials total. Currently we
-    // have `parsed.blocks.len() + 1`. Insert `added` new "\n"-separator
-    // interstitials BEFORE the trailing slot so each new block is
-    // followed by a single newline, and ensure the slot immediately
-    // before the first new block leaves a blank line separator from any
-    // user content that came before it.
-    let mut interstitials = parsed.interstitials.clone();
+    // Reassemble: replace blocks one-for-one (interstitials unchanged) and
+    // append any new ones with proper separator padding via the helper.
     let added = new_blocks.len().saturating_sub(parsed.blocks.len());
-    if added > 0 {
-        // Patch the slot that immediately precedes the first new block
-        // (which is currently the LAST element of `interstitials`).
-        let last_idx = interstitials.len() - 1;
-        let final_inter = &mut interstitials[last_idx];
-        if !final_inter.is_empty() && !final_inter.ends_with("\n\n") {
-            // First-install with foreign content present, OR existing
-            // managed file with no trailing blank line — make sure we
-            // start our new block on a fresh line with one blank above.
-            if final_inter.ends_with('\n') {
-                final_inter.push('\n');
-            } else {
-                final_inter.push_str("\n\n");
-            }
-        }
-        // Now insert `added` separator interstitials BEFORE the trailing
-        // slot (which becomes the FINAL interstitial after the last new
-        // block). After this, the order is:
-        //   [..original interstitials.., patched_last, "\n", "\n", ..., ""]
-        // i.e., we move the patched slot to keep its position before the
-        // first new block, append "\n" between each new block, and a
-        // final "" trailing.
-        // To do this cleanly: keep `interstitials` as-is (with patched
-        // last_idx still containing what should sit BEFORE the first new
-        // block), then push `added` new slots: (added-1) "\n" separators
-        // + 1 final "".
-        for _ in 0..added.saturating_sub(1) {
-            interstitials.push("\n".to_string());
-        }
-        interstitials.push(String::new());
-        debug_assert_eq!(interstitials.len(), new_blocks.len() + 1);
-    }
+    let interstitials = pad_interstitials_for_appended_blocks(
+        &parsed.interstitials,
+        parsed.blocks.len(),
+        added,
+    );
 
     let new_parsed = ParsedSections {
         interstitials,
@@ -1529,6 +1553,83 @@ mod tests {
             let back = parsed.reassemble();
             assert_eq!(back, *s, "round-trip mismatch for input:\n{:?}", s);
         }
+    }
+
+    #[test]
+    fn pad_interstitials_no_op_when_nothing_appended() {
+        // Existing markers, no new blocks → output mirrors input.
+        let original = vec!["pre\n".to_string(), "between\n".to_string(), "post\n".to_string()];
+        let out = pad_interstitials_for_appended_blocks(&original, 2, 0);
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn pad_interstitials_empty_file_one_appended() {
+        // Empty existing file (no markers) + 1 appended section.
+        // original_interstitials = [""], original_blocks_count = 0.
+        let original = vec![String::new()];
+        let out = pad_interstitials_for_appended_blocks(&original, 0, 1);
+        // 0 + 1 + 1 = 2 slots. First is the patched leading interstitial
+        // (still empty), second is the trailing empty slot.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "");
+        assert_eq!(out[1], "");
+    }
+
+    #[test]
+    fn pad_interstitials_existing_markers_one_appended() {
+        // Existing managed file with a marker block + 1 appended section.
+        // original blocks = 1, interstitials = ["pre\n", "tail\n"].
+        let original = vec!["pre\n".to_string(), "tail\n".to_string()];
+        let out = pad_interstitials_for_appended_blocks(&original, 1, 1);
+        // 1 + 1 + 1 = 3 slots. The slot before the new block ("tail\n")
+        // gets padded to ensure blank line separation.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], "pre\n");
+        // tail\n had only one trailing newline → patched to "tail\n\n"
+        assert_eq!(out[1], "tail\n\n");
+        // Final trailing slot is empty.
+        assert_eq!(out[2], "");
+    }
+
+    #[test]
+    fn pad_interstitials_first_install_with_user_content() {
+        // First-install: target has user content but no markers. The lone
+        // interstitial is the user content; appending must keep it
+        // visible and patch the separator.
+        let original = vec!["# Existing User Content\n\nfoo\n".to_string()];
+        let out = pad_interstitials_for_appended_blocks(&original, 0, 1);
+        assert_eq!(out.len(), 2);
+        // Already ends with "\n" but not "\n\n" → one extra newline added.
+        assert_eq!(out[0], "# Existing User Content\n\nfoo\n\n");
+        assert_eq!(out[1], "");
+    }
+
+    #[test]
+    fn pad_interstitials_user_content_no_trailing_newline() {
+        // User content with NO trailing newline at all. Patch must add
+        // "\n\n" so the appended block doesn't run on the same line.
+        let original = vec!["raw user content".to_string()];
+        let out = pad_interstitials_for_appended_blocks(&original, 0, 1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "raw user content\n\n");
+        assert_eq!(out[1], "");
+    }
+
+    #[test]
+    fn pad_interstitials_multiple_appended_blocks() {
+        // Append 3 blocks at once on top of existing 1 block. We need
+        // 1 + 3 + 1 = 5 slots; the 2 inter-block slots get a single "\n"
+        // each, the trailing slot is empty.
+        let original = vec!["pre\n".to_string(), "tail\n\n".to_string()];
+        let out = pad_interstitials_for_appended_blocks(&original, 1, 3);
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0], "pre\n");
+        // tail already ended with "\n\n" → no patching needed.
+        assert_eq!(out[1], "tail\n\n");
+        assert_eq!(out[2], "\n");
+        assert_eq!(out[3], "\n");
+        assert_eq!(out[4], "");
     }
 
     #[test]
