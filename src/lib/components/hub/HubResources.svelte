@@ -8,8 +8,25 @@
     type ResourceType,
   } from '../../stores/resourceStore.svelte';
   import { profileStore } from '../../stores/profileStore.svelte';
-  import { Plus, Copy, Trash2, AlertTriangle, RefreshCw, FileText, FolderOpen } from 'lucide-svelte';
+  import { settingsStore } from '../../stores/settingsStore.svelte';
+  import { guardStore } from '../../stores/guardStore.svelte';
+  import { schedule as scheduleCompile } from '../../utils/compileScheduler';
+  import type { CompileReport } from '../../types/guard';
+  import {
+    Plus,
+    Copy,
+    Trash2,
+    AlertTriangle,
+    RefreshCw,
+    FileText,
+    FolderOpen,
+    Send,
+    ShieldAlert,
+    Eye,
+  } from 'lucide-svelte';
   import { initial } from '../overlays/helpers';
+  import ResourceGuardBadge from './ResourceGuardBadge.svelte';
+  import GuardWarningDialog from '../overlays/GuardWarningDialog.svelte';
 
   // ─── State ────────────────────────────────────────────────────────────
 
@@ -35,6 +52,12 @@
     targetName: string;
   } | null>(null);
 
+  // Guard / compile UI state
+  let guardDialogOpen = $state(false);
+  let guardDialogProfileDir = $state<string>('');
+  let previewReport = $state<CompileReport | null>(null);
+  let previewProfileName = $state<string>('');
+
   // ─── Derived ──────────────────────────────────────────────────────────
 
   let hasMultipleProfiles = $derived(profileStore.profiles.length > 1);
@@ -55,6 +78,19 @@
 
   onMount(() => {
     resourceStore.discover();
+    // Initial guard scan for every profile that has a configDir.
+    for (const p of profileStore.profiles) {
+      if (p.configDir) {
+        guardStore.refresh(p.configDir, settingsStore.settings.agentshieldDeepScan);
+      }
+    }
+
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ profileConfigDir: string; message: string }>).detail;
+      showToast('error', `Compile failed: ${detail.message}`);
+    };
+    window.addEventListener('compileScheduler:error', handler);
+    return () => window.removeEventListener('compileScheduler:error', handler);
   });
 
   // ─── Actions ──────────────────────────────────────────────────────────
@@ -172,6 +208,96 @@
     }
   }
 
+  /** Canonical body path for a resource — used as the guard verdict key. */
+  function profilePathFor(r: UnifiedResource): string | null {
+    return r.profiles[0]?.filePath ?? null;
+  }
+
+  /** Owning profile.configDir for a body path (prefix match). */
+  function configDirFor(filePath: string): string | null {
+    for (const p of profileStore.profiles) {
+      if (p.configDir && filePath.startsWith(p.configDir)) {
+        return p.configDir;
+      }
+    }
+    return null;
+  }
+
+  async function syncToExternal(): Promise<void> {
+    if (operating) return;
+    operating = true;
+    try {
+      const targets = profileStore.profiles.filter((p) => !!p.configDir);
+      if (targets.length === 0) {
+        showToast('error', 'No profiles with config directory to sync');
+        return;
+      }
+      const results = await Promise.all(
+        targets.map((p) =>
+          scheduleCompile(p.configDir!, {
+            deepScan: settingsStore.settings.agentshieldDeepScan,
+            // Tests-only knob; pass 0 for an immediate fire here so the user
+            // doesn't sit through the debounce after clicking the button.
+            debounceMs: 0,
+          }),
+        ),
+      );
+      let written = 0;
+      let unchanged = 0;
+      let orphans = 0;
+      let failed = 0;
+      for (const r of results) {
+        if (!r) {
+          failed++;
+          continue;
+        }
+        written += r.report.targetsWritten.length;
+        unchanged += r.report.targetsUnchanged.length;
+        orphans += r.report.orphansRemoved.length;
+      }
+      if (failed > 0 && written === 0 && unchanged === 0 && orphans === 0) {
+        showToast('error', `Sync failed for ${failed} profile(s)`);
+      } else {
+        showToast(
+          'success',
+          `Synced: ${written} written, ${unchanged} unchanged, ${orphans} cleaned`,
+        );
+      }
+    } finally {
+      operating = false;
+    }
+  }
+
+  async function runPreview(filePath: string): Promise<void> {
+    const dir = configDirFor(filePath);
+    if (!dir) {
+      showToast('error', 'No profile config directory for this resource');
+      return;
+    }
+    operating = true;
+    try {
+      const report = await invoke<CompileReport>('dry_run_compile_profile', {
+        profileConfigDir: dir,
+        projectRoot: null,
+      });
+      previewReport = report;
+      previewProfileName =
+        profileStore.profiles.find((p) => p.configDir === dir)?.name ?? 'profile';
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast('error', `Preview failed: ${msg}`);
+    } finally {
+      operating = false;
+    }
+  }
+
+  function openGuardDialog(filePath: string): void {
+    const dir = configDirFor(filePath);
+    if (!dir) return;
+    guardDialogProfileDir = dir;
+    guardDialogOpen = true;
+  }
+
   function profileBadgeText(r: UnifiedResource): string {
     const allProfileIds = new Set(profileStore.profiles.map((p) => p.id));
     const resourceProfileIds = new Set(r.profiles.map((p) => p.profileId));
@@ -209,6 +335,7 @@
         </div>
       {:else}
         {#each tabResources as r}
+          {@const guardPath = profilePathFor(r)}
           <button
             class="resource-row"
             class:selected={selectedResource?.name === r.name && editMode === 'view'}
@@ -228,6 +355,13 @@
                 </span>
               {/if}
             </div>
+            {#if guardPath}
+              <ResourceGuardBadge
+                verdict={guardStore.verdictFor(guardPath)}
+                findings={guardStore.findingsFor(guardPath)}
+                size="sm"
+              />
+            {/if}
           </button>
         {/each}
       {/if}
@@ -241,6 +375,10 @@
       <button class="resources-action-btn" onclick={() => resourceStore.discover()}>
         <RefreshCw size={13} />
         <span>Refresh</span>
+      </button>
+      <button class="resources-action-btn" onclick={syncToExternal} disabled={operating}>
+        <Send size={13} />
+        <span>Sync to external agents</span>
       </button>
     </div>
   </div>
@@ -338,9 +476,28 @@
 
         {#each [selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]] as activeProfile}
           {#if activeProfile}
+            {@const activeVerdict = guardStore.verdictFor(activeProfile.filePath)}
             <div class="detail-meta">
               <span class="meta-path">{activeProfile.filePath}</span>
               <div class="meta-actions">
+                <button
+                  class="meta-btn"
+                  title="Preview compile"
+                  disabled={operating}
+                  onclick={() => runPreview(activeProfile.filePath)}
+                >
+                  <Eye size={13} />
+                </button>
+                {#if activeVerdict !== 'green'}
+                  <button
+                    class="meta-btn meta-btn-guard"
+                    title="Guard details"
+                    disabled={operating}
+                    onclick={() => openGuardDialog(activeProfile.filePath)}
+                  >
+                    <ShieldAlert size={13} />
+                  </button>
+                {/if}
                 <button
                   class="meta-btn"
                   title="Delete"
@@ -395,6 +552,79 @@
       <Button variant="secondary" onclick={() => (confirmOverwrite = null)}>Cancel</Button>
       <Button variant="primary" disabled={operating} onclick={overwriteConfirmed}>Overwrite</Button>
     </div>
+  </Modal>
+{/if}
+
+{#if guardDialogOpen && selectedResource}
+  {@const activeProfile = selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]}
+  {@const verdictData = activeProfile ? guardStore.findingsFor(activeProfile.filePath) : null}
+  {#if verdictData}
+    <GuardWarningDialog
+      profileConfigDir={guardDialogProfileDir}
+      resource={verdictData}
+      open={guardDialogOpen}
+      onclose={() => (guardDialogOpen = false)}
+    />
+  {/if}
+{/if}
+
+{#if previewReport}
+  <Modal onclose={() => (previewReport = null)} position="center" label="Compile preview" class="preview-dialog">
+    <header class="preview-header">
+      <h2 class="preview-title">Compile preview</h2>
+      <p class="preview-subtitle">Profile: {previewProfileName}</p>
+    </header>
+    <div class="preview-body">
+      <section class="preview-section">
+        <h3>To write ({previewReport.targetsWritten.length})</h3>
+        {#if previewReport.targetsWritten.length === 0}
+          <p class="preview-empty">Nothing to write.</p>
+        {:else}
+          <ul class="preview-list">
+            {#each previewReport.targetsWritten as t}
+              <li>{t}</li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+      <section class="preview-section">
+        <h3>Unchanged ({previewReport.targetsUnchanged.length})</h3>
+        {#if previewReport.targetsUnchanged.length === 0}
+          <p class="preview-empty">None.</p>
+        {:else}
+          <ul class="preview-list">
+            {#each previewReport.targetsUnchanged as t}
+              <li>{t}</li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+      <section class="preview-section">
+        <h3>Orphans to remove ({previewReport.orphansRemoved.length})</h3>
+        {#if previewReport.orphansRemoved.length === 0}
+          <p class="preview-empty">None.</p>
+        {:else}
+          <ul class="preview-list">
+            {#each previewReport.orphansRemoved as t}
+              <li>{t}</li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+      {#if previewReport.errors.length > 0}
+        <section class="preview-section">
+          <h3 class="preview-errors-title">Errors ({previewReport.errors.length})</h3>
+          <ul class="preview-list preview-errors">
+            {#each previewReport.errors as e}
+              <li>{e}</li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+    </div>
+    <footer class="preview-footer">
+      <Button variant="secondary" onclick={() => (previewReport = null)}>Close</Button>
+    </footer>
   </Modal>
 {/if}
 
@@ -712,6 +942,10 @@
   }
   .meta-btn:hover { color: var(--weplex-error); background: color-mix(in srgb, var(--weplex-error) 10%, transparent); }
   .meta-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .meta-btn-guard:hover {
+    color: var(--weplex-warning, #f59e0b);
+    background: color-mix(in srgb, var(--weplex-warning, #f59e0b) 10%, transparent);
+  }
 
   /* Editor */
   .editor {
@@ -796,6 +1030,80 @@
     word-break: break-all;
   }
   .confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* Preview dialog */
+  :global(.preview-dialog) {
+    width: 540px;
+    max-width: 92vw;
+    background: var(--weplex-surface);
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-xl);
+    box-shadow: var(--weplex-shadow-overlay);
+    display: flex;
+    flex-direction: column;
+  }
+  .preview-header {
+    padding: 18px 20px 12px;
+    border-bottom: 1px solid var(--weplex-border);
+  }
+  .preview-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--weplex-text);
+  }
+  .preview-subtitle {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--weplex-text-muted);
+  }
+  .preview-body {
+    padding: 12px 20px;
+    overflow-y: auto;
+    max-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .preview-section h3 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--weplex-text-muted);
+  }
+  .preview-empty {
+    margin: 0;
+    font-size: 12px;
+    color: var(--weplex-text-muted);
+  }
+  .preview-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .preview-list li {
+    font-family: var(--weplex-font-mono);
+    font-size: 11px;
+    color: var(--weplex-text-secondary);
+    word-break: break-all;
+  }
+  .preview-errors-title {
+    color: var(--weplex-error) !important;
+  }
+  .preview-errors li {
+    color: var(--weplex-error);
+  }
+  .preview-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 12px 20px 16px;
+    border-top: 1px solid var(--weplex-border);
+  }
 
   /* Toast */
   .toast {
