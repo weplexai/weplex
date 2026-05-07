@@ -15,6 +15,7 @@
   import { terminalRegistry } from '../../stores/terminalRegistry';
   import { commandStore } from '../../stores/commandStore.svelte';
   import { resolveProfileEnvId } from '../../utils/profile';
+  import { schedule as scheduleCompile, cancel as cancelCompile } from '../../utils/compileScheduler';
 
   let { sessionId }: { sessionId: number } = $props();
   let isActive = $derived(sessionStore.activeSessionId === sessionId);
@@ -44,6 +45,8 @@
   let isDragOver = $state(false);
   // Set in connectPty once session type is known
   let isAgentMode = false;
+  // Profile dir we scheduled a cross-agent compile for; cancelled in onDestroy.
+  let scheduledCompileFor: string | null = null;
 
   // Reusable TextDecoder for converting raw PTY bytes to string (pattern matching only).
   // stream:true keeps state across calls so multibyte sequences split across
@@ -290,6 +293,10 @@
     // scheduled by SplitContainer during reparent) cannot reach a disposed term.
     terminalRegistry.unregister(sessionId);
     term?.dispose();
+    if (scheduledCompileFor) {
+      cancelCompile(scheduledCompileFor);
+      scheduledCompileFor = null;
+    }
   });
 
   function escapePath(p: string): string {
@@ -456,6 +463,27 @@
       // Load commands for slash autocomplete
       if (isAgentMode && session?.cwd) {
         commandStore.load(session.cwd);
+      }
+
+      // Cross-agent compile + scan: lazy, per non-Claude session start.
+      // Skipped for Claude (reads bodies natively) and the default profile
+      // (no configDir → no manifests). Failures fall through — session
+      // start is never gated. Toast surfaces in HubResources.
+      if (
+        isAgentSession &&
+        session?.agentType !== 'claude' &&
+        profile?.configDir
+      ) {
+        try {
+          scheduledCompileFor = profile.configDir;
+          // Fire-and-forget: don't block PTY spawn on the debounced compile.
+          scheduleCompile(profile.configDir, {
+            projectRoot: session?.cwd ?? null,
+            deepScan: settingsStore.settings.agentshieldDeepScan,
+          });
+        } catch (e) {
+          console.warn('[weplex] cross-agent compile failed (non-fatal):', e);
+        }
       }
 
       await invoke('create_pty', {

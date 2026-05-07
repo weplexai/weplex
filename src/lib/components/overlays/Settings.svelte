@@ -383,6 +383,21 @@
           sent.
           <a href="https://weplex.ai/privacy" target="_blank" rel="noopener">Details</a>
         </p>
+        <div class="setting">
+          <label class="setting-label" for="set-deepscan">Deep scan via ecc-agentshield</label>
+          <input
+            id="set-deepscan"
+            type="checkbox"
+            checked={settings.agentshieldDeepScan}
+            onchange={(e) =>
+              settingsStore.update({ agentshieldDeepScan: (e.target as HTMLInputElement).checked })}
+          />
+        </div>
+        <p class="about-text muted" style="margin-top: 4px; font-size: 12px;">
+          When on, Weplex shells out to <code>ecc-agentshield</code> for an additional
+          policy scan (5s timeout). Default off — local rules cover the threat model.
+          <a href="https://github.com/ecc-org/agentshield" target="_blank" rel="noopener">About</a>
+        </p>
       {:else if activeTab === 'about'}
         <h3 class="section-title">About</h3>
         <p class="about-text"><strong>Weplex</strong> v{appVersion}</p>
