@@ -997,6 +997,40 @@ fn remove_fragment(target: &Path) -> Result<bool, CompileError> {
     Ok(true)
 }
 
+// ─── Per-profile compile lock ───────────────────────────────────────────
+
+/// Acquire an exclusive advisory lock for the duration of a compile.
+///
+/// The lock is a flock(2)-style exclusive lock on
+/// `<profile_dir>/.weplex/compile.lock`. It is **cooperative**: only
+/// processes that themselves take this lock are blocked — direct edits
+/// to the target files (or another tool entirely) are not held back.
+/// This is sufficient for our threat model, where the only concurrent
+/// writer we're worried about is another Weplex instance compiling the
+/// same profile (e.g. user runs the desktop app and the CLI in parallel,
+/// or the desktop fires two compiles in quick succession).
+///
+/// On failure to acquire (lock already held), returns an Io error so the
+/// caller surfaces it cleanly. On success, returns the open file — drop
+/// it to release the lock.
+fn acquire_compile_lock(profile_dir: &str) -> Result<std::fs::File, CompileError> {
+    use fs2::FileExt;
+    let lock_dir = PathBuf::from(profile_dir).join(".weplex");
+    std::fs::create_dir_all(&lock_dir)
+        .map_err(|e| CompileError::Io(format!("create lock dir {}: {}", lock_dir.display(), e)))?;
+    let lock_path = lock_dir.join("compile.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_path)
+        .map_err(|e| CompileError::Io(format!("open compile lock {}: {}", lock_path.display(), e)))?;
+    lock_file
+        .try_lock_exclusive()
+        .map_err(|e| CompileError::Io(format!("compile already in progress for {}: {}", profile_dir, e)))?;
+    Ok(lock_file)
+}
+
 // ─── Compile ────────────────────────────────────────────────────────────
 
 /// Compile every manifest in `profile_dir`. If `dry_run` is true, no
@@ -1021,6 +1055,20 @@ fn compile_profile_internal(
     project_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<CompileReport, CompileError> {
+    // Per-profile compile lock: section-mode rendering does
+    // read-modify-write on shared files (e.g. ~/.codex/AGENTS.md), so two
+    // compiles of the same profile racing in parallel can produce torn
+    // marker blocks. The lock is advisory and cooperative — it only
+    // protects compilers that themselves take it. We hold it for the
+    // entire body of the function; it drops on return (success or error)
+    // when `_lock_file` goes out of scope. Dry-run skips the lock since
+    // it never touches the target files.
+    let _lock_file = if !dry_run {
+        Some(acquire_compile_lock(profile_dir)?)
+    } else {
+        None
+    };
+
     let manifests = scan_profile_manifests(profile_dir)?;
     let home = crate::utils::get_home();
 
@@ -2506,6 +2554,55 @@ agents:
         let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
         assert!(report.orphans_removed.is_empty());
         assert!(frag.exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn concurrent_compiles_serialize_via_lock() {
+        // Two threads compiling the same profile in parallel: one wins
+        // the flock, the other gets a clear error. The fastest reliable
+        // way to test this without relying on timing is to acquire the
+        // lock manually from the test thread, then attempt a compile —
+        // it must fail with our "compile already in progress" error.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("compile-lock-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("compile-lock-profile");
+        let skills = profile.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(
+            skills.join("greet.weplex.yaml"),
+            "id: greet\nversion: 1.0.0\nagents:\n  codex:\n    section: Greet\n",
+        )
+        .unwrap();
+        std::fs::write(skills.join("greet.md"), "Hi\n").unwrap();
+
+        // Manually acquire the lock — simulating an in-flight sibling
+        // compile.
+        let held = acquire_compile_lock(profile.to_str().unwrap()).unwrap();
+
+        let res = compile_profile(profile.to_str().unwrap(), None);
+        match res {
+            Err(CompileError::Io(m)) => assert!(
+                m.contains("compile already in progress"),
+                "unexpected error: {}",
+                m
+            ),
+            other => panic!("expected lock contention error, got {:?}", other),
+        }
+
+        // Release: now compile must succeed.
+        drop(held);
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
