@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::manifest::{
-    scan_profile_manifests, Manifest, ManifestError, RenderMode, ResourceKind, TargetSpec,
+    scan_profile_manifests, Harness, Manifest, ManifestError, RenderMode, ResourceKind, TargetSpec,
 };
 
 // ─── Errors / Reports ──────────────────────────────────────────────────
@@ -457,7 +457,7 @@ fn section_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
 /// fully specify them. Returns None when the harness has no useful
 /// default for this resource kind (caller should skip).
 fn resolve_target_and_mode(
-    harness: &str,
+    harness: Harness,
     spec: &TargetSpec,
     id: &str,
     _home: &str,
@@ -469,14 +469,13 @@ fn resolve_target_and_mode(
     let target_str: String = match spec.target.as_deref() {
         Some(t) => t.to_string(),
         None => match harness {
-            "codex" => "~/.codex/AGENTS.md".to_string(),
-            "cursor" => match project_root {
+            Harness::Codex => "~/.codex/AGENTS.md".to_string(),
+            Harness::Cursor => match project_root {
                 Some(_) => "${PROJECT}/.cursorrules".to_string(),
                 None => return Ok(None),
             },
-            "opencode" => format!("~/.config/opencode/skills/{}.md", id),
-            "claude" => return Ok(None), // Claude reads body directly
-            _ => return Ok(None),
+            Harness::Opencode => format!("~/.config/opencode/skills/{}.md", id),
+            Harness::Claude => return Ok(None), // Claude reads body directly
         },
     };
 
@@ -516,7 +515,7 @@ fn resolve_target_and_mode(
     Ok(Some((resolved, mode)))
 }
 
-fn infer_mode(path: &Path, harness: &str) -> RenderMode {
+fn infer_mode(path: &Path, harness: Harness) -> RenderMode {
     // .mdc and per-id files are fragments; shared files like AGENTS.md,
     // .cursorrules are sections.
     let ext = path
@@ -532,11 +531,21 @@ fn infer_mode(path: &Path, harness: &str) -> RenderMode {
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    match (harness, file_name.as_str()) {
-        ("codex", "agents.md") => RenderMode::Section,
-        ("cursor", ".cursorrules") => RenderMode::Section,
-        ("opencode", _) => RenderMode::Fragment,
-        _ => RenderMode::Section,
+    // Exhaustive on Harness — adding a new harness forces an explicit
+    // decision here at compile time.
+    match harness {
+        Harness::Codex => match file_name.as_str() {
+            "agents.md" => RenderMode::Section,
+            _ => RenderMode::Section,
+        },
+        Harness::Cursor => match file_name.as_str() {
+            ".cursorrules" => RenderMode::Section,
+            _ => RenderMode::Section,
+        },
+        Harness::Opencode => RenderMode::Fragment,
+        // Unreachable — Claude reads body directly; resolve_target_and_mode
+        // returns None before infer_mode is called.
+        Harness::Claude => RenderMode::Section,
     }
 }
 
@@ -1033,14 +1042,10 @@ fn compile_profile_internal(
             }
         };
 
-        for harness in ["codex", "cursor", "opencode"] {
-            let spec_opt = match harness {
-                "codex" => manifest.agents.codex.clone(),
-                "cursor" => manifest.agents.cursor.clone(),
-                "opencode" => manifest.agents.opencode.clone(),
-                _ => None,
+        for &harness in Harness::ALL_NON_CLAUDE {
+            let Some(spec) = manifest.agents.target_for(harness).cloned() else {
+                continue;
             };
-            let Some(spec) = spec_opt else { continue };
 
             // Resolve body source override if the spec asks for one.
             let body = match resolve_body_for_spec(&manifest.manifest_path, &spec, &body_default) {
@@ -1048,7 +1053,7 @@ fn compile_profile_internal(
                 Err(e) => {
                     report
                         .errors
-                        .push(format!("{}/{}: {}", manifest.id, harness, e));
+                        .push(format!("{}/{}: {}", manifest.id, harness.key(), e));
                     continue;
                 }
             };
@@ -1069,7 +1074,7 @@ fn compile_profile_internal(
                     // useful diff in CompileReport.errors.
                     report
                         .errors
-                        .push(format!("{}/{}: {}", manifest.id, harness, e));
+                        .push(format!("{}/{}: {}", manifest.id, harness.key(), e));
                     continue;
                 }
             };
@@ -1089,7 +1094,7 @@ fn compile_profile_internal(
                         Err(e) => {
                             report
                                 .errors
-                                .push(format!("{}/{}: {}", manifest.id, harness, e));
+                                .push(format!("{}/{}: {}", manifest.id, harness.key(), e));
                             continue;
                         }
                     };

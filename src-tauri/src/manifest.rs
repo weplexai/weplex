@@ -79,6 +79,40 @@ pub enum RenderMode {
     Fragment,
 }
 
+// ─── Harness ────────────────────────────────────────────────────────────
+
+/// One of the four agent harnesses Weplex knows how to render to. Adding
+/// a fifth means adding a variant here AND a match arm everywhere the
+/// compiler dispatches on harness — exhaustive matches will flag every
+/// site that needs an update.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Harness {
+    Claude,
+    Codex,
+    Cursor,
+    Opencode,
+}
+
+impl Harness {
+    /// Every non-Claude harness in canonical order. Claude is excluded
+    /// because it reads bodies directly — the compiler never writes
+    /// targets for it.
+    pub const ALL_NON_CLAUDE: &'static [Harness] =
+        &[Harness::Codex, Harness::Cursor, Harness::Opencode];
+
+    /// Lowercase tag used in serialization, error messages, and report
+    /// paths. Stable contract — do not change without a migration.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Harness::Claude => "claude",
+            Harness::Codex => "codex",
+            Harness::Cursor => "cursor",
+            Harness::Opencode => "opencode",
+        }
+    }
+}
+
 // ─── Manifest schema ────────────────────────────────────────────────────
 
 /// Per-harness target spec. All fields optional — defaults filled in by
@@ -120,19 +154,28 @@ impl AgentTargets {
     /// Names of harnesses that have a target spec (regardless of body).
     pub fn supported(&self) -> Vec<String> {
         let mut v = Vec::new();
-        if self.claude.is_some() {
-            v.push("claude".into());
-        }
-        if self.codex.is_some() {
-            v.push("codex".into());
-        }
-        if self.cursor.is_some() {
-            v.push("cursor".into());
-        }
-        if self.opencode.is_some() {
-            v.push("opencode".into());
+        for h in [
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Cursor,
+            Harness::Opencode,
+        ] {
+            if self.target_for(h).is_some() {
+                v.push(h.key().to_string());
+            }
         }
         v
+    }
+
+    /// Per-harness target spec lookup. Centralizes field access so adding
+    /// a new harness only requires touching `Harness` + this match.
+    pub fn target_for(&self, harness: Harness) -> Option<&TargetSpec> {
+        match harness {
+            Harness::Claude => self.claude.as_ref(),
+            Harness::Codex => self.codex.as_ref(),
+            Harness::Cursor => self.cursor.as_ref(),
+            Harness::Opencode => self.opencode.as_ref(),
+        }
     }
 }
 
@@ -258,17 +301,16 @@ impl Manifest {
 
     /// Validate every per-harness `TargetSpec` after deserialization.
     fn validate_target_specs(agents: &AgentTargets) -> Result<(), ManifestError> {
-        for spec in [
-            agents.claude.as_ref(),
-            agents.codex.as_ref(),
-            agents.cursor.as_ref(),
-            agents.opencode.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(label) = spec.section.as_deref() {
-                Self::validate_section_label(label)?;
+        for h in [
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Cursor,
+            Harness::Opencode,
+        ] {
+            if let Some(spec) = agents.target_for(h) {
+                if let Some(label) = spec.section.as_deref() {
+                    Self::validate_section_label(label)?;
+                }
             }
         }
         Ok(())
