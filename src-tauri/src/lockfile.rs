@@ -1407,6 +1407,18 @@ pub fn import_profile_from_archive(
         let body_bytes = by_path
             .remove(body_rel)
             .ok_or_else(|| LockfileError::InvalidArchive(format!("missing body: {}", body_rel)))?;
+        // W7: verify the bytes from the tarball match the lockfile's sha.
+        // Without this, an attacker who can swap content between the
+        // lockfile entry and the actual file in the archive would have
+        // the resource land on disk under a sha that differs from what
+        // pre-import inspection (and the lockfile) advertised.
+        let actual_body_sha = sha256_hex(&body_bytes);
+        if actual_body_sha != r.sha256 {
+            return Err(LockfileError::InvalidArchive(format!(
+                "resource '{}' body sha256 mismatch: archive lockfile says {}, actual {}",
+                r.id, r.sha256, actual_body_sha,
+            )));
+        }
         let body = String::from_utf8(body_bytes).map_err(|e| {
             LockfileError::InvalidArchive(format!("body not UTF-8: {}", e))
         })?;
@@ -1416,6 +1428,20 @@ pub fn import_profile_from_archive(
             let bytes = by_path.remove(sr).ok_or_else(|| {
                 LockfileError::InvalidArchive(format!("missing sidecar: {}", sr))
             })?;
+            // Same sha verification for the sidecar bytes.
+            let actual_sidecar_sha = sha256_hex(&bytes);
+            let expected = r.sidecar_sha256.as_deref().ok_or_else(|| {
+                LockfileError::InvalidArchive(format!(
+                    "resource '{}' has sidecar file but no sidecarSha256",
+                    r.id
+                ))
+            })?;
+            if actual_sidecar_sha != expected {
+                return Err(LockfileError::InvalidArchive(format!(
+                    "resource '{}' sidecar sha256 mismatch: archive lockfile says {}, actual {}",
+                    r.id, expected, actual_sidecar_sha,
+                )));
+            }
             Some(String::from_utf8(bytes).map_err(|e| {
                 LockfileError::InvalidArchive(format!("sidecar not UTF-8: {}", e))
             })?)
@@ -2488,6 +2514,46 @@ mod tests {
             ConflictPolicy::OverwriteAll,
         );
         assert!(matches!(r, Err(LockfileError::InvalidArchive(_))), "got {:?}", r);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn import_rejects_body_sha_mismatch() {
+        // W7 regression: archive lockfile says the body has sha X, but
+        // the file in the tar carries different bytes. Without sha
+        // verification, we'd silently land sha-Y on disk under the X
+        // metadata. Import must error and write nothing.
+        let dir = tmpdir("import-sha-mismatch");
+
+        // Build a lockfile that claims body sha for "hello" but the
+        // archive file actually contains "tampered".
+        let claimed_sha = sha256_hex(b"hello");
+        let lock_yaml = format!(
+            "version: 1\nresources:\n  - id: agents/a1\n    kind: agent\n    source: user\n    sha256: {sha}\n    files:\n      - agents/a1.md\nhistory: {{}}\n",
+            sha = claimed_sha,
+        );
+        let archive = build_archive(
+            &dir,
+            &[
+                (LOCKFILE_NAME, lock_yaml.as_bytes()),
+                ("agents/a1.md", b"tampered"),
+            ],
+        );
+
+        let target = tmpdir("import-sha-mismatch-target");
+        let r = import_profile_from_archive(
+            target.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        );
+        assert!(
+            matches!(r, Err(LockfileError::InvalidArchive(_))),
+            "expected InvalidArchive on sha mismatch, got {:?}",
+            r
+        );
+        // No file landed on disk.
+        assert!(!target.join("agents/a1.md").exists());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&target);
     }
