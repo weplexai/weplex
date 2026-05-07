@@ -42,6 +42,13 @@ pub const LEGACY_FLAG: &str = ".weplex/legacy-weplex-migrated.flag";
 
 pub const MAX_HISTORY_PER_RESOURCE: usize = 10;
 pub const MAX_HISTORY_AGE_DAYS: i64 = 30;
+/// Per-resource size cap, applied centrally in `apply_resource_mutation`
+/// so every upstream caller (marketplace install, create/copy resource,
+/// save_command, ensure_default_commands, archive import) inherits the
+/// same hard limit. Markdown agents/rules/skills/commands realistically
+/// sit well under 100 KiB; 1 MiB is generous and protects against an
+/// unbounded body or sidecar smuggled through any of these entry points.
+pub const MAX_RESOURCE_BYTES: usize = 1024 * 1024;
 #[allow(dead_code)]
 pub const MAX_ARCHIVE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
 #[allow(dead_code)]
@@ -332,6 +339,31 @@ pub fn apply_resource_mutation(
 ) -> Result<MutationReport, LockfileError> {
     let safe_name = sanitize_name(name).map_err(LockfileError::Parse)?;
     let id = resource_id(kind, &safe_name);
+
+    // Per-resource size cap. Centralised here so every caller inherits
+    // the same limit: marketplace install, create/copy resource,
+    // save_command, ensure_default_commands, and archive import all flow
+    // through this entry point.
+    if let MutationKind::Upsert { body, sidecar } = &mutation {
+        if body.len() > MAX_RESOURCE_BYTES {
+            return Err(LockfileError::Io(format!(
+                "resource '{}' body exceeds {} byte cap ({} bytes)",
+                id,
+                MAX_RESOURCE_BYTES,
+                body.len()
+            )));
+        }
+        if let Some(s) = sidecar {
+            if s.len() > MAX_RESOURCE_BYTES {
+                return Err(LockfileError::Io(format!(
+                    "resource '{}' sidecar exceeds {} byte cap ({} bytes)",
+                    id,
+                    MAX_RESOURCE_BYTES,
+                    s.len()
+                )));
+            }
+        }
+    }
 
     let _lock = acquire_lockfile_lock(profile_config_dir)?;
     let mut lf = load_lockfile(profile_config_dir);
@@ -1694,6 +1726,50 @@ mod tests {
         assert_eq!(lf.resources[0].source, ResourceSource::User);
         assert!(lf.history.is_empty());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_mutation_rejects_oversized_body() {
+        // W3 regression: bodies above MAX_RESOURCE_BYTES are rejected
+        // centrally so every upstream caller inherits the cap.
+        let dir = tmpdir("oversized-body");
+        let big = "x".repeat(MAX_RESOURCE_BYTES + 1);
+        let res = apply_resource_mutation(
+            dir.to_str().unwrap(),
+            ResourceKind::Agent,
+            "huge",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: big,
+                sidecar: None,
+            },
+        );
+        assert!(res.is_err(), "oversized body must be rejected");
+        // Nothing was written.
+        assert!(!dir.join("agents/huge.md").exists());
+        let lf = load_lockfile(dir.to_str().unwrap());
+        assert!(lf.resources.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_mutation_rejects_oversized_sidecar() {
+        // W3 regression: oversized sidecars are also rejected.
+        let dir = tmpdir("oversized-sidecar");
+        let big = "y".repeat(MAX_RESOURCE_BYTES + 1);
+        let res = apply_resource_mutation(
+            dir.to_str().unwrap(),
+            ResourceKind::Agent,
+            "huge",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "small".into(),
+                sidecar: Some(big),
+            },
+        );
+        assert!(res.is_err(), "oversized sidecar must be rejected");
+        assert!(!dir.join("agents/huge.md").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
