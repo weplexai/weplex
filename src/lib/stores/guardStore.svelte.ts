@@ -20,19 +20,62 @@ export interface ProfileGuardState {
 // Keyed by profile.configDir.
 let byProfile = $state<Record<string, ProfileGuardState>>({});
 
-// Flat lookup keyed by `resourcePath` for badge rendering. Derived from
-// every profile's report — last writer wins (resourcePath is canonical
-// per body file so collisions across profiles are not expected).
-let byResourcePath = $derived.by(() => {
-  const m: Record<string, ResourceVerdict> = {};
-  for (const ps of Object.values(byProfile)) {
+// Per-profile lookup keyed by resourcePath. Two profiles can symlink to
+// the same body file (or, for profile-relative paths under HOME, share
+// the same canonical path) — keeping the maps separate keeps each
+// profile's verdict honest. Lookups that pass a profile context use
+// `verdictForInProfile`; the legacy flat `verdictFor` path is kept for
+// callers that don't have a profile in scope and now picks
+// deterministically (alphabetical by profile dir) with a one-shot
+// console warning on the first cross-profile collision.
+let byResourcePathPerProfile = $derived.by(() => {
+  const m: Record<string, Record<string, ResourceVerdict>> = {};
+  for (const [profileDir, ps] of Object.entries(byProfile)) {
     if (!ps.report) continue;
+    const inner: Record<string, ResourceVerdict> = {};
     for (const r of ps.report.resources) {
-      m[r.resourcePath] = r;
+      inner[r.resourcePath] = r;
     }
+    m[profileDir] = inner;
   }
   return m;
 });
+
+// Flat lookup retained for legacy callers without profile context.
+// Walks profiles in alphabetical order so the "winner" on a collision
+// is deterministic across renders. The collision flag (computed inside
+// the derived) is read by `verdictFor` to emit a one-shot warning at
+// call time — keeping the derived itself side-effect-free.
+let byResourcePath = $derived.by(() => {
+  const m: Record<string, ResourceVerdict> = {};
+  let hasCollision = false;
+  const profileDirs = Object.keys(byResourcePathPerProfile).sort();
+  for (const profileDir of profileDirs) {
+    const inner = byResourcePathPerProfile[profileDir];
+    for (const [path, verdict] of Object.entries(inner)) {
+      if (m[path] && m[path].bodySha256 !== verdict.bodySha256) {
+        hasCollision = true;
+        // First writer wins — do not overwrite.
+        continue;
+      }
+      m[path] = verdict;
+    }
+  }
+  return { map: m, hasCollision };
+});
+
+let crossProfileCollisionWarned = false;
+
+function maybeWarnCollision(): void {
+  if (crossProfileCollisionWarned) return;
+  if (!byResourcePath.hasCollision) return;
+  crossProfileCollisionWarned = true;
+  console.warn(
+    '[weplex] guardStore: resourcePath collision across profiles — ' +
+      'first verdict wins (alphabetical by profile dir). ' +
+      'Use verdictForInProfile()/findingsForInProfile() for profile-specific lookups.',
+  );
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -60,7 +103,7 @@ export const guardStore = {
     return byProfile;
   },
   get byResourcePath() {
-    return byResourcePath;
+    return byResourcePath.map;
   },
 
   /**
@@ -85,15 +128,41 @@ export const guardStore = {
   },
 
   /**
-   * Lookup verdict for a resource by its body path. Returns 'green' for
-   * unscanned resources so the happy-path Hub stays unmarked.
+   * Profile-scoped verdict lookup — pass this when you have the profile
+   * dir in scope. Avoids cross-profile collisions when two profiles
+   * symlink the same body path. Returns 'green' for unscanned resources.
    */
-  verdictFor(resourcePath: string): GuardVerdict {
-    return byResourcePath[resourcePath]?.verdict ?? 'green';
+  verdictForInProfile(profileConfigDir: string, resourcePath: string): GuardVerdict {
+    return byResourcePathPerProfile[profileConfigDir]?.[resourcePath]?.verdict ?? 'green';
   },
 
+  /**
+   * Profile-scoped findings lookup. See `verdictForInProfile`.
+   */
+  findingsForInProfile(
+    profileConfigDir: string,
+    resourcePath: string,
+  ): ResourceVerdict | null {
+    return byResourcePathPerProfile[profileConfigDir]?.[resourcePath] ?? null;
+  },
+
+  /**
+   * Legacy flat lookup. Use `verdictForInProfile` when a profile is in
+   * scope — this version picks deterministically on collision but
+   * warns once per session if two profiles disagree on the same path.
+   * Returns 'green' for unscanned resources.
+   */
+  verdictFor(resourcePath: string): GuardVerdict {
+    maybeWarnCollision();
+    return byResourcePath.map[resourcePath]?.verdict ?? 'green';
+  },
+
+  /**
+   * Legacy flat lookup. See `verdictFor`.
+   */
   findingsFor(resourcePath: string): ResourceVerdict | null {
-    return byResourcePath[resourcePath] ?? null;
+    maybeWarnCollision();
+    return byResourcePath.map[resourcePath] ?? null;
   },
 
   /**

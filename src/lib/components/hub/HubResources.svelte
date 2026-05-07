@@ -336,6 +336,7 @@
       {:else}
         {#each tabResources as r}
           {@const guardPath = profilePathFor(r)}
+          {@const guardProfileDir = guardPath ? configDirFor(guardPath) : null}
           <button
             class="resource-row"
             class:selected={selectedResource?.name === r.name && editMode === 'view'}
@@ -357,8 +358,12 @@
             </div>
             {#if guardPath}
               <ResourceGuardBadge
-                verdict={guardStore.verdictFor(guardPath)}
-                findings={guardStore.findingsFor(guardPath)}
+                verdict={guardProfileDir
+                  ? guardStore.verdictForInProfile(guardProfileDir, guardPath)
+                  : guardStore.verdictFor(guardPath)}
+                findings={guardProfileDir
+                  ? guardStore.findingsForInProfile(guardProfileDir, guardPath)
+                  : guardStore.findingsFor(guardPath)}
                 size="sm"
               />
             {/if}
@@ -476,7 +481,10 @@
 
         {#each [selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]] as activeProfile}
           {#if activeProfile}
-            {@const activeVerdict = guardStore.verdictFor(activeProfile.filePath)}
+            {@const activeProfileDir = configDirFor(activeProfile.filePath)}
+            {@const activeVerdict = activeProfileDir
+              ? guardStore.verdictForInProfile(activeProfileDir, activeProfile.filePath)
+              : guardStore.verdictFor(activeProfile.filePath)}
             <div class="detail-meta">
               <span class="meta-path">{activeProfile.filePath}</span>
               <div class="meta-actions">
@@ -557,7 +565,10 @@
 
 {#if guardDialogOpen && selectedResource}
   {@const activeProfile = selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]}
-  {@const verdictData = activeProfile ? guardStore.findingsFor(activeProfile.filePath) : null}
+  {@const verdictData = activeProfile
+    ? guardStore.findingsForInProfile(guardDialogProfileDir, activeProfile.filePath)
+        ?? guardStore.findingsFor(activeProfile.filePath)
+    : null}
   {#if verdictData}
     <GuardWarningDialog
       profileConfigDir={guardDialogProfileDir}
