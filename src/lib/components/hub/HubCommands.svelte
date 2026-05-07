@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { commandStore, type Command } from '../../stores/commandStore.svelte';
-  import { spaceStore } from '../../stores/spaceStore.svelte';
+  import { commandStore, type Command, type CommandType } from '../../stores/commandStore.svelte';
   import { sessionStore } from '../../stores/sessionStore.svelte';
   import { Button, Modal, Select } from '../ui';
-  import { Plus, Save, Trash2, AlertCircle, Zap, FileText } from 'lucide-svelte';
+  import { Plus, Save, Trash2, AlertCircle, Zap, FileText, GitBranch } from 'lucide-svelte';
+  import { validatePipelineBody } from '../../utils/commandValidator';
 
   const ICON_COLOR_OPTIONS = [
     { value: 'accent', label: 'Red (accent)' },
@@ -30,14 +30,28 @@
     { value: 'project', label: 'Project' },
   ];
 
+  const TYPE_OPTIONS = [
+    { value: 'command', label: 'Command' },
+    { value: 'pipeline', label: 'Pipeline' },
+  ];
+
+  const PIPELINE_TEMPLATE = `Run these commands in order. Do NOT skip steps.
+
+1. /plan
+2. /review
+3. /commit
+`;
+
   let selected = $state<Command | null>(null);
   let editMode = $state<'view' | 'edit' | 'new'>('view');
   let editError = $state<string | null>(null);
+  let editWarnings = $state<string[]>([]);
   let confirmDelete = $state<Command | null>(null);
 
   // Editor form
   let formName = $state('');
   let formScope = $state<'user' | 'project'>('user');
+  let formCommandType = $state<CommandType>('command');
   let formDescription = $state('');
   let formArgumentHint = $state('');
   let formAllowedTools = $state('');
@@ -50,6 +64,9 @@
   // Get active session cwd for project-level commands
   let activeCwd = $derived(sessionStore.activeSession?.cwd);
 
+  // All command names known to the validator (for unknown-step warnings).
+  let knownCommandNames = $derived(commandStore.commands.map((c) => c.name));
+
   onMount(() => {
     commandStore.load(activeCwd);
   });
@@ -58,14 +75,17 @@
     selected = cmd;
     editMode = 'view';
     editError = null;
+    editWarnings = [];
   }
 
   function startNew() {
     selected = null;
     editMode = 'new';
     editError = null;
+    editWarnings = [];
     formName = '';
     formScope = 'user';
+    formCommandType = 'command';
     formDescription = '';
     formArgumentHint = '';
     formAllowedTools = '';
@@ -80,8 +100,10 @@
     if (!selected) return;
     editMode = 'edit';
     editError = null;
+    editWarnings = [];
     formName = selected.name;
     formScope = selected.scope;
+    formCommandType = selected.commandType;
     formDescription = selected.description;
     formArgumentHint = selected.argumentHint;
     formAllowedTools = selected.allowedTools.join(', ');
@@ -92,31 +114,58 @@
     formAdapterDefault = selected.adapters.default || '';
   }
 
+  /** Auto-fill the pipeline template when switching to "pipeline" in `new`
+   *  mode and the body is empty. Never clobber an existing body. */
+  function onTypeChange(next: string) {
+    formCommandType = next === 'pipeline' ? 'pipeline' : 'command';
+    if (
+      editMode === 'new' &&
+      formCommandType === 'pipeline' &&
+      formBody.trim() === ''
+    ) {
+      formBody = PIPELINE_TEMPLATE;
+    }
+  }
+
   async function saveForm() {
     if (!formName.trim()) { editError = 'Name is required'; return; }
     if (!formBody.trim()) { editError = 'Command body is required'; return; }
+
+    // Pipeline-only validation: errors block save, warnings are surfaced
+    // but don't block.
+    if (formCommandType === 'pipeline') {
+      const result = validatePipelineBody(formBody, knownCommandNames);
+      if (result.errors.length > 0) {
+        editError = result.errors.map((e) => e.message).join('\n');
+        return;
+      }
+      editWarnings = result.warnings.map((w) => w.message);
+    } else {
+      editWarnings = [];
+    }
 
     const tools = formAllowedTools
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
 
-    const err = await commandStore.save(
-      formName.trim(),
-      formScope,
-      activeCwd,
-      formDescription.trim(),
-      formArgumentHint.trim(),
-      tools,
-      formModel,
-      formBody,
-      {
+    const err = await commandStore.save({
+      name: formName.trim(),
+      scope: formScope,
+      cwd: activeCwd,
+      description: formDescription.trim(),
+      argumentHint: formArgumentHint.trim(),
+      allowedTools: tools,
+      model: formModel,
+      body: formBody,
+      commandType: formCommandType,
+      meta: {
         icon: formIcon.trim() || formName.charAt(0).toUpperCase(),
         iconColor: formIconColor,
         showInPanel: true,
         adapters: formAdapterDefault.trim() ? { default: formAdapterDefault.trim() } : undefined,
       },
-    );
+    });
 
     if (err) { editError = err; return; }
     selected = commandStore.getByName(formName.trim()) || null;
@@ -157,8 +206,24 @@
       {#if commandStore.loading}
         <div class="commands-empty">Loading...</div>
       {:else}
+        {#if commandStore.userPipelines.length > 0}
+          <div class="nav-section-label">User Pipelines</div>
+          {#each commandStore.userPipelines as cmd (cmd.name)}
+            <button
+              class="cmd-row"
+              class:selected={selected?.name === cmd.name && editMode === 'view'}
+              onclick={() => selectCmd(cmd)}
+            >
+              <span class="row-icon row-icon-pipeline" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">
+                <GitBranch size={12} strokeWidth={2} />
+              </span>
+              <span class="row-name">{cmd.name}</span>
+            </button>
+          {/each}
+        {/if}
+
         {#if commandStore.userCommands.length > 0}
-          <div class="nav-section-label">User</div>
+          <div class="nav-section-label">User Commands</div>
           {#each commandStore.userCommands as cmd (cmd.name)}
             <button
               class="cmd-row"
@@ -171,8 +236,24 @@
           {/each}
         {/if}
 
+        {#if commandStore.projectPipelines.length > 0}
+          <div class="nav-section-label">Project Pipelines</div>
+          {#each commandStore.projectPipelines as cmd (cmd.name)}
+            <button
+              class="cmd-row"
+              class:selected={selected?.name === cmd.name && editMode === 'view'}
+              onclick={() => selectCmd(cmd)}
+            >
+              <span class="row-icon row-icon-pipeline" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">
+                <GitBranch size={12} strokeWidth={2} />
+              </span>
+              <span class="row-name">{cmd.name}</span>
+            </button>
+          {/each}
+        {/if}
+
         {#if commandStore.projectCommands.length > 0}
-          <div class="nav-section-label">Project</div>
+          <div class="nav-section-label">Project Commands</div>
           {#each commandStore.projectCommands as cmd (cmd.name)}
             <button
               class="cmd-row"
@@ -206,7 +287,7 @@
         <div class="editor-header">
           <h2>{editMode === 'new' ? 'New Command' : `Edit: ${formName}`}</h2>
           <div class="editor-actions">
-            <Button variant="secondary" onclick={() => { editMode = 'view'; editError = null; }}>Cancel</Button>
+            <Button variant="secondary" onclick={() => { editMode = 'view'; editError = null; editWarnings = []; }}>Cancel</Button>
             <Button variant="primary" onclick={saveForm}><Save size={13} /> Save</Button>
           </div>
         </div>
@@ -215,11 +296,27 @@
           <div class="editor-error"><AlertCircle size={13} />{editError}</div>
         {/if}
 
+        {#if formCommandType === 'pipeline' && editWarnings.length > 0}
+          <div class="editor-warnings">
+            <AlertCircle size={13} />
+            <div class="editor-warnings-list">
+              {#each editWarnings as w}
+                <p>{w}</p>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
         <div class="editor-form">
           <div class="form-row-pair">
             <div class="form-row">
               <label>Name
                 <input type="text" bind:value={formName} placeholder="review" disabled={editMode === 'edit'} />
+              </label>
+            </div>
+            <div class="form-row">
+              <label>Type
+                <Select value={formCommandType} options={TYPE_OPTIONS} onchange={onTypeChange} />
               </label>
             </div>
             <div class="form-row">
@@ -255,8 +352,13 @@
           </div>
 
           <div class="form-row">
-            <label>Command body <span class="form-hint">(instructions for Claude)</span>
-              <textarea bind:value={formBody} rows={10} placeholder="Review this file and suggest improvements..."></textarea>
+            <label>
+              {#if formCommandType === 'pipeline'}
+                Pipeline body <span class="form-hint">(numbered list of /commands)</span>
+              {:else}
+                Command body <span class="form-hint">(instructions for Claude)</span>
+              {/if}
+              <textarea bind:value={formBody} rows={10} placeholder={formCommandType === 'pipeline' ? '1. /plan\n2. /review\n3. /commit' : 'Review this file and suggest improvements...'}></textarea>
             </label>
           </div>
 
@@ -286,9 +388,18 @@
     {:else if selected}
       <div class="detail">
         <div class="d-header">
-          <span class="d-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(selected)})">{selected.icon}</span>
+          {#if selected.commandType === 'pipeline'}
+            <span class="d-icon d-icon-pipeline" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(selected)})">
+              <GitBranch size={16} strokeWidth={2} />
+            </span>
+          {:else}
+            <span class="d-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(selected)})">{selected.icon}</span>
+          {/if}
           <h2 class="d-name">{selected.name}</h2>
           <span class="d-tag scope">{selected.scope}</span>
+          {#if selected.commandType === 'pipeline'}
+            <span class="d-tag type">pipeline</span>
+          {/if}
           {#if selected.model}
             <span class="d-tag model">{selected.model}</span>
           {/if}
@@ -317,7 +428,7 @@
         <div class="d-divider"></div>
 
         <div class="d-body-section">
-          <h4 class="d-body-title">Command body</h4>
+          <h4 class="d-body-title">{selected.commandType === 'pipeline' ? 'Pipeline body' : 'Command body'}</h4>
           <pre class="d-body">{selected.body}</pre>
         </div>
 
@@ -402,6 +513,7 @@
     font-size: 10px; font-weight: 700; font-family: var(--weplex-font-mono);
     background: color-mix(in srgb, var(--cmd-color) 15%, transparent); color: var(--cmd-color);
   }
+  .row-icon-pipeline { color: var(--cmd-color); }
 
   .row-name {
     flex: 1; font-size: 13px; font-weight: 500; font-family: var(--weplex-font-mono);
@@ -436,12 +548,14 @@
     font-size: 14px; font-weight: 700; font-family: var(--weplex-font-mono);
     background: color-mix(in srgb, var(--cmd-color) 15%, transparent); color: var(--cmd-color); flex-shrink: 0;
   }
+  .d-icon-pipeline { color: var(--cmd-color); }
   .d-name { font-size: 17px; font-weight: 700; color: var(--weplex-text); font-family: var(--weplex-font-mono); margin: 0; letter-spacing: -0.02em; }
   .d-tag {
     font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 4px;
     border: 1px solid var(--weplex-border); color: var(--weplex-text-muted); font-family: var(--weplex-font-mono);
   }
   .d-tag.scope { color: var(--weplex-active); border-color: color-mix(in srgb, var(--weplex-active) 30%, transparent); }
+  .d-tag.type { color: var(--weplex-accent); border-color: color-mix(in srgb, var(--weplex-accent) 30%, transparent); }
   .d-tag.model { color: var(--weplex-model-opus); border-color: color-mix(in srgb, var(--weplex-model-opus) 30%, transparent); }
   .d-desc { font-size: 13px; color: var(--weplex-text-muted); line-height: 1.5; margin: 12px 0 0; max-width: 600px; }
   .d-meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -479,8 +593,16 @@
     display: flex; align-items: center; gap: 6px; margin-bottom: 16px; padding: 8px 12px;
     border-radius: 6px; background: color-mix(in srgb, var(--weplex-error) 10%, transparent);
     border: 1px solid color-mix(in srgb, var(--weplex-error) 20%, transparent);
-    color: var(--weplex-error); font-size: 12px;
+    color: var(--weplex-error); font-size: 12px; white-space: pre-wrap;
   }
+  .editor-warnings {
+    display: flex; align-items: flex-start; gap: 6px; margin-bottom: 16px; padding: 8px 12px;
+    border-radius: 6px; background: color-mix(in srgb, var(--weplex-warning) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--weplex-warning) 20%, transparent);
+    color: var(--weplex-warning); font-size: 12px;
+  }
+  .editor-warnings-list { display: flex; flex-direction: column; gap: 4px; }
+  .editor-warnings-list p { margin: 0; }
   .editor-form { display: flex; flex-direction: column; gap: 14px; }
   .form-row { display: flex; flex-direction: column; gap: 5px; }
   .form-row label {
