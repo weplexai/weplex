@@ -1172,13 +1172,45 @@ pub(crate) trait DeepScanRunner {
     fn run(&self, paths: &[&Path]) -> Result<Vec<GuardFinding>, DeepScanError>;
 }
 
+/// Verify that a canonicalised path lives under either the profile dir
+/// or the user's HOME (W-6). Returns the resolved profile/home roots so
+/// the caller can `starts_with` them. A `canonicalize` of the *roots*
+/// makes the comparison robust against symlinked HOMEs (e.g. `/home`
+/// being a symlink to `/private/home` on macOS).
+fn ensure_path_within_profile_or_home(canon: &Path, profile_dir: &Path) -> Result<(), String> {
+    let canon_profile =
+        std::fs::canonicalize(profile_dir).unwrap_or_else(|_| profile_dir.to_path_buf());
+    let home = PathBuf::from(crate::utils::get_home());
+    let canon_home = std::fs::canonicalize(&home).unwrap_or(home);
+    if canon.starts_with(&canon_profile) || canon.starts_with(&canon_home) {
+        Ok(())
+    } else {
+        Err(format!(
+            "path resolved outside profile/home: {}",
+            canon.display()
+        ))
+    }
+}
+
 /// Default production runner. Spawns `npx ecc-agentshield scan <path>`
 /// in a worker thread, joins via channel with a 5-second wall-clock
 /// budget, parses stdout as JSON if we can, otherwise treats the run
 /// as "errored" and surfaces the reason. Path arguments are
-/// canonicalised before being handed to the subprocess so symlink
-/// trickery can't redirect the scan elsewhere.
-pub(crate) struct RealRunner;
+/// canonicalised AND containment-checked (W-6) before being handed to
+/// the subprocess so symlink trickery can't redirect the scan into
+/// arbitrary parts of the filesystem.
+pub(crate) struct RealRunner {
+    /// Profile dir whose body files are being scanned. Required for the
+    /// containment check — we only let the deep scanner see paths under
+    /// this directory or under HOME.
+    profile_dir: PathBuf,
+}
+
+impl RealRunner {
+    pub(crate) fn new(profile_dir: PathBuf) -> Self {
+        Self { profile_dir }
+    }
+}
 
 impl DeepScanRunner for RealRunner {
     fn run(&self, paths: &[&Path]) -> Result<Vec<GuardFinding>, DeepScanError> {
@@ -1190,15 +1222,46 @@ impl DeepScanRunner for RealRunner {
         // npx invocations can resolve symlinks unexpectedly — we want
         // ecc-agentshield to scan the bytes the manifest scanner saw,
         // not whatever a symlink chain redirects to.
+        //
+        // After canonicalize, verify the resolved path is contained
+        // within the profile dir or HOME. A symlink whose target is
+        // /etc/passwd would otherwise leak file content via a tool
+        // designed to scan agent bodies — skip-with-warn so a single
+        // hostile symlink doesn't fail the whole scan.
         let mut canonical: Vec<String> = Vec::with_capacity(paths.len());
         for p in paths {
-            let c = std::fs::canonicalize(p)
-                .map_err(|e| DeepScanError::Other(format!("canonicalize: {}", e)))?;
-            let s = c
-                .to_str()
-                .ok_or_else(|| DeepScanError::Other("non-utf8 path".into()))?
-                .to_string();
+            let c = match std::fs::canonicalize(p) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!(
+                        "[guard] deep-scan canonicalize failed for {}: {} — skipping",
+                        p.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            if let Err(why) = ensure_path_within_profile_or_home(&c, &self.profile_dir) {
+                log::warn!("[guard] deep-scan {} — skipping", why);
+                continue;
+            }
+            let s = match c.to_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    log::warn!(
+                        "[guard] deep-scan path is not utf-8: {} — skipping",
+                        c.display()
+                    );
+                    continue;
+                }
+            };
             canonical.push(s);
+        }
+
+        if canonical.is_empty() {
+            // Every path was skipped (containment / canonicalize failure).
+            // Treat as a clean run: no findings, no error.
+            return Ok(Vec::new());
         }
 
         let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<GuardFinding>, DeepScanError>>();
@@ -1243,8 +1306,8 @@ impl DeepScanRunner for RealRunner {
     }
 }
 
-fn default_runner() -> impl DeepScanRunner {
-    RealRunner
+fn default_runner(profile_dir: &str) -> impl DeepScanRunner {
+    RealRunner::new(PathBuf::from(profile_dir))
 }
 
 // ─── Profile scan ───────────────────────────────────────────────────────
@@ -1403,7 +1466,7 @@ pub fn scan_profile(
     let profile_dir = validate_profile_dir_cmd(profile_config_dir)?;
     let project_root_canon = validate_project_root(project_root)
         .map_err(|e| redact_home(&e.to_string()))?;
-    let runner = default_runner();
+    let runner = default_runner(&profile_dir);
     scan_profile_with_runner(
         &profile_dir,
         project_root_canon.as_deref(),
@@ -2290,6 +2353,32 @@ mod tests {
             report.deep_scan_skipped_reason.as_deref(),
             Some("binary-missing")
         );
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    // ── W-6: containment helper ─────────────────────────────────────
+
+    #[test]
+    fn ensure_path_within_profile_or_home_accepts_inside_profile() {
+        let profile = tmpdir("contain-ok");
+        let inside = profile.join("agents/foo.md");
+        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+        std::fs::write(&inside, "x").unwrap();
+        let canon = std::fs::canonicalize(&inside).unwrap();
+        let r = ensure_path_within_profile_or_home(&canon, &profile);
+        assert!(r.is_ok(), "got {:?}", r);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn ensure_path_within_profile_or_home_rejects_outside() {
+        let profile = tmpdir("contain-no");
+        // /etc must exist on macOS/linux test runners. canonicalize to
+        // give a stable absolute path.
+        let outside = std::path::PathBuf::from("/etc");
+        let canon = std::fs::canonicalize(&outside).unwrap_or(outside);
+        let r = ensure_path_within_profile_or_home(&canon, &profile);
+        assert!(r.is_err(), "expected /etc rejection, got {:?}", r);
         let _ = std::fs::remove_dir_all(&profile);
     }
 
