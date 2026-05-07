@@ -31,6 +31,9 @@ pub enum CompileError {
     Io(String),
     DuplicateId(String, String, String),
     PathDenied(String),
+    /// Body or label content contains a Weplex marker line / forbidden
+    /// character sequence — refuse to render.
+    InvalidBody(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -42,6 +45,7 @@ impl std::fmt::Display for CompileError {
                 write!(f, "duplicate manifest id `{}` in {} and {}", id, a, b)
             }
             CompileError::PathDenied(m) => write!(f, "compile path denied: {}", m),
+            CompileError::InvalidBody(m) => write!(f, "compile invalid body: {}", m),
         }
     }
 }
@@ -203,12 +207,21 @@ fn parse_marker_blocks(content: &str) -> ParsedSections {
     // If we ended inside a block, treat it as malformed and demote the
     // accumulated lines back to interstitial. This keeps round-trip safe
     // (we won't accidentally drop data) at the cost of dropping the
-    // would-be-block's marker semantics.
+    // would-be-block's marker semantics. NB: when we entered the block
+    // we pushed an empty interstitial; we now need to pop it so the
+    // demoted content collapses cleanly into the prior interstitial
+    // and the count invariant holds.
     if let Some((_id, lines)) = in_block {
+        let prev = interstitials.pop().unwrap_or_default();
+        let mut combined = prev;
         for line in lines {
-            current_inter.push_str(&line);
-            current_inter.push('\n');
+            combined.push_str(&line);
+            combined.push('\n');
         }
+        // Anything we accumulated AFTER the (failed) BEGIN line into
+        // current_inter belongs after the demoted lines.
+        combined.push_str(&current_inter);
+        current_inter = combined;
     }
     interstitials.push(current_inter);
 
@@ -217,6 +230,25 @@ fn parse_marker_blocks(content: &str) -> ParsedSections {
         interstitials,
         blocks,
     }
+}
+
+/// Returns true if the trimmed line begins one of our marker prefixes
+/// (`# weplex:begin` or `# weplex:end`), with or without the trailing
+/// space the constants carry. Used to refuse to render content that
+/// would forge a marker on a re-parse.
+fn line_looks_like_marker(line: &str) -> bool {
+    let t = line.trim_end();
+    // Match the prefix without the trailing space — body authors might
+    // omit the space accidentally, but that still parses as a marker
+    // header (`# weplex:begin\n` is `BEGIN ` prefix-stripped to `""`,
+    // which our parser treats as "no id" and ignores; safer to reject
+    // both shapes).
+    let begin_prefix = MARKER_BEGIN.trim_end(); // "# weplex:begin"
+    let end_prefix = MARKER_END.trim_end();     // "# weplex:end"
+    t == begin_prefix
+        || t == end_prefix
+        || t.starts_with(&format!("{} ", begin_prefix))
+        || t.starts_with(&format!("{} ", end_prefix))
 }
 
 /// Build a fully-rendered marker block for one section.
@@ -229,13 +261,37 @@ fn parse_marker_blocks(content: &str) -> ParsedSections {
 /// <body>
 /// # weplex:end <id>
 /// ```
+///
+/// Refuses to render if body or label contains a line that itself looks
+/// like a Weplex marker (`# weplex:begin ...` / `# weplex:end ...`) —
+/// otherwise a malicious body could hijack a subsequent compile by
+/// forging a fake END marker for one section and a fake BEGIN for
+/// another. Defence-in-depth: after rendering, re-parses the block
+/// through `parse_marker_blocks` and verifies it round-trips to a
+/// single block with the same id.
 fn render_section_block(
     id: &str,
     section_label: Option<&str>,
     profile_label: &str,
     kind: ResourceKind,
     body: &str,
-) -> MarkerBlock {
+) -> Result<MarkerBlock, CompileError> {
+    // Validate label (defence in depth — manifest::load also checks).
+    if let Some(label) = section_label {
+        if label.contains('\n') || label.contains('\r') {
+            return Err(CompileError::InvalidBody(format!(
+                "section label for '{}' contains a newline character",
+                id
+            )));
+        }
+        if line_looks_like_marker(label) {
+            return Err(CompileError::InvalidBody(format!(
+                "section label for '{}' looks like a Weplex marker",
+                id
+            )));
+        }
+    }
+
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!("{}{}", MARKER_BEGIN, id));
     lines.push(format!(
@@ -251,14 +307,44 @@ fn render_section_block(
     if !body.is_empty() {
         lines.push(String::new()); // blank line before body
         for body_line in body.lines() {
+            // Reject any body line that itself looks like a Weplex
+            // marker line. Without this check, a body containing
+            // `# weplex:end <other_id>` followed by forged content and
+            // `# weplex:begin <victim>` could hijack neighbouring
+            // sections on re-parse.
+            if line_looks_like_marker(body_line) {
+                return Err(CompileError::InvalidBody(format!(
+                    "body of '{}' contains a Weplex marker line; refusing to render",
+                    id
+                )));
+            }
             lines.push(body_line.to_string());
         }
     }
     lines.push(format!("{}{}", MARKER_END, id));
-    MarkerBlock {
+
+    let block = MarkerBlock {
         id: id.to_string(),
         lines,
+    };
+
+    // Defence in depth: round-trip the rendered block through the parser
+    // we use on real files and verify it produces exactly one block with
+    // the same id. If anything in id/label/body slipped past the line
+    // checks above, this catches it.
+    let mut rendered = String::new();
+    for line in &block.lines {
+        rendered.push_str(line);
+        rendered.push('\n');
     }
+    let parsed = parse_marker_blocks(&rendered);
+    if parsed.blocks.len() != 1 || parsed.blocks[0].id != id {
+        return Err(CompileError::InvalidBody(format!(
+            "rendered block for '{}' did not round-trip cleanly", id
+        )));
+    }
+
+    Ok(block)
 }
 
 // ─── Default targets per harness ────────────────────────────────────────
@@ -689,13 +775,21 @@ fn compile_profile_internal(
             match mode {
                 RenderMode::Section => {
                     let section_label = spec.section.as_deref().or_else(|| Some(manifest.id.as_str()));
-                    let block = render_section_block(
+                    let block = match render_section_block(
                         &manifest.id,
                         section_label,
                         &profile_label,
                         *kind,
                         &body,
-                    );
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            report
+                                .errors
+                                .push(format!("{}/{}: {}", manifest.id, harness, e));
+                            continue;
+                        }
+                    };
                     section_groups
                         .entry(target)
                         .or_default()
@@ -998,6 +1092,7 @@ mod tests {
 
     fn make_block(id: &str, body: &str) -> MarkerBlock {
         render_section_block(id, Some(id), "test-profile", ResourceKind::Skill, body)
+            .expect("test fixture must render")
     }
 
     #[test]
@@ -1263,6 +1358,72 @@ agents:
         }
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn body_with_marker_lines_rejected() {
+        // A body that contains a line matching one of our markers must
+        // be refused — otherwise it could forge a new BEGIN/END on the
+        // next compile re-parse and hijack a neighbouring section. We
+        // mirror the parser's exact recognition rule: marker prefix at
+        // the start of the line, trailing whitespace tolerated.
+        let bad_bodies: &[&str] = &[
+            "innocent\n# weplex:end other\nforged content\n",
+            "# weplex:begin attacker\n",
+            "ok\n# weplex:begin attacker   \n",
+            "# weplex:end\n",
+            "# weplex:begin\n",
+        ];
+        for body in bad_bodies {
+            let res = render_section_block(
+                "victim",
+                Some("Victim"),
+                "test-profile",
+                ResourceKind::Skill,
+                body,
+            );
+            match res {
+                Err(CompileError::InvalidBody(_)) => {}
+                other => panic!("expected InvalidBody for body {:?}, got {:?}", body, other),
+            }
+        }
+    }
+
+    #[test]
+    fn section_label_with_newline_rejected_at_render() {
+        // Defence in depth: even if the manifest validator missed it,
+        // the renderer must refuse a multi-line section label.
+        let res = render_section_block(
+            "x",
+            Some("Hello\n# weplex:end x"),
+            "test-profile",
+            ResourceKind::Skill,
+            "body",
+        );
+        match res {
+            Err(CompileError::InvalidBody(_)) => {}
+            other => panic!("expected InvalidBody, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn render_self_test_catches_marker_id_collision() {
+        // The id itself contains characters that would split into two
+        // marker headers when re-parsed. (This shouldn't be reachable
+        // through Manifest::validate_id, but we still defend.)
+        let res = render_section_block(
+            "x\n# weplex:begin y",
+            Some("ok"),
+            "test-profile",
+            ResourceKind::Skill,
+            "body",
+        );
+        // Either the body-line check or the round-trip self-test will
+        // reject this — both are valid.
+        match res {
+            Err(CompileError::InvalidBody(_)) => {}
+            other => panic!("expected InvalidBody, got {:?}", other),
+        }
     }
 
     #[test]

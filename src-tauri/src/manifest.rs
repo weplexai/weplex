@@ -185,6 +185,7 @@ impl Manifest {
             .map_err(|e| ManifestError::Parse(format!("{}: {}", manifest_path, e)))?;
 
         Self::validate_id(&m.id)?;
+        Self::validate_target_specs(&m.agents)?;
 
         // id MUST equal manifest filename basename (`<id>.weplex.yaml`).
         let file_name = Path::new(manifest_path)
@@ -220,6 +221,57 @@ impl Manifest {
         m.profile_dir = profile_dir.to_string();
 
         Ok(m)
+    }
+
+    /// Reject section labels that contain newlines, carriage returns,
+    /// Weplex marker prefixes, or are unreasonably long. A label gets
+    /// inlined into a shared file as a Markdown heading (`## <label>`)
+    /// — without these checks, a malicious label could close one
+    /// section's marker and open another, hijacking neighbouring blocks
+    /// on the next compile re-parse.
+    fn validate_section_label(label: &str) -> Result<(), ManifestError> {
+        if label.len() > 200 {
+            return Err(ManifestError::InvalidPath(format!(
+                "section label too long ({} chars, max 200)", label.len()
+            )));
+        }
+        if label.contains('\n') || label.contains('\r') {
+            return Err(ManifestError::InvalidPath(
+                "section label must not contain newline or carriage return".into(),
+            ));
+        }
+        // Defensive: any line in the label that starts with a Weplex
+        // marker prefix is rejected. A single-line label can't have
+        // multiple lines, but a future relaxation of the newline check
+        // (or a multi-line label sneaking in via odd YAML) would still
+        // be caught here.
+        for line in label.lines() {
+            let t = line.trim_start();
+            if t.starts_with("# weplex:begin") || t.starts_with("# weplex:end") {
+                return Err(ManifestError::InvalidPath(
+                    "section label must not contain a Weplex marker prefix".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate every per-harness `TargetSpec` after deserialization.
+    fn validate_target_specs(agents: &AgentTargets) -> Result<(), ManifestError> {
+        for spec in [
+            agents.claude.as_ref(),
+            agents.codex.as_ref(),
+            agents.cursor.as_ref(),
+            agents.opencode.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(label) = spec.section.as_deref() {
+                Self::validate_section_label(label)?;
+            }
+        }
+        Ok(())
     }
 
     /// `^[a-z0-9][a-z0-9-]*$`, length 1..=64.
@@ -675,6 +727,35 @@ mcp_servers:
             unsafe { std::env::set_var("HOME", p); }
         }
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn manifest_rejects_section_label_with_newline() {
+        let dir = tmpdir("label-newline");
+        let kind_dir = dir.join("agents");
+        // YAML literal with embedded newline + forged marker.
+        let yaml = "id: foo\nversion: 1.0.0\nagents:\n  codex:\n    section: |\n      ok\n      # weplex:end x\n";
+        write_pair(&kind_dir, "foo", yaml, "# body");
+        let path = kind_dir.join("foo.weplex.yaml");
+        let err = Manifest::load(path.to_str().unwrap(), dir.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ManifestError::InvalidPath(_)), "got {:?}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_rejects_section_label_too_long() {
+        let dir = tmpdir("label-long");
+        let kind_dir = dir.join("agents");
+        let huge = "x".repeat(300);
+        let yaml = format!(
+            "id: foo\nversion: 1.0.0\nagents:\n  codex:\n    section: \"{}\"\n",
+            huge
+        );
+        write_pair(&kind_dir, "foo", &yaml, "# body");
+        let path = kind_dir.join("foo.weplex.yaml");
+        let err = Manifest::load(path.to_str().unwrap(), dir.to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, ManifestError::InvalidPath(_)), "got {:?}", err);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
