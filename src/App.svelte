@@ -42,6 +42,23 @@
       sessionStore.create({ name: 'terminal' });
     }
 
+    // Lazy-restore: only spawn PTYs that the user is about to see right now.
+    // Active session + everything in the active space's split layout. Sessions
+    // in other spaces, or stacked behind in the same space, stay hibernated
+    // until the user clicks them. See sessionStore.hibernatedSessionIds.
+    const activeId = sessionStore.activeSessionId;
+    if (activeId !== null) sessionStore.wakeUp(activeId);
+    const activeSpaceId = spaceStore.activeSpaceId;
+    if (activeSpaceId) {
+      // Materialise the layout BEFORE reading visible ids — a fresh space with
+      // no persisted layout would otherwise return [] and only the active id
+      // would wake. ensureLayout is a no-op when a layout already exists.
+      splitStore.ensureLayout(activeSpaceId);
+      for (const id of splitStore.getVisibleSessionIds(activeSpaceId)) {
+        sessionStore.wakeUp(id);
+      }
+    }
+
     // Initialize auth (load tokens, fetch profile, sync) — silent on failure
     authStore.init().catch((e) => console.error('[Weplex] Auth init failed:', e));
 
@@ -73,6 +90,17 @@
       clearTimeout(updateTimer);
       clearInterval(updateInterval);
     };
+  });
+
+  // When the user switches into a space, wake every session visible in its
+  // split layout so they spawn just-in-time instead of all at boot.
+  $effect(() => {
+    const sid = spaceStore.activeSpaceId;
+    if (!sid) return;
+    splitStore.ensureLayout(sid);
+    for (const id of splitStore.getVisibleSessionIds(sid)) {
+      sessionStore.wakeUp(id);
+    }
   });
 
   let activeSession = $derived(sessionStore.activeSession);

@@ -394,6 +394,9 @@ export const splitStore = {
     );
     layouts[spaceId] = tree;
     setFocusedPane(spaceId, newLeafId);
+    // Dropping a session into a layout makes it visible — wake it now,
+    // otherwise its TerminalView mounts but stays gated on `isHibernated`.
+    sessionStore.wakeUp(sessionId);
     persist();
   },
 
@@ -407,6 +410,7 @@ export const splitStore = {
 
     layouts[spaceId] = replaceSessionInLeaf(layouts[spaceId], paneId, sessionId);
     setFocusedPane(spaceId, paneId);
+    sessionStore.wakeUp(sessionId);
     persist();
   },
 

@@ -14,6 +14,16 @@ let activeSessionId = $state<number | null>(initial.activeId);
 // Track which sessions were restored from persistence (need special handling for PTY)
 const restoredSessionIds = new Set<number>(initial.sessions.map((s) => s.id));
 
+// Hibernated = restored from disk but no PTY yet. Avoids spawning N processes
+// on every cold start when the user only cares about one session. Boot wakes
+// the active session + everything visible in the current space's split layout
+// (see App.svelte). Anything else stays hibernated until the user clicks it.
+//
+// Newly-created sessions are never hibernated — they go straight to spawn.
+// Reactivity: a Svelte 5 $state Set re-runs effects on add/delete, which is
+// what gates the connectPty $effect in TerminalView.
+const hibernatedSessionIds = $state(new Set<number>(initial.sessions.map((s) => s.id)));
+
 function persist() {
   persistSessions(sessions, activeSessionId);
 }
@@ -42,6 +52,22 @@ export const sessionStore = {
 
   clearRestored(id: number) {
     restoredSessionIds.delete(id);
+  },
+
+  isHibernated(id: number): boolean {
+    return hibernatedSessionIds.has(id);
+  },
+
+  /** Mark a hibernated session ready for PTY spawn. Idempotent. */
+  wakeUp(id: number) {
+    hibernatedSessionIds.delete(id);
+  },
+
+  /** Put a session back to sleep after a failed spawn attempt. The next
+   *  activate() will wake it again and retry. Avoids tight retry loops in the
+   *  reactive effect that drives connectPty. */
+  rehibernate(id: number) {
+    if (sessions.some((s) => s.id === id)) hibernatedSessionIds.add(id);
   },
 
   create(
@@ -107,6 +133,8 @@ export const sessionStore = {
       if (spaceStore.activeSpaceId === HYPERSPACE_ID) {
         spaceStore.setActiveSession(HYPERSPACE_ID, id);
       }
+      // Activation is the trigger for lazy PTY spawn on restored sessions.
+      hibernatedSessionIds.delete(id);
       persist();
     }
   },
@@ -119,6 +147,7 @@ export const sessionStore = {
         const session = sessions.find((s) => s.id === lastId);
         if (session) {
           activeSessionId = session.id;
+          hibernatedSessionIds.delete(session.id);
           persist();
           return;
         }
@@ -127,6 +156,7 @@ export const sessionStore = {
       if (sessions.length > 0) {
         const sorted = [...sessions].sort((a, b) => b.lastActivity - a.lastActivity);
         activeSessionId = sorted[0].id;
+        hibernatedSessionIds.delete(sorted[0].id);
         persist();
       } else {
         activeSessionId = null;
@@ -146,6 +176,7 @@ export const sessionStore = {
 
     const target = lastId ? spaceSessions.find((s) => s.id === lastId) : null;
     activeSessionId = target ? target.id : spaceSessions[spaceSessions.length - 1].id;
+    if (activeSessionId !== null) hibernatedSessionIds.delete(activeSessionId);
     persist();
   },
 
@@ -203,16 +234,23 @@ export const sessionStore = {
       duration_ms: durationMs,
     });
 
-    // Kill the PTY backend
-    import('@tauri-apps/api/core')
-      .then(({ invoke }) => {
-        invoke('kill_pty', { sessionId: id }).catch((e) =>
-          console.error(`[Weplex] Failed to kill PTY ${id}:`, e),
-        );
-      })
-      .catch((e) => console.error(`[Weplex] Failed to load Tauri API for killing PTY ${id}:`, e));
+    // Kill the PTY backend — but only if one was ever spawned. Hibernated
+    // sessions have no PTY, so the invoke would always log a "no such session"
+    // error. Skipping keeps the console clean and reflects reality.
+    const hadPty = !hibernatedSessionIds.has(id);
+    if (hadPty) {
+      import('@tauri-apps/api/core')
+        .then(({ invoke }) => {
+          invoke('kill_pty', { sessionId: id }).catch((e) =>
+            console.error(`[Weplex] Failed to kill PTY ${id}:`, e),
+          );
+        })
+        .catch((e) => console.error(`[Weplex] Failed to load Tauri API for killing PTY ${id}:`, e));
+    }
 
     sessions.splice(idx, 1);
+    restoredSessionIds.delete(id);
+    hibernatedSessionIds.delete(id);
 
     // Clean up tracking in other stores
     try {

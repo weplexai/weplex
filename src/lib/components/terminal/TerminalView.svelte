@@ -14,6 +14,7 @@
   import { notifyWaitingForInput, notifyError, trackSessionActivity, redactSecrets } from '../../services/notificationService';
   import { terminalRegistry } from '../../stores/terminalRegistry';
   import { commandStore } from '../../stores/commandStore.svelte';
+  import { resolveProfileEnvId } from '../../utils/profile';
 
   let { sessionId }: { sessionId: number } = $props();
   let isActive = $derived(sessionStore.activeSessionId === sessionId);
@@ -58,6 +59,20 @@
 
   let scheduleTransition: (() => void) | null = null;
   let lastUserInputAt = 0;
+
+  // True once create_pty has been invoked for this session in this component
+  // lifetime. Set BEFORE the async invoke so concurrent reactive triggers can't
+  // re-enter. On invoke failure the catch resets it so the next wake-trigger
+  // can retry — without that the session is permanently stranded by a transient
+  // error (e.g. cwd vanished, binary missing).
+  let ptySpawned = false;
+
+  // Strict UUID v4 shape — claudeSessionId is concatenated into the shell stdin
+  // (`claude --resume <id>`), and the persisted weplex_sessions.json is
+  // user-writable. A tampered file with shell metacharacters would otherwise
+  // execute as the user. Same regex as the live capture at claudeResumeRe.
+  const CLAUDE_UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
   onMount(() => {
     const settings = settingsStore.settings;
@@ -171,7 +186,10 @@
       }),
     );
 
-    connectPty();
+    // PTY spawn is gated on wake — see the effect below. We wake immediately
+    // for sessions that aren't restored from disk (i.e. created in this
+    // session: `sessionStore.create()` doesn't add them to hibernated).
+    // Restored sessions stay hibernated until activated or boot-time wake-up.
 
     resizeObserver = new ResizeObserver(() => {
       if (containerEl.offsetWidth > 0 && containerEl.offsetHeight > 0) {
@@ -205,6 +223,19 @@
         term.focus();
       });
     }
+  });
+
+  // Lazy PTY spawn. Restored sessions sit in `hibernatedSessionIds` until they
+  // are activated (sessionStore.activate) or woken at boot for the active
+  // space's split layout (App.svelte). Newly-created sessions are not added to
+  // the set so they spawn immediately. The ptySpawned latch makes this fire
+  // exactly once per component instance.
+  $effect(() => {
+    if (ptySpawned) return;
+    if (!term) return; // wait for onMount to set up xterm
+    if (sessionStore.isHibernated(sessionId)) return;
+    ptySpawned = true;
+    connectPty();
   });
 
   // Reactively update terminal font and theme when settings change
@@ -369,11 +400,16 @@
           wasRunning &&
           session?.hasOutput &&
           session?.claudeSessionId &&
+          CLAUDE_UUID_RE.test(session.claudeSessionId) &&
           command.includes('claude') &&
           !command.includes('--resume') &&
           !command.includes('--continue')
         ) {
           command = command + ' --resume ' + session.claudeSessionId;
+        } else if (session?.claudeSessionId && !CLAUDE_UUID_RE.test(session.claudeSessionId)) {
+          console.warn(
+            `[Weplex] Refusing to resume session ${sessionId}: claudeSessionId is not a valid UUID`,
+          );
         }
         sessionStore.clearRestored(sessionId);
       }
@@ -404,6 +440,13 @@
 
       // Always set WEPLEX_SESSION_ID so the MCP server can save session summaries
       envVars = { ...(envVars || {}), WEPLEX_SESSION_ID: String(sessionId) };
+
+      // WEPLEX_PROFILE_ID picks the per-profile Keychain key used to encrypt
+      // notes. Single source of truth in utils/profile.ts so writer (here)
+      // and readers (Timeline / Hover / SpaceChat) cannot drift apart.
+      if (session) {
+        envVars = { ...envVars, WEPLEX_PROFILE_ID: resolveProfileEnvId(session) };
+      }
 
       // Inject Weplex context into CLAUDE.md before starting Claude sessions
       if (isClaude && session) {
@@ -675,6 +718,11 @@
       sessionStore.updateStatus(sessionId, 'error');
       term.writeln('\x1b[31m  Failed to connect to PTY backend.\x1b[0m');
       term.writeln(`\x1b[90m  ${err}\x1b[0m`);
+      // Recovery: drop the spawn latch AND re-hibernate so the gating effect
+      // doesn't immediately loop on the same failure. Clicking the session
+      // (sessionStore.activate → wakeUp) will retry exactly once.
+      ptySpawned = false;
+      sessionStore.rehibernate(sessionId);
     }
   }
 </script>
