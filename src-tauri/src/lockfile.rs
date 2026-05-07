@@ -718,8 +718,7 @@ fn sweep_cache_dirs(profile_config_dir: &str, lf: &Lockfile) -> Result<u32, Lock
 ///   live entry or remaining history entry
 ///
 /// Standalone version: takes the lockfile lock to avoid stomping a
-/// concurrent mutation. Wired up at startup in commit I.
-#[allow(dead_code)]
+/// concurrent mutation. Called at startup for every discoverable profile.
 pub fn run_cache_gc(profile_config_dir: &str) -> Result<u32, LockfileError> {
     let _lock = acquire_lockfile_lock(profile_config_dir)?;
     let mut lf = load_lockfile(profile_config_dir);

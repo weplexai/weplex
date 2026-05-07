@@ -85,6 +85,52 @@ fn kill_pty(state: State<AppState>, session_id: u32) -> Result<(), String> {
     manager.kill(session_id).map_err(|e| e.to_string())
 }
 
+/// Discover every Claude profile dir and run lockfile cache GC for each.
+/// Best-effort: every error is logged and skipped — startup must not
+/// block on this. Runs ~/.claude plus every ~/.claude-* directory.
+fn run_lockfile_gc_for_all_profiles() {
+    let home = utils::get_home();
+    let mut profiles: Vec<String> = Vec::new();
+
+    let default = format!("{}/.claude", home);
+    if std::path::Path::new(&default).is_dir() {
+        profiles.push(default);
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&home) {
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else { continue };
+            if !name.starts_with(".claude-") || name.len() <= 8 {
+                continue;
+            }
+            let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            profiles.push(format!("{}/{}", home, name));
+        }
+    }
+
+    for p in profiles {
+        match lockfile::run_cache_gc(&p) {
+            Ok(deleted) if deleted > 0 => {
+                info!("lockfile gc: removed {} stale cache dir(s) in {}", deleted, p);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // "lockfile already in use" isn't an error worth shouting
+                // about — another instance is mutating; that's fine.
+                let msg = format!("{}", e);
+                if msg.contains("already in use") {
+                    log::debug!("lockfile gc skipped (busy) for {}: {}", p, msg);
+                } else {
+                    log::warn!("lockfile gc failed for {}: {}", p, msg);
+                }
+            }
+        }
+    }
+}
+
 /// Clean stale session-map files on startup.
 ///
 /// Only removes files older than 1 hour to avoid racing with `write_session_map`
@@ -214,6 +260,13 @@ fn main() {
                 let _ = hooks::ensure_hook_script();
                 let _ = hooks::write_weplex_hooks_source();
                 let _ = clean_session_map();
+            });
+
+            // Best-effort cache GC for every discoverable profile.
+            // Errors are logged, never propagated — a stale cache dir
+            // is annoying but not fatal.
+            std::thread::spawn(|| {
+                run_lockfile_gc_for_all_profiles();
             });
 
             Ok(())
