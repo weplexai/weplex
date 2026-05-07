@@ -1412,6 +1412,88 @@ pub fn import_profile_from_archive(
         }
     }
 
+    // W4: pre-validate every entry up-front so we never start mutating
+    // the target profile and bail half-way through. We deliberately keep
+    // this best-effort: a Phase-2 IO failure (disk full, permission flip)
+    // mid-loop can still leave the target partially imported. Doing a
+    // full transactional rollback would mean snapshotting the whole
+    // profile dir to a staging area first, which is over-engineering for
+    // a single-machine local-data flow. The far more likely failure mode
+    // — a malformed archive — is now caught before any disk write.
+    {
+        let archived_paths_set: std::collections::HashSet<&str> = incoming_files
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .collect();
+        for r in &incoming_lock.resources {
+            // Resource id must parse and the name part must sanitize.
+            let (_kind, name) = parse_resource_id(&r.id)?;
+            sanitize_name(&name).map_err(LockfileError::Parse)?;
+            // `files` must match what (kind, id, has_sidecar) implies.
+            // This catches a tampered archive lockfile that points at
+            // disallowed paths even if the path itself was already
+            // rejected by the per-entry traversal check above — we want
+            // a single rejection point per concern.
+            validate_entry_paths(r)?;
+            // Body bytes must be present and sha-correct. We re-check
+            // here (Phase 1) rather than inside the apply loop so that
+            // even with ConflictPolicy::SkipAll a corrupt resource
+            // aborts the whole import before any other resource lands.
+            let body_rel = r
+                .files
+                .iter()
+                .find(|f| !f.ends_with(".weplex.yaml"))
+                .ok_or_else(|| {
+                    LockfileError::InvalidArchive(format!(
+                        "resource {} has no body file",
+                        r.id
+                    ))
+                })?;
+            let body_bytes = archived_paths_set
+                .get(body_rel.as_str())
+                .and_then(|_| {
+                    incoming_files.iter().find(|(p, _)| p == body_rel).map(|(_, b)| b)
+                })
+                .ok_or_else(|| {
+                    LockfileError::InvalidArchive(format!("missing body: {}", body_rel))
+                })?;
+            let actual = sha256_hex(body_bytes);
+            if actual != r.sha256 {
+                return Err(LockfileError::InvalidArchive(format!(
+                    "resource '{}' body sha256 mismatch: archive lockfile says {}, actual {}",
+                    r.id, r.sha256, actual,
+                )));
+            }
+            if let Some(sidecar_rel) =
+                r.files.iter().find(|f| f.ends_with(".weplex.yaml"))
+            {
+                let sidecar_bytes = incoming_files
+                    .iter()
+                    .find(|(p, _)| p == sidecar_rel)
+                    .map(|(_, b)| b)
+                    .ok_or_else(|| {
+                        LockfileError::InvalidArchive(format!(
+                            "missing sidecar: {}",
+                            sidecar_rel
+                        ))
+                    })?;
+                let actual = sha256_hex(sidecar_bytes);
+                let expected = r.sidecar_sha256.as_deref().ok_or_else(|| {
+                    LockfileError::InvalidArchive(format!(
+                        "resource '{}' has sidecar file but no sidecarSha256",
+                        r.id
+                    ))
+                })?;
+                if actual != expected {
+                    return Err(LockfileError::InvalidArchive(format!(
+                        "resource '{}' sidecar sha256 mismatch: archive lockfile says {}, actual {}",
+                        r.id, expected, actual,
+                    )));
+                }
+            }
+        }
+    }
+
     // Index incoming files for quick lookup.
     let mut by_path: std::collections::HashMap<String, Vec<u8>> = incoming_files
         .into_iter()
@@ -2662,6 +2744,50 @@ mod tests {
         );
         // No file landed on disk.
         assert!(!target.join("agents/a1.md").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn import_pre_validates_entries_before_any_apply() {
+        // W4 regression: an archive whose lockfile contains one bad
+        // entry must abort BEFORE any other resource is mutated.
+        // Otherwise a partial import leaves the target profile in an
+        // inconsistent half-applied state. We feed an archive with one
+        // valid entry followed by one whose id is bogus; the import
+        // must fail and the target profile must be untouched.
+        let dir = tmpdir("import-prevalidate");
+        let good_sha = sha256_hex(b"good");
+        // Lockfile: first entry valid (agents/good), second entry bogus
+        // (id is a path traversal). The validate step catches this
+        // before applying the good one.
+        let lock_yaml = format!(
+            "version: 1\nresources:\n  - id: agents/good\n    kind: agent\n    source: user\n    sha256: {sha}\n    files:\n      - agents/good.md\n  - id: \"/etc/passwd\"\n    kind: agent\n    source: user\n    sha256: {sha2}\n    files:\n      - agents/etc.md\nhistory: {{}}\n",
+            sha = good_sha,
+            sha2 = sha256_hex(b"bad"),
+        );
+        let archive = build_archive(
+            &dir,
+            &[
+                (LOCKFILE_NAME, lock_yaml.as_bytes()),
+                ("agents/good.md", b"good"),
+                ("agents/etc.md", b"bad"),
+            ],
+        );
+        let target = tmpdir("import-prevalidate-target");
+        let r = import_profile_from_archive(
+            target.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        );
+        assert!(r.is_err(), "expected error, got {:?}", r);
+        // Pre-validation must abort BEFORE the good resource is written.
+        assert!(
+            !target.join("agents/good.md").exists(),
+            "no resource should have landed on disk"
+        );
+        let lf = load_lockfile(target.to_str().unwrap());
+        assert!(lf.resources.is_empty(), "target lockfile must be untouched");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&target);
     }
