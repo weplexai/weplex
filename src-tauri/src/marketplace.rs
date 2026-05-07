@@ -25,6 +25,10 @@ use crate::utils::{sanitize_name, validate_config_dir};
 /// `name`: filename without extension. Sanitized.
 /// `content`: body to write as `<kind>/<name>.md` (or `skills/<name>/SKILL.md`).
 /// `sidecar`: optional `*.weplex.yaml` cross-agent manifest.
+/// `pack`: optional federated pack id (`<owner>/<repo>` lowercase). Set
+///   when installing a resource as part of a federated pack so the
+///   lockfile records its provenance and rejects later collisions from
+///   a different pack — or from a stray single-resource publish.
 #[tauri::command]
 pub fn install_marketplace_package(
     target_config_dir: String,
@@ -32,16 +36,18 @@ pub fn install_marketplace_package(
     content: String,
     sidecar: Option<String>,
     kind: ResourceKind,
+    pack: Option<String>,
 ) -> Result<MutationReport, String> {
     let dir = validate_config_dir(&target_config_dir)
         .map_err(|e| redact_home(&e))?;
     let safe_name = sanitize_name(&name).map_err(|e| redact_home(&e))?;
 
     log::info!(
-        "marketplace install: profile={}, kind={:?}, name={}",
+        "marketplace install: profile={}, kind={:?}, name={}, pack={:?}",
         dir,
         kind,
-        safe_name
+        safe_name,
+        pack,
     );
 
     lockfile::apply_resource_mutation(
@@ -52,6 +58,7 @@ pub fn install_marketplace_package(
         MutationKind::Upsert {
             body: content,
             sidecar,
+            pack,
         },
     )
     .map_err(|e| redact_home(&format!("{}", e)))
@@ -104,6 +111,7 @@ mod tests {
             "# reviewer".to_string(),
             None,
             ResourceKind::Agent,
+            None,
         )
         .unwrap();
 
@@ -114,6 +122,43 @@ mod tests {
         let lf = lockfile::load_lockfile(profile_dir.to_str().unwrap());
         assert_eq!(lf.resources.len(), 1);
         assert_eq!(lf.resources[0].source, ResourceSource::Marketplace);
+        assert_eq!(lf.resources[0].pack, None);
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn install_marketplace_records_pack_provenance() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("install-pack");
+        let canon = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon); }
+
+        let profile_dir = canon.join(".claude");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        let report = install_marketplace_package(
+            profile_dir.to_string_lossy().into_owned(),
+            "architect".to_string(),
+            "# architect".to_string(),
+            None,
+            ResourceKind::Agent,
+            Some("acme/awesome-claude-agents".to_string()),
+        )
+        .unwrap();
+
+        assert!(!report.no_op);
+        let lf = lockfile::load_lockfile(profile_dir.to_str().unwrap());
+        assert_eq!(lf.resources.len(), 1);
+        assert_eq!(lf.resources[0].source, ResourceSource::Marketplace);
+        assert_eq!(
+            lf.resources[0].pack.as_deref(),
+            Some("acme/awesome-claude-agents")
+        );
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
