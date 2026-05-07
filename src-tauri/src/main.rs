@@ -249,6 +249,7 @@ fn main() {
             lockfile::export_profile,
             lockfile::import_profile,
             lockfile::inspect_profile_archive_cmd,
+            lockfile::migrate_legacy_weplex,
             // Cross-agent guard
             guard::scan_resource,
             guard::scan_profile,

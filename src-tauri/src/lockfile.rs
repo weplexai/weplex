@@ -1435,6 +1435,144 @@ pub fn import_profile(
         .map_err(|e| redact_home(&format!("{}", e)))
 }
 
+// ─── Legacy migration ───────────────────────────────────────────────────
+
+/// Migrate the pre-Phase-3 `~/.weplex/agents/` and `~/.weplex/skills/`
+/// directories into a target profile.
+///
+/// Idempotent: writes a flag file `<target>/.weplex/legacy-weplex-migrated.flag`
+/// after a successful run; subsequent invocations short-circuit.
+///
+/// Source files are NOT deleted. Each migrated resource is recorded in
+/// the target profile's lockfile with `source: imported`.
+pub fn migrate_legacy_weplex_dir(
+    target_config_dir: &str,
+) -> Result<MigrationReport, LockfileError> {
+    let flag_path = PathBuf::from(target_config_dir).join(LEGACY_FLAG);
+    if flag_path.exists() {
+        return Ok(MigrationReport {
+            already_done: true,
+            migrated_agents: 0,
+            migrated_skills: 0,
+        });
+    }
+
+    let home = get_home();
+    let mut report = MigrationReport {
+        already_done: false,
+        migrated_agents: 0,
+        migrated_skills: 0,
+    };
+
+    // Agents: ~/.weplex/agents/*.md
+    let agents_dir = format!("{}/.weplex/agents", home);
+    if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            if p.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let stem = match p.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let body = match std::fs::read_to_string(&p) {
+                Ok(b) => b,
+                Err(e) => {
+                    log::warn!("legacy migrate: read {} failed: {}", p.display(), e);
+                    continue;
+                }
+            };
+            // Optional sidecar.
+            let sidecar_path = p.with_file_name(format!("{}.weplex.yaml", stem));
+            let sidecar = if sidecar_path.exists() {
+                std::fs::read_to_string(&sidecar_path).ok()
+            } else {
+                None
+            };
+            match apply_resource_mutation(
+                target_config_dir,
+                ResourceKind::Agent,
+                &stem,
+                ResourceSource::Imported,
+                MutationKind::Upsert { body, sidecar },
+            ) {
+                Ok(r) if !r.no_op => report.migrated_agents += 1,
+                Ok(_) => {}
+                Err(e) => log::warn!("legacy migrate agent {}: {}", stem, e),
+            }
+        }
+    }
+
+    // Skills: ~/.weplex/skills/<name>/SKILL.md
+    let skills_dir = format!("{}/.weplex/skills", home);
+    if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let name = match p.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let skill_md = p.join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            let body = match std::fs::read_to_string(&skill_md) {
+                Ok(b) => b,
+                Err(e) => {
+                    log::warn!("legacy migrate: read {} failed: {}", skill_md.display(), e);
+                    continue;
+                }
+            };
+            let sidecar_path = p.join("SKILL.weplex.yaml");
+            let sidecar = if sidecar_path.exists() {
+                std::fs::read_to_string(&sidecar_path).ok()
+            } else {
+                None
+            };
+            match apply_resource_mutation(
+                target_config_dir,
+                ResourceKind::Skill,
+                &name,
+                ResourceSource::Imported,
+                MutationKind::Upsert { body, sidecar },
+            ) {
+                Ok(r) if !r.no_op => report.migrated_skills += 1,
+                Ok(_) => {}
+                Err(e) => log::warn!("legacy migrate skill {}: {}", name, e),
+            }
+        }
+    }
+
+    // Write the flag file last (idempotence). Even if no resources
+    // existed in ~/.weplex/, we still write the flag — there's nothing
+    // to migrate, so don't make subsequent runs scan again.
+    if let Some(parent) = flag_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            LockfileError::Io(format!("create flag parent {}: {}", parent.display(), e))
+        })?;
+    }
+    std::fs::write(&flag_path, b"1").map_err(|e| {
+        LockfileError::Io(format!("write flag {}: {}", flag_path.display(), e))
+    })?;
+
+    Ok(report)
+}
+
+#[tauri::command]
+pub fn migrate_legacy_weplex(
+    target_config_dir: String,
+) -> Result<MigrationReport, String> {
+    let dir = validate_config_dir(&target_config_dir).map_err(|e| redact_home(&e))?;
+    migrate_legacy_weplex_dir(&dir).map_err(|e| redact_home(&format!("{}", e)))
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2309,5 +2447,83 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    // ─── Migration ───────────────────────────────────────────────────
+
+    #[test]
+    fn migrate_legacy_weplex_idempotent_via_flag_file() {
+        use crate::utils::test_support::HOME_ENV_LOCK as ENV_LOCK;
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("legacy-flag");
+        let canon = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon); }
+
+        // Plant a legacy agent.
+        let legacy_agents = canon.join(".weplex/agents");
+        std::fs::create_dir_all(&legacy_agents).unwrap();
+        std::fs::write(legacy_agents.join("legacy.md"), "from old").unwrap();
+
+        let target = canon.join(".claude");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let r1 = migrate_legacy_weplex_dir(target.to_str().unwrap()).unwrap();
+        assert!(!r1.already_done);
+        assert_eq!(r1.migrated_agents, 1);
+
+        // Second call: flag file blocks re-scan.
+        let r2 = migrate_legacy_weplex_dir(target.to_str().unwrap()).unwrap();
+        assert!(r2.already_done);
+        assert_eq!(r2.migrated_agents, 0);
+
+        // Even after deleting the migrated file, the flag prevents rerun.
+        std::fs::remove_file(target.join("agents/legacy.md")).unwrap();
+        let r3 = migrate_legacy_weplex_dir(target.to_str().unwrap()).unwrap();
+        assert!(r3.already_done);
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn migrate_legacy_weplex_marks_source_imported() {
+        use crate::utils::test_support::HOME_ENV_LOCK as ENV_LOCK;
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("legacy-source");
+        let canon = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon); }
+
+        let legacy_agents = canon.join(".weplex/agents");
+        std::fs::create_dir_all(&legacy_agents).unwrap();
+        std::fs::write(legacy_agents.join("a1.md"), "agent body").unwrap();
+
+        let legacy_skills = canon.join(".weplex/skills/s1");
+        std::fs::create_dir_all(&legacy_skills).unwrap();
+        std::fs::write(legacy_skills.join("SKILL.md"), "skill body").unwrap();
+
+        let target = canon.join(".claude");
+        std::fs::create_dir_all(&target).unwrap();
+        let r = migrate_legacy_weplex_dir(target.to_str().unwrap()).unwrap();
+        assert_eq!(r.migrated_agents, 1);
+        assert_eq!(r.migrated_skills, 1);
+
+        let lf = load_lockfile(target.to_str().unwrap());
+        assert_eq!(lf.resources.len(), 2);
+        for entry in &lf.resources {
+            assert_eq!(entry.source, ResourceSource::Imported);
+        }
+        assert!(target.join("agents/a1.md").exists());
+        assert!(target.join("skills/s1/SKILL.md").exists());
+        // Source unchanged.
+        assert!(legacy_agents.join("a1.md").exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
