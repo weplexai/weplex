@@ -287,7 +287,7 @@ fn re_agent_cli() -> &'static regex::Regex {
 
 // ─── Rule registry ──────────────────────────────────────────────────────
 
-type RuleFn = fn(&RuleCtx) -> Option<GuardFinding>;
+type RuleFn = fn(&RuleCtx) -> Vec<GuardFinding>;
 
 struct Rule {
     id: &'static str,
@@ -307,74 +307,86 @@ const RULES: &[Rule] = &[
 
 // ─── Rule implementations ───────────────────────────────────────────────
 
-fn rule_secrets_aws_key(ctx: &RuleCtx) -> Option<GuardFinding> {
-    let m = re_aws_key().find(ctx.body)?;
-    Some(GuardFinding {
-        rule_id: "secrets-aws-key".into(),
-        severity: Severity::Block,
-        message: "AWS access key id detected in body".into(),
-        explanation:
-            "AKIA-prefixed AWS access key ids are root-level credentials. \
-             They must never be committed to a resource body — anyone with \
-             read access to the manifest gets the key."
-                .into(),
-        snippet: Some(redacted_snippet(ctx.body, m.start(), m.end())),
-        location: Some(locate(ctx.body, m.start())),
-    })
-}
-
-fn rule_secrets_github_token(ctx: &RuleCtx) -> Option<GuardFinding> {
-    let m = re_github_token().find(ctx.body)?;
-    Some(GuardFinding {
-        rule_id: "secrets-github-token".into(),
-        severity: Severity::Block,
-        message: "GitHub personal access token detected in body".into(),
-        explanation:
-            "Tokens prefixed with `ghp_` (classic) or `ghs_` (server-to-server) \
-             grant repo-scoped access. Never embed them in a resource body — \
-             rotate the token immediately if you see this finding."
-                .into(),
-        snippet: Some(redacted_snippet(ctx.body, m.start(), m.end())),
-        location: Some(locate(ctx.body, m.start())),
-    })
-}
-
-fn rule_secrets_private_key(ctx: &RuleCtx) -> Option<GuardFinding> {
-    // Look for a `-----BEGIN ` token paired with `PRIVATE KEY-----` on
-    // the same or the next line. We can't use a single regex because the
-    // pattern straddles a newline reliably only with a multiline mode +
-    // bounded `.` — and we'd rather keep this tight and explicit.
-    let begin_idx = ctx.body.find("-----BEGIN ")?;
-    // Search window: from BEGIN up to ~120 bytes (one PEM header line).
-    let window_end = (begin_idx + 200).min(ctx.body.len());
-    let window = &ctx.body[begin_idx..window_end];
-    if !window.contains("PRIVATE KEY-----") {
-        return None;
+fn rule_secrets_aws_key(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    let mut out = Vec::new();
+    for m in re_aws_key().find_iter(ctx.body) {
+        out.push(GuardFinding {
+            rule_id: "secrets-aws-key".into(),
+            severity: Severity::Block,
+            message: "AWS access key id detected in body".into(),
+            explanation:
+                "AKIA-prefixed AWS access key ids are root-level credentials. \
+                 They must never be committed to a resource body — anyone with \
+                 read access to the manifest gets the key."
+                    .into(),
+            snippet: Some(redacted_snippet(ctx.body, m.start(), m.end())),
+            location: Some(locate(ctx.body, m.start())),
+        });
     }
-    // Snippet is just the BEGIN line, fully redacted (header strings are
-    // not secret on their own but redacting prevents accidental copy of
-    // surrounding key material on multi-line snippets in future).
-    let line_end = ctx.body[begin_idx..]
-        .find('\n')
-        .map(|i| begin_idx + i)
-        .unwrap_or(ctx.body.len());
-    Some(GuardFinding {
-        rule_id: "secrets-private-key".into(),
-        severity: Severity::Block,
-        message: "Embedded private key detected in body".into(),
-        explanation:
-            "PEM private keys (`-----BEGIN ... PRIVATE KEY-----`) must not \
-             ship inside an agent / rule / skill body. Move the key to your \
-             OS keychain or a `.env` file referenced via `${SECRET_NAME}` \
-             at runtime."
-                .into(),
-        snippet: Some(redacted_snippet(ctx.body, begin_idx, line_end)),
-        location: Some(locate(ctx.body, begin_idx)),
-    })
+    out
 }
 
-fn rule_wildcard_tools(ctx: &RuleCtx) -> Option<GuardFinding> {
-    let fm = ctx.frontmatter?;
+fn rule_secrets_github_token(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    let mut out = Vec::new();
+    for m in re_github_token().find_iter(ctx.body) {
+        out.push(GuardFinding {
+            rule_id: "secrets-github-token".into(),
+            severity: Severity::Block,
+            message: "GitHub personal access token detected in body".into(),
+            explanation:
+                "Tokens prefixed with `ghp_` (classic) or `ghs_` (server-to-server) \
+                 grant repo-scoped access. Never embed them in a resource body — \
+                 rotate the token immediately if you see this finding."
+                    .into(),
+            snippet: Some(redacted_snippet(ctx.body, m.start(), m.end())),
+            location: Some(locate(ctx.body, m.start())),
+        });
+    }
+    out
+}
+
+fn rule_secrets_private_key(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    // Look for `-----BEGIN ` tokens paired with `PRIVATE KEY-----` within
+    // the same ~200-byte window. Multiple keys in one body each get their
+    // own finding.
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = ctx.body[search_from..].find("-----BEGIN ") {
+        let begin_idx = search_from + rel;
+        let window_end = (begin_idx + 200).min(ctx.body.len());
+        let window = &ctx.body[begin_idx..window_end];
+        if window.contains("PRIVATE KEY-----") {
+            let line_end = ctx.body[begin_idx..]
+                .find('\n')
+                .map(|i| begin_idx + i)
+                .unwrap_or(ctx.body.len());
+            out.push(GuardFinding {
+                rule_id: "secrets-private-key".into(),
+                severity: Severity::Block,
+                message: "Embedded private key detected in body".into(),
+                explanation:
+                    "PEM private keys (`-----BEGIN ... PRIVATE KEY-----`) must not \
+                     ship inside an agent / rule / skill body. Move the key to your \
+                     OS keychain or a `.env` file referenced via `${SECRET_NAME}` \
+                     at runtime."
+                        .into(),
+                snippet: Some(redacted_snippet(ctx.body, begin_idx, line_end)),
+                location: Some(locate(ctx.body, begin_idx)),
+            });
+        }
+        // Advance past this BEGIN marker. We don't care about overlapping
+        // matches because PEM headers are line-level and well-separated.
+        search_from = begin_idx + "-----BEGIN ".len();
+    }
+    out
+}
+
+fn rule_wildcard_tools(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    let fm = match ctx.frontmatter {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
     // Two recognised keys: `tools` (Claude convention) and
     // `allowed-tools` (some Claude-Code variants). Both can be inline
     // `[a, b, *]`, comma-separated `a, b, *`, or a single `*` value.
@@ -401,7 +413,7 @@ fn rule_wildcard_tools(ctx: &RuleCtx) -> Option<GuardFinding> {
                 false
             };
             if has_wild || multiline_wild {
-                return Some(GuardFinding {
+                out.push(GuardFinding {
                     rule_id: "wildcard-tools".into(),
                     severity: Severity::Warn,
                     message: format!(
@@ -422,7 +434,7 @@ fn rule_wildcard_tools(ctx: &RuleCtx) -> Option<GuardFinding> {
             }
         }
     }
-    None
+    out
 }
 
 /// Extract the trailing scalar of a top-level frontmatter key
@@ -482,11 +494,12 @@ fn is_mcp_url_allowed(url_str: &str) -> bool {
     }
 }
 
-fn rule_mcp_url_not_https(ctx: &RuleCtx) -> Option<GuardFinding> {
+fn rule_mcp_url_not_https(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    let mut out = Vec::new();
     for s in ctx.mcp_servers {
         if let Some(u) = &s.url {
             if !is_mcp_url_allowed(u) {
-                return Some(GuardFinding {
+                out.push(GuardFinding {
                     rule_id: "mcp-url-not-https".into(),
                     severity: Severity::Block,
                     message: format!(
@@ -504,14 +517,15 @@ fn rule_mcp_url_not_https(ctx: &RuleCtx) -> Option<GuardFinding> {
             }
         }
     }
-    None
+    out
 }
 
 const ALLOWED_MCP_COMMANDS: &[&str] = &[
     "npx", "uvx", "python", "python3", "node", "bun", "deno", "pnpm",
 ];
 
-fn rule_mcp_unknown_command(ctx: &RuleCtx) -> Option<GuardFinding> {
+fn rule_mcp_unknown_command(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    let mut out = Vec::new();
     for s in ctx.mcp_servers {
         if let Some(cmd) = &s.command {
             // Basename = last path component (after `/`), then strip a
@@ -525,7 +539,7 @@ fn rule_mcp_unknown_command(ctx: &RuleCtx) -> Option<GuardFinding> {
                 })
                 .unwrap_or_else(|| cmd.clone());
             if !ALLOWED_MCP_COMMANDS.contains(&basename.as_str()) {
-                return Some(GuardFinding {
+                out.push(GuardFinding {
                     rule_id: "mcp-unknown-command".into(),
                     severity: Severity::Warn,
                     message: format!(
@@ -545,34 +559,36 @@ fn rule_mcp_unknown_command(ctx: &RuleCtx) -> Option<GuardFinding> {
             }
         }
     }
-    None
+    out
 }
 
-fn rule_mcp_tos_agent_cli(ctx: &RuleCtx) -> Option<GuardFinding> {
-    let m = re_agent_cli().find(ctx.body)?;
-    Some(GuardFinding {
-        rule_id: "mcp-tos-agent-cli".into(),
-        severity: Severity::Block,
-        message: "Resource body invokes another agent CLI in headless mode".into(),
-        explanation:
-            "Agent-on-agent orchestration via headless CLI (e.g. \
-             `claude --print`, `codex run`, `aider --message`) violates the \
-             MCP terms-of-service guideline against Claude-on-Claude \
-             spawning. Use a tool / MCP server boundary instead."
-                .into(),
-        snippet: Some({
-            let pre_start = ctx.body[..m.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let post_end = ctx.body[m.end()..]
-                .find('\n')
-                .map(|i| m.end() + i)
-                .unwrap_or(ctx.body.len());
-            ctx.body[pre_start..post_end].to_string()
-        }),
-        location: Some(locate(ctx.body, m.start())),
-    })
+fn rule_mcp_tos_agent_cli(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    let mut out = Vec::new();
+    for m in re_agent_cli().find_iter(ctx.body) {
+        let pre_start = ctx.body[..m.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let post_end = ctx.body[m.end()..]
+            .find('\n')
+            .map(|i| m.end() + i)
+            .unwrap_or(ctx.body.len());
+        out.push(GuardFinding {
+            rule_id: "mcp-tos-agent-cli".into(),
+            severity: Severity::Block,
+            message: "Resource body invokes another agent CLI in headless mode".into(),
+            explanation:
+                "Agent-on-agent orchestration via headless CLI (e.g. \
+                 `claude --print`, `codex run`, `aider --message`) violates the \
+                 MCP terms-of-service guideline against Claude-on-Claude \
+                 spawning. Use a tool / MCP server boundary instead."
+                    .into(),
+            snippet: Some(ctx.body[pre_start..post_end].to_string()),
+            location: Some(locate(ctx.body, m.start())),
+        });
+    }
+    out
 }
 
-fn rule_permissions_broad(ctx: &RuleCtx) -> Option<GuardFinding> {
+fn rule_permissions_broad(ctx: &RuleCtx) -> Vec<GuardFinding> {
+    let mut out = Vec::new();
     for p in ctx.permissions {
         let bare_wild = p == "*";
         let prefix_wild = matches!(
@@ -580,7 +596,7 @@ fn rule_permissions_broad(ctx: &RuleCtx) -> Option<GuardFinding> {
             "network_*" | "system_*" | "exec_*"
         );
         if bare_wild || prefix_wild {
-            return Some(GuardFinding {
+            out.push(GuardFinding {
                 rule_id: "permissions-broad".into(),
                 severity: Severity::Warn,
                 message: format!("Manifest permissions include `{}`", p),
@@ -596,14 +612,14 @@ fn rule_permissions_broad(ctx: &RuleCtx) -> Option<GuardFinding> {
             });
         }
     }
-    None
+    out
 }
 
 // ─── Scan orchestration ─────────────────────────────────────────────────
 
-/// Run every rule against a single (body, manifest) pair. Returns the
-/// raw findings list; override application happens in the caller in a
-/// follow-up commit.
+/// Run every rule against a single (body, manifest) pair. Each rule
+/// returns ALL of its matches — duplicate `rule_id`s in the output are
+/// expected when a body has multiple secrets of the same kind.
 fn scan_one(
     body: &str,
     permissions: &[String],
@@ -618,11 +634,17 @@ fn scan_one(
     };
     let mut out = Vec::new();
     for rule in RULES {
-        if let Some(f) = (rule.eval)(&ctx) {
-            out.push(f);
-        }
+        out.extend((rule.eval)(&ctx));
     }
     out
+}
+
+/// Test-only convenience: scan only the body (no permissions, no MCP
+/// servers). Used to assert snippet-redaction behaviour over multi-secret
+/// inputs.
+#[cfg(test)]
+fn scan_body_internal(body: &str) -> Vec<GuardFinding> {
+    scan_one(body, &[], &[])
 }
 
 /// Build a verdict for a single resource. Used by `scan_resource` (and,
@@ -1118,9 +1140,7 @@ pub fn scan_mcp_server(
             rule.id,
             "mcp-url-not-https" | "mcp-unknown-command"
         ) {
-            if let Some(f) = (rule.eval)(&ctx) {
-                out.push(f);
-            }
+            out.extend((rule.eval)(&ctx));
         }
     }
     Ok(out)
@@ -1144,10 +1164,14 @@ mod tests {
 
     // ── Secrets rules ────────────────────────────────────────────────
 
+    fn first<F>(v: Vec<F>) -> F {
+        v.into_iter().next().expect("expected at least one finding")
+    }
+
     #[test]
     fn secrets_aws_key_match_redacted() {
         let body = "before AKIAIOSFODNN7EXAMPLE after";
-        let f = rule_secrets_aws_key(&ctx(body)).unwrap();
+        let f = first(rule_secrets_aws_key(&ctx(body)));
         assert_eq!(f.severity, Severity::Block);
         let s = f.snippet.as_deref().unwrap();
         assert!(!s.contains("AKIAIOSFODNN7EXAMPLE"), "snippet leaked secret: {}", s);
@@ -1158,7 +1182,7 @@ mod tests {
     fn secrets_github_token_match_redacted() {
         // 40 chars after gh prefix.
         let body = "use ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa here";
-        let f = rule_secrets_github_token(&ctx(body)).unwrap();
+        let f = first(rule_secrets_github_token(&ctx(body)));
         assert_eq!(f.severity, Severity::Block);
         let s = f.snippet.as_deref().unwrap();
         assert!(!s.contains("ghp_aaaa"), "snippet leaked token: {}", s);
@@ -1168,7 +1192,7 @@ mod tests {
     #[test]
     fn secrets_private_key_match_redacted() {
         let body = "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIB...\n-----END RSA PRIVATE KEY-----";
-        let f = rule_secrets_private_key(&ctx(body)).unwrap();
+        let f = first(rule_secrets_private_key(&ctx(body)));
         assert_eq!(f.severity, Severity::Block);
         let s = f.snippet.as_deref().unwrap();
         assert!(!s.contains("BEGIN RSA"), "snippet should be redacted: {}", s);
@@ -1179,14 +1203,14 @@ mod tests {
     #[test]
     fn wildcard_tools_match() {
         let body = "---\nname: foo\nallowed-tools: *\n---\nbody";
-        let f = rule_wildcard_tools(&ctx(body)).unwrap();
+        let f = first(rule_wildcard_tools(&ctx(body)));
         assert_eq!(f.severity, Severity::Warn);
     }
 
     #[test]
     fn wildcard_tools_no_match() {
         let body = "---\nname: foo\nallowed-tools: [Read, Edit]\n---\nbody";
-        assert!(rule_wildcard_tools(&ctx(body)).is_none());
+        assert!(rule_wildcard_tools(&ctx(body)).is_empty());
     }
 
     // ── MCP url rule ────────────────────────────────────────────────
@@ -1207,7 +1231,7 @@ mod tests {
             url: Some("http://evil.example".into()),
             command: None,
         }];
-        let f = rule_mcp_url_not_https(&mcp_ctx(&s)).unwrap();
+        let f = first(rule_mcp_url_not_https(&mcp_ctx(&s)));
         assert_eq!(f.severity, Severity::Block);
     }
 
@@ -1218,7 +1242,7 @@ mod tests {
             url: Some("http://localhost:3000".into()),
             command: None,
         }];
-        assert!(rule_mcp_url_not_https(&mcp_ctx(&s)).is_none());
+        assert!(rule_mcp_url_not_https(&mcp_ctx(&s)).is_empty());
     }
 
     #[test]
@@ -1228,7 +1252,7 @@ mod tests {
             url: Some("http://127.0.0.1:3000".into()),
             command: None,
         }];
-        assert!(rule_mcp_url_not_https(&mcp_ctx(&s)).is_none());
+        assert!(rule_mcp_url_not_https(&mcp_ctx(&s)).is_empty());
     }
 
     /// W-3 regression: `starts_with("http://localhost")` would have
@@ -1242,7 +1266,7 @@ mod tests {
             url: Some("http://localhost.evil.com/mcp".into()),
             command: None,
         }];
-        let f = rule_mcp_url_not_https(&mcp_ctx(&s)).unwrap();
+        let f = first(rule_mcp_url_not_https(&mcp_ctx(&s)));
         assert_eq!(f.rule_id, "mcp-url-not-https");
         // 127.0.0.1 prefix bypass attempt
         let s2 = vec![McpServerRef {
@@ -1250,7 +1274,7 @@ mod tests {
             url: Some("http://127.0.0.1.evil.com/mcp".into()),
             command: None,
         }];
-        let f2 = rule_mcp_url_not_https(&mcp_ctx(&s2)).unwrap();
+        let f2 = first(rule_mcp_url_not_https(&mcp_ctx(&s2)));
         assert_eq!(f2.rule_id, "mcp-url-not-https");
     }
 
@@ -1262,7 +1286,7 @@ mod tests {
             command: None,
         }];
         assert!(
-            rule_mcp_url_not_https(&mcp_ctx(&s)).is_none(),
+            rule_mcp_url_not_https(&mcp_ctx(&s)).is_empty(),
             "::1 loopback should pass"
         );
     }
@@ -1276,7 +1300,7 @@ mod tests {
             url: None,
             command: Some("/usr/bin/curl".into()),
         }];
-        let f = rule_mcp_unknown_command(&mcp_ctx(&s)).unwrap();
+        let f = first(rule_mcp_unknown_command(&mcp_ctx(&s)));
         assert_eq!(f.severity, Severity::Warn);
     }
 
@@ -1287,7 +1311,7 @@ mod tests {
             url: None,
             command: Some("npx".into()),
         }];
-        assert!(rule_mcp_unknown_command(&mcp_ctx(&s)).is_none());
+        assert!(rule_mcp_unknown_command(&mcp_ctx(&s)).is_empty());
     }
 
     // ── MCP ToS rule ────────────────────────────────────────────────
@@ -1295,14 +1319,14 @@ mod tests {
     #[test]
     fn mcp_tos_agent_cli_claude_match() {
         let body = r#"Run: claude --print "hello""#;
-        let f = rule_mcp_tos_agent_cli(&ctx(body)).unwrap();
+        let f = first(rule_mcp_tos_agent_cli(&ctx(body)));
         assert_eq!(f.severity, Severity::Block);
     }
 
     #[test]
     fn mcp_tos_agent_cli_codex_match() {
         let body = "Tool: codex run foo";
-        let f = rule_mcp_tos_agent_cli(&ctx(body)).unwrap();
+        let f = first(rule_mcp_tos_agent_cli(&ctx(body)));
         assert_eq!(f.severity, Severity::Block);
     }
 
@@ -1310,7 +1334,7 @@ mod tests {
     fn mcp_tos_agent_cli_no_match() {
         // Mentions Claude in prose but no headless CLI invocation.
         let body = "I love using Claude for code review. It's great.";
-        assert!(rule_mcp_tos_agent_cli(&ctx(body)).is_none());
+        assert!(rule_mcp_tos_agent_cli(&ctx(body)).is_empty());
     }
 
     // ── Permissions rule ────────────────────────────────────────────
@@ -1327,21 +1351,29 @@ mod tests {
     #[test]
     fn permissions_broad_wildcard_match() {
         let p = vec!["*".to_string()];
-        let f = rule_permissions_broad(&perm_ctx(&p)).unwrap();
+        let f = first(rule_permissions_broad(&perm_ctx(&p)));
         assert_eq!(f.severity, Severity::Warn);
     }
 
     #[test]
     fn permissions_broad_network_match() {
         let p = vec!["network_*".to_string()];
-        let f = rule_permissions_broad(&perm_ctx(&p)).unwrap();
+        let f = first(rule_permissions_broad(&perm_ctx(&p)));
         assert_eq!(f.severity, Severity::Warn);
     }
 
     #[test]
     fn permissions_specific_ok() {
         let p = vec!["read_files".to_string()];
-        assert!(rule_permissions_broad(&perm_ctx(&p)).is_none());
+        assert!(rule_permissions_broad(&perm_ctx(&p)).is_empty());
+    }
+
+    /// W-5: multiple AKIA matches in one body produce one finding each.
+    #[test]
+    fn rules_emit_one_finding_per_match() {
+        let body = "config: AKIAIOSFODNN7EXAMPLE plus AKIA1234567890ABCDEF";
+        let aws = rule_secrets_aws_key(&ctx(body));
+        assert_eq!(aws.len(), 2);
     }
 
     // ── Verdict math ────────────────────────────────────────────────
