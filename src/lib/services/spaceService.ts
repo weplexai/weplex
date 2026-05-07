@@ -1,7 +1,7 @@
 // Space management service — server-synced shared/team spaces
 
 import { request } from './apiClient';
-import type { ServerSpace, SpaceType, SessionRecord, ChatMessage } from '../types';
+import type { ServerSpace, SpaceType, ChatMessage } from '../types';
 
 export const spaceService = {
   /** Create a shared or team space on the server. */
@@ -53,13 +53,4 @@ export const spaceService = {
     });
   },
 
-  /** Fetch session history for a shared/team space. */
-  async getSessionHistory(spaceId: string, status?: string): Promise<SessionRecord[]> {
-    const params = new URLSearchParams();
-    if (status) params.set('status', status);
-    const qs = params.toString();
-    return request<SessionRecord[]>(`/spaces/${spaceId}/sessions${qs ? `?${qs}` : ''}`, {
-      method: 'GET',
-    });
-  },
 };

@@ -78,25 +78,3 @@ export interface ChatMessage {
   replyTo?: { text: string; displayName: string };
   editedAt?: string;
 }
-
-export interface SessionRecord {
-  id: string;
-  spaceId: string;
-  userId: string;
-  sessionLocalId: string;
-  name: string;
-  agentType?: string;
-  cwd?: string;
-  gitBranch?: string;
-  status: 'active' | 'idle' | 'closed';
-  startedAt: string;
-  lastSeenAt: string;
-  endedAt?: string;
-  summary?: string | null;
-  filesChanged?: string[] | null;
-  decisions?: string[] | null;
-  user?: {
-    email: string;
-    displayName: string | null;
-  };
-}

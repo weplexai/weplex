@@ -6,21 +6,17 @@
 // Agents' activity logs stay private to the user's machine; sharing is now
 // opt-in via the 📋 button in SpaceChat, not automatic.
 
-import type { MemberPresence, SessionMeta, SessionRecord } from '../types';
+import type { MemberPresence, SessionMeta } from '../types';
 import { wsService } from '../services/wsService';
 import { spaceStore } from './spaceStore';
 import { sessionStore } from './sessionStore';
 import { authStore } from './authStore.svelte';
-import { spaceService } from '../services/spaceService';
 
 const SYNC_INTERVAL_MS = 10_000; // 10 seconds
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 let presenceMap = $state<Record<string, MemberPresence[]>>({});
-let sessionHistory = $state<Record<string, SessionRecord[]>>({});
-let historyLoading = $state<Record<string, boolean>>({});
-let historyLoadedAt: Record<string, number> = {}; // timestamp of last load per space (cooldown)
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 let unsubSessions: (() => void) | null = null;
 let unsubOffline: (() => void) | null = null;
@@ -96,43 +92,9 @@ export const presenceStore = {
     return presenceMap;
   },
 
-  get sessionHistory() {
-    return sessionHistory;
-  },
-
   /** Get members present in a specific space (by serverId). */
   getMembers(serverId: string): MemberPresence[] {
     return presenceMap[serverId] ?? [];
-  },
-
-  /** Get session history records for a space (by serverId). */
-  getHistory(serverId: string): SessionRecord[] {
-    return sessionHistory[serverId] ?? [];
-  },
-
-  /** Check if history is currently loading for a space. */
-  isHistoryLoading(serverId: string): boolean {
-    return historyLoading[serverId] ?? false;
-  },
-
-  /** Load session history from the server for a shared/team space. */
-  async loadHistory(serverId: string): Promise<void> {
-    if (!authStore.isAuthenticated) return;
-    // Prevent duplicate/loop: skip if already loading or recently loaded
-    if (historyLoading[serverId]) return;
-    if (sessionHistory[serverId] && historyLoadedAt[serverId] && Date.now() - historyLoadedAt[serverId] < 30_000) return;
-    historyLoading = { ...historyLoading, [serverId]: true };
-    try {
-      const records = await spaceService.getSessionHistory(serverId);
-      sessionHistory = { ...sessionHistory, [serverId]: records };
-      historyLoadedAt[serverId] = Date.now();
-    } catch (err) {
-      console.warn('[Weplex] Failed to load session history:', err);
-      // On error, set a cooldown to prevent retry loops
-      historyLoadedAt[serverId] = Date.now();
-    } finally {
-      historyLoading = { ...historyLoading, [serverId]: false };
-    }
   },
 
   /** Subscribe to WebSocket presence events. Call once after WS connects. */
@@ -193,8 +155,5 @@ export const presenceStore = {
       unsubOffline = null;
     }
     presenceMap = {};
-    sessionHistory = {};
-    historyLoading = {};
-    historyLoadedAt = {};
   },
 };

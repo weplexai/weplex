@@ -40,7 +40,6 @@
       const displayName = authStore.user?.displayName || authStore.user?.email || undefined;
       wsService.joinSpace(serverId, displayName);
       presenceStore.startSyncing();
-      presenceStore.loadHistory(serverId);
       prevPresenceSpaceId = serverId;
     } else {
       prevPresenceSpaceId = null;
