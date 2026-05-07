@@ -43,8 +43,6 @@ use std::time::Duration;
 // ─── Errors ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Variants reserved for orchestrator additions in
-                    // follow-up commits (override store, deep scan).
 pub enum GuardError {
     Io(String),
     InvalidProfileDir(String),
@@ -1478,8 +1476,12 @@ fn validate_profile_dir_cmd(profile_config_dir: String) -> Result<String, String
     if profile_config_dir.is_empty() {
         return Ok(format!("{}/.claude", crate::utils::get_home()));
     }
+    // Route through `GuardError::InvalidProfileDir` so all profile-dir
+    // rejections share the same error variant — keeps the error taxonomy
+    // honest. The string is then redacted at the Tauri boundary.
     crate::utils::validate_config_dir(&profile_config_dir)
-        .map_err(|e| format!("invalid profile_config_dir: {}", redact_home(&e)))
+        .map_err(|e| GuardError::InvalidProfileDir(e))
+        .map_err(|e| redact_home(&e.to_string()))
 }
 
 /// Replace a leading `$HOME` with `~` so error strings handed back to
