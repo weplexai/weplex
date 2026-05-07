@@ -763,14 +763,46 @@ fn scan_resource_inner(
 }
 
 // ─── Override store ─────────────────────────────────────────────────────
+//
+// The override store records the user's "I accept this finding for this
+// resource at this body sha" decisions. The store is HMAC-authenticated
+// (W-2): an attacker with file-write access to the profile dir cannot
+// forge new accept-decisions — they would need the per-profile HMAC key
+// stored in macOS Keychain.
+//
+// Schema:
+//   v1 (legacy): { version: 1, decisions: [...] }                  - unauthenticated
+//   v2 (current): { version: 2, hmac: "<hex>", decisions: [...] }  - HMAC-SHA256
+//
+// On read of v1: accept once, immediately rewrite as v2 with a freshly
+// computed HMAC. Subsequent tampering is detected.
+//
+// On read of v2: compute HMAC over `serde_json::to_vec(&decisions)`
+// (canonical via serde's struct-field order) and compare against the
+// stored hex. Mismatch -> log warning, return empty store, do NOT delete
+// the file (preserve forensic evidence).
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct OverrideStoreOnDisk {
+struct OverrideStoreV1 {
     version: u32,
     decisions: Vec<OverrideDecision>,
 }
 
-const OVERRIDE_STORE_VERSION: u32 = 1;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OverrideStoreV2 {
+    version: u32,
+    hmac: String,
+    decisions: Vec<OverrideDecision>,
+}
+
+/// Probe the store envelope to figure out which schema we're looking at.
+/// Used on read so we can apply the appropriate verification path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OverrideStoreProbe {
+    version: u32,
+}
+
+const OVERRIDE_STORE_VERSION: u32 = 2;
 
 fn override_store_path(profile_dir: &str) -> PathBuf {
     PathBuf::from(profile_dir)
@@ -782,25 +814,232 @@ fn override_lock_path(profile_dir: &str) -> PathBuf {
     PathBuf::from(profile_dir).join(".weplex").join("overrides.lock")
 }
 
-/// Load the override store. Missing file = empty store (treated as
-/// "user has not made any decisions yet"). Corrupt JSON degrades to
-/// empty + warning rather than a hard error — guard scans should never
-/// fail because of a bad overrides file.
-fn load_override_store(profile_dir: &str) -> Vec<OverrideDecision> {
+#[cfg(debug_assertions)]
+const OVERRIDE_HMAC_KEYCHAIN_SERVICE: &str = "com.weplex.app.dev";
+#[cfg(not(debug_assertions))]
+const OVERRIDE_HMAC_KEYCHAIN_SERVICE: &str = "com.weplex.app";
+
+/// Derive a stable Keychain account name for the per-profile HMAC key.
+/// Mirrors `notes_crypto::keychain_account` — full SHA-256 of the
+/// profile id, no truncation, so different profile dirs cannot collide.
+fn override_hmac_keychain_account(profile_dir: &str) -> String {
+    let h = ring::digest::digest(&ring::digest::SHA256, profile_dir.as_bytes());
+    let bytes = h.as_ref();
+    let mut hex = String::with_capacity(64);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    format!("guard-overrides-key-{}", hex)
+}
+
+/// Fetch-or-create the per-profile HMAC key from macOS Keychain. The
+/// key is 32 random bytes (HMAC-SHA256 block size = 64, but RFC-2104
+/// allows any length; 32 bytes matches the digest output and the
+/// project's existing `notes_crypto` convention).
+///
+/// `keyring` returns the password as a UTF-8 string, so we base64-encode
+/// the bytes — matches `notes_crypto`'s storage format exactly.
+fn override_hmac_key(profile_dir: &str) -> Result<[u8; 32], GuardError> {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    use ring::rand::{SecureRandom, SystemRandom};
+
+    let account = override_hmac_keychain_account(profile_dir);
+    let entry = keyring::Entry::new(OVERRIDE_HMAC_KEYCHAIN_SERVICE, &account)
+        .map_err(|e| GuardError::OverrideStore(format!("keychain entry init: {}", e)))?;
+    match entry.get_password() {
+        Ok(stored) => {
+            let raw = B64
+                .decode(stored.as_bytes())
+                .map_err(|e| GuardError::OverrideStore(format!("keychain b64 decode: {}", e)))?;
+            if raw.len() != 32 {
+                return Err(GuardError::OverrideStore(format!(
+                    "keychain key wrong length: {}",
+                    raw.len()
+                )));
+            }
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&raw);
+            Ok(out)
+        }
+        Err(keyring::Error::NoEntry) => {
+            let mut key = [0u8; 32];
+            SystemRandom::new()
+                .fill(&mut key)
+                .map_err(|e| GuardError::OverrideStore(format!("rng fill: {}", e)))?;
+            entry
+                .set_password(&B64.encode(key))
+                .map_err(|e| GuardError::OverrideStore(format!("keychain set: {}", e)))?;
+            Ok(key)
+        }
+        Err(e) => Err(GuardError::OverrideStore(format!("keychain get: {}", e))),
+    }
+}
+
+/// Compute HMAC-SHA256 over the canonical JSON serialisation of the
+/// decisions list. Returns lowercase hex.
+fn compute_overrides_hmac(
+    decisions: &[OverrideDecision],
+    key: &[u8; 32],
+) -> Result<String, GuardError> {
+    let payload = serde_json::to_vec(decisions)
+        .map_err(|e| GuardError::OverrideStore(format!("hmac serialize: {}", e)))?;
+    let hmac_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    let tag = ring::hmac::sign(&hmac_key, &payload);
+    let bytes = tag.as_ref();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    Ok(hex)
+}
+
+/// Constant-time hex comparison so a tampered store can't be probed via
+/// timing differences.
+fn hex_eq_constant_time(a: &str, b: &str) -> bool {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
+    if ab.len() != bb.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in ab.iter().zip(bb.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Outcome of a load — distinguishes "store was empty" from "store was
+/// migrated v1 -> v2" so the caller can persist the freshly-HMAC-stamped
+/// file even on read paths.
+enum LoadOutcome {
+    Empty,
+    Verified(Vec<OverrideDecision>),
+    /// Legacy v1 store: HMAC absent, accept once and rewrite. The caller
+    /// holds the lock on read paths that need to migrate.
+    NeedsMigration(Vec<OverrideDecision>),
+}
+
+/// Load the override store. Missing file = empty store. Corrupt JSON,
+/// HMAC mismatch, or any verification failure degrades to empty + warning
+/// — guard scans should never fail because of a bad overrides file.
+///
+/// On HMAC mismatch the file is NOT deleted: keeping it lets a forensic
+/// reviewer correlate "decisions look forged" with whatever else was
+/// touched on the system.
+fn load_override_store_outcome(profile_dir: &str) -> LoadOutcome {
     let path = override_store_path(profile_dir);
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => return LoadOutcome::Empty,
     };
-    match serde_json::from_str::<OverrideStoreOnDisk>(&raw) {
-        Ok(s) => s.decisions,
+
+    let probe: OverrideStoreProbe = match serde_json::from_str(&raw) {
+        Ok(p) => p,
         Err(e) => {
             log::warn!(
-                "guard override store at {} is corrupt: {} — treating as empty",
+                "[guard] override store at {} is corrupt: {} — treating as empty",
                 path.display(),
                 e
             );
-            Vec::new()
+            return LoadOutcome::Empty;
+        }
+    };
+
+    match probe.version {
+        1 => match serde_json::from_str::<OverrideStoreV1>(&raw) {
+            Ok(s) => {
+                log::info!(
+                    "[guard] migrating override store at {} from v1 to v2",
+                    path.display()
+                );
+                LoadOutcome::NeedsMigration(s.decisions)
+            }
+            Err(e) => {
+                log::warn!(
+                    "[guard] override store at {} v1 parse failed: {} — treating as empty",
+                    path.display(),
+                    e
+                );
+                LoadOutcome::Empty
+            }
+        },
+        2 => {
+            let store: OverrideStoreV2 = match serde_json::from_str(&raw) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!(
+                        "[guard] override store at {} v2 parse failed: {} — treating as empty",
+                        path.display(),
+                        e
+                    );
+                    return LoadOutcome::Empty;
+                }
+            };
+            let key = match override_hmac_key(profile_dir) {
+                Ok(k) => k,
+                Err(e) => {
+                    log::warn!(
+                        "[guard] override hmac key unavailable for profile <redacted>: {} — treating as empty",
+                        e
+                    );
+                    return LoadOutcome::Empty;
+                }
+            };
+            let want = match compute_overrides_hmac(&store.decisions, &key) {
+                Ok(h) => h,
+                Err(e) => {
+                    log::warn!(
+                        "[guard] override hmac compute failed: {} — treating as empty",
+                        e
+                    );
+                    return LoadOutcome::Empty;
+                }
+            };
+            if !hex_eq_constant_time(&want, &store.hmac) {
+                log::warn!(
+                    "[guard] override store HMAC invalid for profile <redacted>; \
+                     treating as empty (file may have been tampered)"
+                );
+                return LoadOutcome::Empty;
+            }
+            LoadOutcome::Verified(store.decisions)
+        }
+        v => {
+            log::warn!(
+                "[guard] override store at {} has unsupported version {} — treating as empty",
+                path.display(),
+                v
+            );
+            LoadOutcome::Empty
+        }
+    }
+}
+
+/// Convenience wrapper used by read-only callers (e.g. `list_overrides`,
+/// `scan_resource`). v1 stores are silently re-saved as v2 — a one-time
+/// migration on first read after upgrade.
+///
+/// Migration intentionally does NOT take the override lock. `save_override_store`
+/// writes atomically via tmp+rename, so even if a write races with the migration,
+/// the worst case is one of the two payloads wins atomically (both contain valid
+/// v2 envelopes with valid HMACs). Skipping the lock here also lets
+/// `set_override_decision` — which already holds the lock — call into the read
+/// path without re-entrant locking.
+fn load_override_store(profile_dir: &str) -> Vec<OverrideDecision> {
+    match load_override_store_outcome(profile_dir) {
+        LoadOutcome::Empty => Vec::new(),
+        LoadOutcome::Verified(d) => d,
+        LoadOutcome::NeedsMigration(d) => {
+            if let Err(e) = save_override_store(profile_dir, &d) {
+                log::warn!(
+                    "[guard] override v1->v2 migration save failed: {} — continuing",
+                    e
+                );
+            }
+            d
         }
     }
 }
@@ -844,6 +1083,11 @@ fn acquire_override_lock(profile_dir: &str) -> Result<std::fs::File, GuardError>
 
 /// Persist the store back to disk with mode 0600 + atomic rename. The
 /// caller MUST hold the override lock around this call.
+///
+/// Writes v2 schema with HMAC-SHA256 over the canonical JSON of
+/// `decisions` using the per-profile Keychain key. A future read will
+/// recompute and verify; tampering with either field invalidates the
+/// HMAC.
 fn save_override_store(
     profile_dir: &str,
     decisions: &[OverrideDecision],
@@ -853,8 +1097,11 @@ fn save_override_store(
         std::fs::create_dir_all(parent)
             .map_err(|e| GuardError::Io(format!("create parent: {}", e)))?;
     }
-    let payload = OverrideStoreOnDisk {
+    let key = override_hmac_key(profile_dir)?;
+    let hmac = compute_overrides_hmac(decisions, &key)?;
+    let payload = OverrideStoreV2 {
         version: OVERRIDE_STORE_VERSION,
+        hmac,
         decisions: decisions.to_vec(),
     };
     let json = serde_json::to_string_pretty(&payload)
@@ -1650,11 +1897,13 @@ mod tests {
         // re-serialise must produce the same shape (modulo JSON whitespace).
         let path = override_store_path(&profile);
         let raw = std::fs::read_to_string(&path).unwrap();
-        let parsed: OverrideStoreOnDisk = serde_json::from_str(&raw).unwrap();
+        let parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
         assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
+        assert!(!parsed.hmac.is_empty(), "v2 store must include hmac");
         assert_eq!(parsed.decisions.len(), 1);
         assert_eq!(parsed.decisions[0].rule_id, dec.rule_id);
         let _ = std::fs::remove_dir_all(&dir);
+        cleanup_keychain(&profile);
     }
 
     #[test]
@@ -1699,11 +1948,154 @@ mod tests {
         // Final read must succeed (no JSON corruption).
         let path = override_store_path(&profile);
         let raw = std::fs::read_to_string(&path).unwrap();
-        let parsed: OverrideStoreOnDisk = serde_json::from_str(&raw)
+        let parsed: OverrideStoreV2 = serde_json::from_str(&raw)
             .expect("final override store must be valid JSON");
         assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
+        assert!(!parsed.hmac.is_empty(), "v2 store must include hmac");
         assert!(!parsed.decisions.is_empty(), "expected at least one decision saved");
         let _ = std::fs::remove_dir_all(&dir);
+        cleanup_keychain(&profile);
+    }
+
+    /// Best-effort cleanup of the per-profile HMAC key in Keychain so
+    /// tests don't leak entries on developer machines. Failures (e.g.
+    /// linux without secret-service) are silently ignored.
+    fn cleanup_keychain(profile: &str) {
+        let account = override_hmac_keychain_account(profile);
+        if let Ok(entry) =
+            keyring::Entry::new(OVERRIDE_HMAC_KEYCHAIN_SERVICE, &account)
+        {
+            let _ = entry.delete_credential();
+        }
+    }
+
+    // ── W-2: HMAC integrity tests ────────────────────────────────────
+
+    /// Helper used by HMAC tests to build a one-decision store via the
+    /// internal save path (which stamps the HMAC).
+    fn save_one_decision(profile: &str, rule_id: &str) {
+        let dec = OverrideDecision {
+            rule_id: rule_id.into(),
+            resource_path: "/tmp/foo.md".into(),
+            body_sha256: "sha-1".into(),
+            decision: OverrideKind::Accept,
+            decided_at: "2026-05-07T00:00:00Z".into(),
+            decided_by: None,
+        };
+        set_override_internal(profile, dec).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn override_hmac_verifies_unmodified() {
+        let dir = tmpdir("hmac-good");
+        let profile = dir.to_str().unwrap().to_string();
+        save_one_decision(&profile, "secrets-aws-key");
+        let listed = load_override_store(&profile);
+        assert_eq!(listed.len(), 1, "valid HMAC must read back");
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup_keychain(&profile);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn override_hmac_rejects_tampered_decisions() {
+        let dir = tmpdir("hmac-tamper-decisions");
+        let profile = dir.to_str().unwrap().to_string();
+        save_one_decision(&profile, "secrets-aws-key");
+
+        // Mutate the JSON file to add a forged decision while keeping
+        // the original HMAC. A naive verifier would accept this.
+        let path = override_store_path(&profile);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let mut parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
+        parsed.decisions.push(OverrideDecision {
+            rule_id: "wildcard-tools".into(),
+            resource_path: "/tmp/forged.md".into(),
+            body_sha256: "sha-forged".into(),
+            decision: OverrideKind::Accept,
+            decided_at: "2026-05-07T00:00:00Z".into(),
+            decided_by: None,
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+
+        let listed = load_override_store(&profile);
+        assert!(
+            listed.is_empty(),
+            "HMAC mismatch must drop the tampered store, got {:?}",
+            listed
+        );
+        // File must still exist (forensic evidence).
+        assert!(path.exists(), "tampered file must NOT be deleted");
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup_keychain(&profile);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn override_hmac_rejects_swapped_hmac() {
+        let dir = tmpdir("hmac-tamper-hmac");
+        let profile = dir.to_str().unwrap().to_string();
+        save_one_decision(&profile, "secrets-aws-key");
+
+        let path = override_store_path(&profile);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let mut parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
+        // Flip a single byte in the hex string. Constant-time compare
+        // ensures this falls into the same "rejected" path as a wholly
+        // bogus value.
+        let mut chars: Vec<char> = parsed.hmac.chars().collect();
+        chars[0] = if chars[0] == '0' { '1' } else { '0' };
+        parsed.hmac = chars.into_iter().collect();
+        std::fs::write(&path, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+
+        let listed = load_override_store(&profile);
+        assert!(
+            listed.is_empty(),
+            "swapped HMAC must drop the store, got {:?}",
+            listed
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup_keychain(&profile);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn override_v1_migrates_to_v2_on_first_read() {
+        let dir = tmpdir("hmac-v1-migrate");
+        let profile = dir.to_str().unwrap().to_string();
+
+        // Manually drop a legacy v1 file.
+        let path = override_store_path(&profile);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let v1 = OverrideStoreV1 {
+            version: 1,
+            decisions: vec![OverrideDecision {
+                rule_id: "secrets-aws-key".into(),
+                resource_path: "/tmp/foo.md".into(),
+                body_sha256: "sha-1".into(),
+                decision: OverrideKind::Accept,
+                decided_at: "2026-05-07T00:00:00Z".into(),
+                decided_by: None,
+            }],
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&v1).unwrap()).unwrap();
+
+        // First read: decisions should be migrated and the file rewritten
+        // as v2 with a valid HMAC.
+        let listed = load_override_store(&profile);
+        assert_eq!(listed.len(), 1, "v1 decisions must be honoured once");
+
+        // File is now v2 + has valid HMAC.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.version, 2);
+        assert!(!parsed.hmac.is_empty());
+        // Subsequent reads see the same decisions via the verified path.
+        let listed_again = load_override_store(&profile);
+        assert_eq!(listed_again.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup_keychain(&profile);
     }
 
     // ── Profile scan integration ────────────────────────────────────
@@ -1802,6 +2194,7 @@ mod tests {
             vec!["secrets-aws-key".to_string()]
         );
         let _ = std::fs::remove_dir_all(&profile);
+        cleanup_keychain(&profile_str);
     }
 
     // ── Deep-scan adapter ───────────────────────────────────────────
