@@ -36,8 +36,6 @@ pub const LOCKFILE_VERSION: u32 = 1;
 pub const LOCKFILE_NAME: &str = ".weplex.lock.yaml";
 pub const CACHE_DIR: &str = ".weplex/cache";
 pub const LOCK_FILE: &str = ".weplex/lockfile.lock";
-// Used in commits D/H. Public for future use.
-#[allow(dead_code)]
 pub const LEGACY_FLAG: &str = ".weplex/legacy-weplex-migrated.flag";
 
 pub const MAX_HISTORY_PER_RESOURCE: usize = 10;
@@ -49,11 +47,8 @@ pub const MAX_HISTORY_AGE_DAYS: i64 = 30;
 /// sit well under 100 KiB; 1 MiB is generous and protects against an
 /// unbounded body or sidecar smuggled through any of these entry points.
 pub const MAX_RESOURCE_BYTES: usize = 1024 * 1024;
-#[allow(dead_code)]
 pub const MAX_ARCHIVE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
-#[allow(dead_code)]
 pub const MAX_ARCHIVE_ENTRY_BYTES: u64 = 10 * 1024 * 1024;
-#[allow(dead_code)]
 pub const MAX_ARCHIVE_TOTAL_UNCOMPRESSED: u64 = 200 * 1024 * 1024;
 
 // ─── Errors ─────────────────────────────────────────────────────────────
@@ -154,8 +149,6 @@ pub enum MutationKind {
         body: String,
         sidecar: Option<String>,
     },
-    /// Delete is wired up by callers in commits E/F/G.
-    #[allow(dead_code)]
     Delete,
 }
 
@@ -927,7 +920,6 @@ pub struct ImportReport {
     pub overwritten: usize,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationReport {

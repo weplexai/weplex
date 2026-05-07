@@ -294,10 +294,8 @@ pub fn copy_all_to_profile(
 
 /// Create a new resource file in a specific profile.
 ///
-/// Phase 3: profile.rs Tauri commands now route through the lockfile,
-/// so this primitive is kept around for tests and rare callers that
-/// need a non-lockfile-aware create. Mark dead_code-allowed so the
-/// build stays clean.
+/// Non-lockfile-aware primitive kept for tests and rare callers that need
+/// a direct write; production paths go through the lockfile.
 #[allow(dead_code)]
 pub fn create_resource(
     config_dir: &str,
