@@ -906,6 +906,10 @@ fn is_archive_path_allowed(rel: &str) -> bool {
 
 /// Export every tracked resource + cache into a gzipped tarball.
 /// The lockfile is the first archive entry so callers can stream-inspect.
+///
+/// Fails if `output_path` already exists or is a symlink. Callers that
+/// want to overwrite must delete the destination first — this prevents
+/// accidentally clobbering a file behind a symlink.
 pub fn export_profile_to_archive(
     profile_config_dir: &str,
     output_path: &str,
@@ -966,11 +970,28 @@ pub fn export_profile_to_archive(
     // Build the tarball.
     use flate2::Compression;
     use flate2::GzBuilder;
-    use std::fs::File;
+    use std::fs::OpenOptions;
 
-    let out_file = File::create(output_path).map_err(|e| {
-        LockfileError::Io(format!("create archive {}: {}", output_path, e))
-    })?;
+    // Refuse to write the archive if the destination already exists or is
+    // a symlink. `File::create` would happily follow a symlink at
+    // `output_path` and overwrite the target (e.g. ~/.ssh/authorized_keys).
+    // `create_new(true)` is atomic w.r.t. existence and never follows
+    // symlinks. Users who want to overwrite an existing archive must
+    // delete it first.
+    let out_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_path)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                LockfileError::Io(format!(
+                    "refusing to overwrite existing path {} (delete it first)",
+                    output_path
+                ))
+            } else {
+                LockfileError::Io(format!("create archive {}: {}", output_path, e))
+            }
+        })?;
     // Zero the gzip header MTIME so two exports of the same lockfile state
     // produce byte-identical archives (the default `GzEncoder::new` writes
     // wall-clock time, breaking reproducibility).
@@ -2182,6 +2203,65 @@ mod tests {
             bytes_a, bytes_b,
             "two exports of the same lockfile state must be byte-identical"
         );
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn export_refuses_existing_path() {
+        // W5 regression: export must not overwrite an existing file at
+        // output_path. The previous File::create would happily clobber.
+        let src = tmpdir("export-existing");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "x".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let archive = src.join("out.tar.gz");
+        std::fs::write(&archive, b"DO NOT TOUCH").unwrap();
+        let res =
+            export_profile_to_archive(src.to_str().unwrap(), archive.to_str().unwrap());
+        assert!(res.is_err(), "export should refuse to overwrite");
+        let bytes = std::fs::read(&archive).unwrap();
+        assert_eq!(bytes, b"DO NOT TOUCH", "target file must be untouched");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn export_refuses_symlink_at_output_path() {
+        // W5 regression: if output_path is a symlink, export must not
+        // follow it and write to the link target. The previous File::create
+        // would silently overwrite whatever the symlink pointed at —
+        // catastrophic if it was e.g. ~/.ssh/authorized_keys.
+        let src = tmpdir("export-symlink");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "x".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+
+        let target = src.join("victim.txt");
+        std::fs::write(&target, b"DO NOT TOUCH").unwrap();
+        let link = src.join("out.tar.gz");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let res = export_profile_to_archive(src.to_str().unwrap(), link.to_str().unwrap());
+        assert!(res.is_err(), "export should refuse symlinked output");
+        // The original file behind the symlink must be untouched.
+        let bytes = std::fs::read(&target).unwrap();
+        assert_eq!(bytes, b"DO NOT TOUCH");
         let _ = std::fs::remove_dir_all(&src);
     }
 
