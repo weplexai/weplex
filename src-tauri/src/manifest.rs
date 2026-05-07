@@ -409,9 +409,18 @@ impl Manifest {
         };
 
         // Canonicalize the allowed root for the symlink-safe comparison.
-        // If it doesn't exist yet (rare for HOME, possible for project),
-        // fall back to lexical containment.
-        let canon_root = std::fs::canonicalize(&allowed_root).unwrap_or(allowed_root.clone());
+        // We require the allowed root (HOME or project_root) to exist —
+        // a missing HOME or non-existent project root means the caller
+        // is in an inconsistent state and we should surface it instead
+        // of silently falling back to a lexical containment check that
+        // could be tricked by symlink trickery in the would-be parent.
+        let canon_root = std::fs::canonicalize(&allowed_root).map_err(|e| {
+            ManifestError::InvalidPath(format!(
+                "allowed root '{}' does not exist or cannot be canonicalized: {}",
+                allowed_root.display(),
+                e
+            ))
+        })?;
 
         // Canonicalize parent (which may exist while the file does not).
         let parent = expanded
@@ -782,6 +791,33 @@ mcp_servers:
             unsafe { std::env::set_var("HOME", p); }
         }
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn resolve_target_errors_when_home_missing() {
+        // A non-existent HOME must surface as InvalidPath, not be
+        // silently papered over with lexical containment.
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("HOME").ok();
+        let bogus = std::env::temp_dir()
+            .join(format!(
+                "weplex-no-such-home-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        // Make sure it doesn't exist.
+        let _ = std::fs::remove_dir_all(&bogus);
+        unsafe { std::env::set_var("HOME", &bogus); }
+
+        let r = Manifest::resolve_target("~/foo.md", None);
+        assert!(matches!(r, Err(ManifestError::InvalidPath(_))), "got {:?}", r);
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
     }
 
     #[test]
