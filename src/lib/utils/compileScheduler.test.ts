@@ -26,6 +26,7 @@ const okScan: ScanReport = {
   overall: 'green',
   deepScanRan: false,
   deepScanSkippedReason: null,
+  profileFindings: [],
 };
 
 function setupHappyPath(): void {

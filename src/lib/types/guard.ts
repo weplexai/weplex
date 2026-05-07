@@ -32,6 +32,13 @@ export interface ScanReport {
   overall: GuardVerdict;
   deepScanRan: boolean;
   deepScanSkippedReason: string | null;
+  /**
+   * Deep-scan findings that don't map to a known resource — profile-wide
+   * concerns such as overlapping permissions in `.claude/settings.json`.
+   * Reserved for a future Hub indicator; not surfaced in the per-resource
+   * UI today.
+   */
+  profileFindings: GuardFinding[];
 }
 
 export interface OverrideDecision {

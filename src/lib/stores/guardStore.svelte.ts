@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  GuardFinding,
   GuardVerdict,
   OverrideDecision,
   ResourceVerdict,
@@ -93,6 +94,15 @@ export const guardStore = {
 
   findingsFor(resourcePath: string): ResourceVerdict | null {
     return byResourcePath[resourcePath] ?? null;
+  },
+
+  /**
+   * Profile-level findings that don't map to a single resource (e.g.
+   * profile-wide settings/permissions concerns from a deep scan).
+   * Reserved for a future Hub indicator — call sites today are stubs.
+   */
+  profileFindingsFor(profileConfigDir: string): GuardFinding[] {
+    return byProfile[profileConfigDir]?.report?.profileFindings ?? [];
   },
 
   /**

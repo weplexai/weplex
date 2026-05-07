@@ -133,6 +133,13 @@ pub struct ScanReport {
     pub overall: GuardVerdict,
     pub deep_scan_ran: bool,
     pub deep_scan_skipped_reason: Option<String>,
+    /// Deep-scan findings whose `location` does not map to any known
+    /// resource — e.g. an external scanner that flags a profile-wide
+    /// concern (`.claude/settings.json` permissions overlap, dangling
+    /// MCP config). Routed here instead of being stuffed onto
+    /// `resources[0]` (which silently misattributed warnings to the
+    /// alphabetically-first resource).
+    pub profile_findings: Vec<GuardFinding>,
 }
 
 // ─── Verdict math ───────────────────────────────────────────────────────
@@ -1461,8 +1468,10 @@ fn scan_profile_with_runner<R: DeepScanRunner>(
     // verdicts. Each resource path gets passed to the runner; on any
     // error we leave the per-resource findings alone and record the
     // reason at report level. Findings whose `location` carries a
-    // recognised resource path are routed to that resource; others fall
-    // onto the first resource as a coarse fallback.
+    // recognised resource path are routed to that resource; ones with
+    // no parseable location land in the report-level `profile_findings`
+    // bucket so they aren't silently misattributed to the first resource.
+    let mut profile_findings: Vec<GuardFinding> = Vec::new();
     let (deep_scan_ran, deep_scan_skipped_reason) = if !deep_scan {
         (false, Some("disabled".to_string()))
     } else {
@@ -1473,18 +1482,25 @@ fn scan_profile_with_runner<R: DeepScanRunner>(
         let path_refs: Vec<&Path> = path_bufs.iter().map(|p| p.as_path()).collect();
         match runner.run(&path_refs) {
             Ok(extra) => {
-                if !extra.is_empty() && !resources.is_empty() {
+                if !extra.is_empty() {
                     let mut by_idx: std::collections::HashMap<usize, Vec<GuardFinding>> =
                         std::collections::HashMap::new();
                     for f in extra {
-                        let idx = match &f.location {
+                        // Resolve to a resource by location prefix; otherwise
+                        // route to the profile-level bucket. We never coerce
+                        // an unlocated finding onto resources[0] anymore —
+                        // that hid bugs by attributing wrong-source warnings
+                        // to whichever resource sorted first.
+                        let resolved = match &f.location {
                             Some(loc) => resources
                                 .iter()
-                                .position(|r| loc.starts_with(&r.resource_path))
-                                .unwrap_or(0),
-                            None => 0,
+                                .position(|r| loc.starts_with(&r.resource_path)),
+                            None => None,
                         };
-                        by_idx.entry(idx).or_default().push(f);
+                        match resolved {
+                            Some(idx) => by_idx.entry(idx).or_default().push(f),
+                            None => profile_findings.push(f),
+                        }
                     }
                     for (idx, mut fs_) in by_idx {
                         if let Some(target) = resources.get_mut(idx) {
@@ -1502,10 +1518,18 @@ fn scan_profile_with_runner<R: DeepScanRunner>(
         }
     };
 
-    let overall = resources
+    // Overall verdict folds in profile-level findings too — a profile-wide
+    // Block (e.g. forbidden permission) must surface even if every body
+    // is individually clean.
+    let resources_verdict = resources
         .iter()
         .map(|r| r.verdict)
         .fold(GuardVerdict::Green, worst_verdict);
+    let profile_verdict = profile_findings
+        .iter()
+        .map(|f| severity_to_verdict(f.severity))
+        .fold(GuardVerdict::Green, worst_verdict);
+    let overall = worst_verdict(resources_verdict, profile_verdict);
 
     Ok(ScanReport {
         profile_dir: profile_dir.to_string(),
@@ -1513,6 +1537,7 @@ fn scan_profile_with_runner<R: DeepScanRunner>(
         overall,
         deep_scan_ran,
         deep_scan_skipped_reason,
+        profile_findings,
     })
 }
 
@@ -2389,14 +2414,29 @@ mod tests {
     #[test]
     fn deep_scan_fake_returns_findings() {
         let profile = fixture_profile();
-        let extra = vec![GuardFinding {
-            rule_id: "deep-scan-test".into(),
-            severity: Severity::Warn,
-            message: "deep finding".into(),
-            explanation: "from fake runner".into(),
-            snippet: None,
-            location: None,
-        }];
+        // Two extra findings: one without location (routes to profile-level
+        // bucket), one with location prefixed at the red resource (routes
+        // to that resource).
+        let red_path = profile.join("skills/red.md");
+        let red_path_str = red_path.to_str().unwrap().to_string();
+        let extra = vec![
+            GuardFinding {
+                rule_id: "deep-scan-unlocated".into(),
+                severity: Severity::Warn,
+                message: "deep finding without location".into(),
+                explanation: "from fake runner".into(),
+                snippet: None,
+                location: None,
+            },
+            GuardFinding {
+                rule_id: "deep-scan-located".into(),
+                severity: Severity::Warn,
+                message: "deep finding for red".into(),
+                explanation: "from fake runner".into(),
+                snippet: None,
+                location: Some(red_path_str.clone()),
+            },
+        ];
         let runner = FakeRunner {
             result: std::cell::RefCell::new(Some(Ok(extra))),
         };
@@ -2408,9 +2448,23 @@ mod tests {
         )
         .unwrap();
         assert!(report.deep_scan_ran);
-        // Extra finding got merged onto the first resource.
-        let first = &report.resources[0];
-        assert!(first.findings.iter().any(|f| f.rule_id == "deep-scan-test"));
+        // Unlocated finding goes to profile_findings, NOT to resources[0].
+        assert_eq!(report.profile_findings.len(), 1);
+        assert_eq!(report.profile_findings[0].rule_id, "deep-scan-unlocated");
+        for r in &report.resources {
+            assert!(
+                r.findings.iter().all(|f| f.rule_id != "deep-scan-unlocated"),
+                "unlocated finding leaked onto resource {}",
+                r.resource_id
+            );
+        }
+        // Located finding lands on the red resource.
+        let red = report
+            .resources
+            .iter()
+            .find(|r| r.resource_id == "red")
+            .expect("red resource missing");
+        assert!(red.findings.iter().any(|f| f.rule_id == "deep-scan-located"));
         let _ = std::fs::remove_dir_all(&profile);
     }
 
