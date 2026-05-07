@@ -1,6 +1,7 @@
 /// Claude commands (.claude/commands/*.md) parsing and management.
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandFile {
     pub name: String,
     pub file_path: String,
@@ -10,6 +11,14 @@ pub struct CommandFile {
     pub allowed_tools: Vec<String>,
     pub model: String,
     pub body: String,
+    /// Discriminator: "command" (default) or "pipeline".
+    /// `#[serde(default)]` makes existing serialized data continue to deserialize.
+    #[serde(default = "default_command_type")]
+    pub command_type: String,
+}
+
+fn default_command_type() -> String {
+    "command".to_string()
 }
 
 /// Parse a Claude command .md file (YAML frontmatter + body).
@@ -25,6 +34,7 @@ fn parse_command_file(content: &str, file_path: &str, scope: &str) -> CommandFil
     let mut argument_hint = String::new();
     let mut allowed_tools: Vec<String> = Vec::new();
     let mut model = String::new();
+    let mut command_type = "command".to_string();
     let mut body = content.to_string();
 
     if content.starts_with("---") {
@@ -65,6 +75,15 @@ fn parse_command_file(content: &str, file_path: &str, scope: &str) -> CommandFil
                                 .filter(|s| !s.is_empty())
                                 .collect();
                         }
+                        "type" => {
+                            // Whitelist: only accept "pipeline" — everything else
+                            // (including unknown values) falls back to the default.
+                            command_type = if value == "pipeline" {
+                                "pipeline".to_string()
+                            } else {
+                                "command".to_string()
+                            };
+                        }
                         _ => {}
                     }
                 }
@@ -81,6 +100,7 @@ fn parse_command_file(content: &str, file_path: &str, scope: &str) -> CommandFil
         allowed_tools,
         model,
         body,
+        command_type,
     }
 }
 
@@ -174,6 +194,20 @@ Plan the implementation:
 
 Do not write code — only the plan.
 "#),
+        ("pipeline-feature", r#"---
+type: pipeline
+description: Standard feature pipeline (plan → review → ship)
+allowed-tools: Read, Grep, Glob, Bash, Agent
+---
+
+Run these commands in order. Do NOT skip steps. Do NOT spawn other agents headless.
+
+1. /plan
+2. /review
+3. /review-iterate
+
+Stop when /review-iterate reports all areas pass.
+"#),
     ];
 
     // Sidecar manifests for cross-agent rendering. Mirrors the .md
@@ -236,6 +270,25 @@ agents:
   opencode: {}
 permissions:
   - read_files
+mcp_servers: []
+"#,
+        ),
+        (
+            "pipeline-feature",
+            r#"id: pipeline-feature
+version: 1.0.0
+author: weplex
+agents:
+  claude:
+    source: ./pipeline-feature.md
+  codex:
+    section: Feature Pipeline
+  cursor:
+    section: Feature Pipeline
+  opencode: {}
+permissions:
+  - read_files
+  - run_bash
 mcp_servers: []
 "#,
         ),
@@ -375,8 +428,23 @@ pub fn save_command(
     allowed_tools: Vec<String>,
     model: String,
     body: String,
+    command_type: Option<String>,
 ) -> Result<String, String> {
     let safe_name = crate::utils::sanitize_name(&name)?;
+
+    // Whitelist: None or Some("command") = command, Some("pipeline") = pipeline.
+    // Anything else is rejected with a clear error so the frontend can't
+    // smuggle arbitrary frontmatter through this field.
+    let is_pipeline = match command_type.as_deref() {
+        None | Some("command") => false,
+        Some("pipeline") => true,
+        Some(other) => {
+            return Err(format!(
+                "invalid command_type {:?}: expected \"command\" or \"pipeline\"",
+                other
+            ));
+        }
+    };
 
     // Sanitize frontmatter values: strip newlines and "---" to prevent injection
     let sanitize_fm = |s: &str| -> String {
@@ -386,6 +454,12 @@ pub fn save_command(
     let mut frontmatter = String::from("---\n");
     if !description.is_empty() {
         frontmatter.push_str(&format!("description: {}\n", sanitize_fm(&description)));
+    }
+    if is_pipeline {
+        // Emit `type: pipeline` right after description (or at the top of
+        // the frontmatter if no description). Only "pipeline" is ever
+        // emitted — the implicit default is "command" so we don't write it.
+        frontmatter.push_str("type: pipeline\n");
     }
     if !argument_hint.is_empty() {
         frontmatter.push_str(&format!("argument-hint: {}\n", sanitize_fm(&argument_hint)));
@@ -534,6 +608,138 @@ mod tests {
     }
 
     #[test]
+    fn parse_command_file_pipeline_type() {
+        let content = "---\ndescription: x\ntype: pipeline\n---\nbody";
+        let f = parse_command_file(content, "/x.md", "user");
+        assert_eq!(f.command_type, "pipeline");
+    }
+
+    #[test]
+    fn parse_command_file_unknown_type_defaults_to_command() {
+        let content = "---\ndescription: x\ntype: weird\n---\nbody";
+        let f = parse_command_file(content, "/x.md", "user");
+        assert_eq!(f.command_type, "command");
+    }
+
+    #[test]
+    fn parse_command_file_no_type_defaults_to_command() {
+        let content = "---\ndescription: x\n---\nbody";
+        let f = parse_command_file(content, "/x.md", "user");
+        assert_eq!(f.command_type, "command");
+    }
+
+    #[test]
+    fn save_command_pipeline_emits_type_in_frontmatter() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("save-pipeline");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let path = save_command(
+            None,
+            "my-pipe".to_string(),
+            "user".to_string(),
+            None,
+            "demo pipeline".to_string(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            "step 1\nstep 2".to_string(),
+            Some("pipeline".to_string()),
+        )
+        .expect("save_command should succeed");
+
+        let written = std::fs::read_to_string(&path).expect("read written .md");
+        assert!(
+            written.contains("type: pipeline\n"),
+            "expected 'type: pipeline' in frontmatter, got: {}",
+            written
+        );
+
+        // Round-trip through parse_command_file to confirm.
+        let parsed = parse_command_file(&written, &path, "user");
+        assert_eq!(parsed.command_type, "pipeline");
+        assert_eq!(parsed.description, "demo pipeline");
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn save_command_command_type_omits_type_in_frontmatter() {
+        // Default and explicit "command" must NOT emit a `type:` line —
+        // existing .md files have never had one, and we don't want to
+        // start writing it for the implicit case.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("save-default");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let path = save_command(
+            None,
+            "plain".to_string(),
+            "user".to_string(),
+            None,
+            "regular command".to_string(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            "do thing".to_string(),
+            None,
+        )
+        .expect("save_command should succeed");
+
+        let written = std::fs::read_to_string(&path).expect("read written .md");
+        assert!(
+            !written.contains("type:"),
+            "expected no 'type:' line for default command, got: {}",
+            written
+        );
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn save_command_invalid_type_returns_error() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("save-invalid");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let err = save_command(
+            None,
+            "bogus".to_string(),
+            "user".to_string(),
+            None,
+            "x".to_string(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            "body".to_string(),
+            Some("garbage".to_string()),
+        )
+        .expect_err("invalid command_type must return Err");
+        assert!(
+            err.contains("invalid command_type") && err.contains("garbage"),
+            "expected clear error mentioning the bad value, got: {}",
+            err
+        );
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn ensure_default_commands_creates_md_and_sidecars() {
         let _g = ENV_LOCK.lock().unwrap();
         let home = tmpdir("ensure-defaults");
@@ -542,13 +748,13 @@ mod tests {
         unsafe { std::env::set_var("HOME", &canon_home); }
 
         let result = ensure_default_commands(None).unwrap();
-        // Three default commands ship: review, review-iterate, plan.
-        assert_eq!(result.md_created, 3);
-        assert_eq!(result.sidecars_created, 3);
+        // Four default commands ship: review, review-iterate, plan, pipeline-feature.
+        assert_eq!(result.md_created, 4);
+        assert_eq!(result.sidecars_created, 4);
         assert!(result.sidecar_warnings.is_empty());
 
         let cmd_dir = canon_home.join(".claude").join("commands");
-        for name in ["review", "review-iterate", "plan"] {
+        for name in ["review", "review-iterate", "plan", "pipeline-feature"] {
             assert!(cmd_dir.join(format!("{}.md", name)).exists());
             assert!(cmd_dir.join(format!("{}.weplex.yaml", name)).exists());
         }
@@ -602,11 +808,43 @@ mod tests {
         // Builtin source marker.
         let profile_dir = canon_home.join(".claude");
         let lf = crate::lockfile::load_lockfile(profile_dir.to_str().unwrap());
-        assert_eq!(lf.resources.len(), 3);
+        assert_eq!(lf.resources.len(), 4);
         for entry in &lf.resources {
             assert_eq!(entry.source, crate::lockfile::ResourceSource::Builtin);
             assert!(entry.id.starts_with("commands/"));
         }
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn ensure_default_commands_pipeline_feature_has_pipeline_type() {
+        // The shipped pipeline-feature.md must declare type: pipeline so the
+        // frontend renders it as a pipeline, not as a regular command.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ensure-pipeline-type");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let _ = ensure_default_commands(None).unwrap();
+
+        let md_path = canon_home
+            .join(".claude")
+            .join("commands")
+            .join("pipeline-feature.md");
+        let content = std::fs::read_to_string(&md_path).unwrap();
+        assert!(
+            content.contains("type: pipeline\n"),
+            "pipeline-feature.md must declare type: pipeline"
+        );
+
+        // And it must round-trip through parse_command_file as a pipeline.
+        let parsed = parse_command_file(&content, md_path.to_str().unwrap(), "user");
+        assert_eq!(parsed.command_type, "pipeline");
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
