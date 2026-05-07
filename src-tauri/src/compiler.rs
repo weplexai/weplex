@@ -349,6 +349,110 @@ fn render_section_block(
 
 // ─── Default targets per harness ────────────────────────────────────────
 
+/// Section-mode targets are appended into a shared, user-edited file.
+/// A malicious manifest with `target: ~/.zshrc` would otherwise pass
+/// path validation (under HOME, no `..`) and have shell-executable
+/// body content spliced into the user's shell startup file. We
+/// restrict section-mode to a small allowlist of known harness files.
+///
+/// User-level entries must be `<filename>` relative to HOME and
+/// canonicalise to the same file. Project-level entries are matched
+/// by file name only, but the file must live directly at the project
+/// root (no subdirectories).
+const SECTION_ALLOWLIST_USER: &[&str] = &[
+    ".codex/AGENTS.md",
+    ".claude/CLAUDE.md",
+];
+
+/// File names allowed as section-mode targets at a project root.
+const SECTION_ALLOWLIST_PROJECT_NAMES: &[&str] = &[
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+];
+
+/// Fragment-mode targets are full files we own. We don't want a
+/// manifest dropping a `.md` into the user's Documents folder, so we
+/// limit fragments to known harness fragment dirs:
+///   - `~/.config/opencode/skills/` (user-level)
+///   - `${PROJECT}/.cursor/rules/`  (project-level)
+///
+/// New harness adapters must be added here explicitly.
+fn fragment_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
+    let parent = match target.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    let canon_parent = match std::fs::canonicalize(parent) {
+        Ok(c) => c,
+        Err(_) => parent.to_path_buf(),
+    };
+
+    // User-level: ~/.config/opencode/skills/
+    let home = crate::utils::get_home();
+    let home_path = PathBuf::from(&home);
+    let canon_home = std::fs::canonicalize(&home_path).unwrap_or(home_path);
+    let opencode_skills = canon_home.join(".config/opencode/skills");
+    if canon_parent == opencode_skills
+        || canon_parent.starts_with(&opencode_skills)
+    {
+        return true;
+    }
+
+    // Project-level: <project>/.cursor/rules/
+    if let Some(pr) = project_root {
+        let canon_pr = std::fs::canonicalize(pr).unwrap_or_else(|_| pr.to_path_buf());
+        let cursor_rules = canon_pr.join(".cursor/rules");
+        if canon_parent == cursor_rules || canon_parent.starts_with(&cursor_rules) {
+            return true;
+        }
+    }
+    false
+}
+
+fn section_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
+    let home = crate::utils::get_home();
+    let home_path = PathBuf::from(&home);
+    let canon_home = std::fs::canonicalize(&home_path).unwrap_or(home_path);
+
+    // Compare the target as canonical-paths so symlinks can't sneak
+    // past the allowlist.
+    let canon_target = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+
+    // User-level allowlist.
+    for entry in SECTION_ALLOWLIST_USER {
+        let user_target = canon_home.join(entry);
+        let canon_user = std::fs::canonicalize(&user_target).unwrap_or(user_target);
+        if canon_user == canon_target {
+            return true;
+        }
+    }
+
+    // Project-level allowlist: file directly at project root, name in
+    // the allowlist.
+    if let Some(pr) = project_root {
+        let canon_pr = std::fs::canonicalize(pr).unwrap_or_else(|_| pr.to_path_buf());
+        let canon_target_parent = canon_target
+            .parent()
+            .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+        if let Some(parent) = canon_target_parent {
+            if parent == canon_pr {
+                let file_name = canon_target
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                for allowed in SECTION_ALLOWLIST_PROJECT_NAMES {
+                    if file_name == *allowed {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
 /// Resolve (target_path, mode) for a harness when the manifest doesn't
 /// fully specify them. Returns None when the harness has no useful
 /// default for this resource kind (caller should skip).
@@ -358,7 +462,7 @@ fn resolve_target_and_mode(
     id: &str,
     home: &str,
     project_root: Option<&Path>,
-) -> Result<Option<(PathBuf, RenderMode)>, ManifestError> {
+) -> Result<Option<(PathBuf, RenderMode)>, CompileError> {
     // Resolve target path (placeholder + safety check).
     let target_str: String = match spec.target.as_deref() {
         Some(t) => t.to_string(),
@@ -374,13 +478,38 @@ fn resolve_target_and_mode(
         },
     };
 
-    let resolved = Manifest::resolve_target(&target_str, project_root)?;
+    let resolved = Manifest::resolve_target(&target_str, project_root)
+        .map_err(CompileError::Manifest)?;
 
     // Mode: explicit > inferred from extension/filename.
     let mode = match spec.mode {
         Some(m) => m,
         None => infer_mode(&resolved, harness),
     };
+
+    // Tight allowlist per mode. Section-mode reaches into user-edited
+    // shared files (AGENTS.md, .cursorrules, ...); fragment-mode owns
+    // a whole file. Both must land in known harness paths or we
+    // refuse — a target like ~/.zshrc would otherwise look "valid"
+    // (under HOME, no ..) but be a remote-code-execution sink.
+    match mode {
+        RenderMode::Section => {
+            if !section_target_allowed(&resolved, project_root) {
+                return Err(CompileError::PathDenied(format!(
+                    "section-mode target '{}' is not in the allowlist of harness-canonical paths",
+                    resolved.display()
+                )));
+            }
+        }
+        RenderMode::Fragment => {
+            if !fragment_target_allowed(&resolved, project_root) {
+                return Err(CompileError::PathDenied(format!(
+                    "fragment-mode target '{}' is not under a known harness fragment directory",
+                    resolved.display()
+                )));
+            }
+        }
+    }
 
     Ok(Some((resolved, mode)))
 }
@@ -932,6 +1061,10 @@ fn compile_profile_internal(
                 Ok(Some(r)) => r,
                 Ok(None) => continue,
                 Err(e) => {
+                    // Per-target allowlist denials and bad path specs
+                    // are non-fatal: we collect the error and keep
+                    // compiling other manifests. The frontend gets a
+                    // useful diff in CompileReport.errors.
                     report
                         .errors
                         .push(format!("{}/{}: {}", manifest.id, harness, e));
@@ -1702,6 +1835,201 @@ agents:
             Err(CompileError::InvalidBody(_)) => {}
             other => panic!("expected InvalidBody, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn section_target_zshrc_rejected() {
+        // A manifest pointing section-mode at ~/.zshrc must be refused
+        // — section mode would splice marker-bracketed content into the
+        // user's shell startup file.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("section-zshrc-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("section-zshrc-profile");
+        let agents_dir = profile.join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("evil.weplex.yaml"),
+            "id: evil\nversion: 1.0.0\nagents:\n  codex:\n    target: ~/.zshrc\n    section: Evil\n    mode: section\n",
+        )
+        .unwrap();
+        std::fs::write(agents_dir.join("evil.md"), "echo pwned\n").unwrap();
+        // Pre-create ~/.zshrc with original content so we can verify
+        // it stays untouched.
+        std::fs::write(canon_home.join(".zshrc"), "ORIGINAL\n").unwrap();
+
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        // Expect the error to be reported, and the file untouched.
+        assert!(
+            report.errors.iter().any(|e| e.contains("not in the allowlist")),
+            "expected allowlist denial, errors = {:?}",
+            report.errors
+        );
+        assert_eq!(
+            std::fs::read_to_string(canon_home.join(".zshrc")).unwrap(),
+            "ORIGINAL\n",
+            "zshrc was modified despite allowlist"
+        );
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn section_target_codex_agentsmd_allowed() {
+        // The default codex AGENTS.md target must be accepted —
+        // baseline regression check that the allowlist isn't
+        // accidentally over-restrictive.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("section-codex-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("section-codex-profile");
+        let skills = profile.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(
+            skills.join("greet.weplex.yaml"),
+            "id: greet\nversion: 1.0.0\nagents:\n  codex:\n    section: Greet\n",
+        )
+        .unwrap();
+        std::fs::write(skills.join("greet.md"), "Hi\n").unwrap();
+
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let agents_md = canon_home.join(".codex/AGENTS.md");
+        assert!(agents_md.exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn section_target_cursorrules_in_project_allowed() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("section-cursor-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        // Project root must be inside HOME for the Tauri-validated
+        // case, but compile_profile is called directly here so we
+        // canonicalise manually.
+        let project = canon_home.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let canon_project = std::fs::canonicalize(&project).unwrap();
+
+        let profile = tmpdir("section-cursor-profile");
+        let rules = profile.join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        std::fs::write(
+            rules.join("style.weplex.yaml"),
+            "id: style\nversion: 1.0.0\nagents:\n  cursor:\n    section: Style\n",
+        )
+        .unwrap();
+        std::fs::write(rules.join("style.md"), "use 2 spaces.\n").unwrap();
+
+        let report = compile_profile(
+            profile.to_str().unwrap(),
+            Some(canon_project.as_path()),
+        )
+        .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let cursorrules = canon_project.join(".cursorrules");
+        assert!(cursorrules.exists(), ".cursorrules not created");
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn section_target_cursorrules_outside_project_rejected() {
+        // A manifest pointing at .cursorrules that lives somewhere
+        // OTHER than the project root (e.g. ~/.cursorrules) must be
+        // refused.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("section-cursor-out-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("section-cursor-out-profile");
+        let rules = profile.join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        std::fs::write(
+            rules.join("evil.weplex.yaml"),
+            "id: evil\nversion: 1.0.0\nagents:\n  cursor:\n    target: ~/.cursorrules\n    section: Evil\n    mode: section\n",
+        )
+        .unwrap();
+        std::fs::write(rules.join("evil.md"), "x\n").unwrap();
+
+        // Note: NO project_root passed → .cursorrules at HOME root
+        // can't be allowed (allowlist requires project-root parent).
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        assert!(
+            report.errors.iter().any(|e| e.contains("not in the allowlist")),
+            "expected allowlist denial, errors = {:?}",
+            report.errors
+        );
+        assert!(!canon_home.join(".cursorrules").exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn fragment_target_arbitrary_dir_rejected() {
+        // A fragment-mode manifest pointing at ~/Documents/foo.md must
+        // be refused — fragments must live in known harness fragment
+        // directories.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("fragment-arbitrary-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let docs = canon_home.join("Documents");
+        std::fs::create_dir_all(&docs).unwrap();
+
+        let profile = tmpdir("fragment-arbitrary-profile");
+        let skills = profile.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(
+            skills.join("foo.weplex.yaml"),
+            "id: foo\nversion: 1.0.0\nagents:\n  opencode:\n    target: ~/Documents/foo.md\n    mode: fragment\n",
+        )
+        .unwrap();
+        std::fs::write(skills.join("foo.md"), "body\n").unwrap();
+
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        assert!(
+            report.errors.iter().any(|e| e.contains("not under a known harness fragment directory")),
+            "expected fragment denial, errors = {:?}",
+            report.errors
+        );
+        assert!(!docs.join("foo.md").exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
     }
 
     #[test]
