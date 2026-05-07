@@ -115,14 +115,17 @@
    * Fetch a raw text resource and bound the bytes received. We trust
    * neither the registry nor the host repo: a hostile server could
    * stream gigabytes; a runaway proxy could 500. The same 1 MiB cap
-   * the Rust side enforces on disk applies here.
+   * the Rust side enforces on disk applies here, but measured in
+   * UTF-8 bytes so a string of multi-byte characters can't sneak past
+   * a `.length` (code-units) check.
    */
   async function fetchRawText(url: string): Promise<string> {
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`fetch ${url} → HTTP ${res.status}`);
     const body = await res.text();
-    if (body.length > 1024 * 1024) {
-      throw new Error('resource exceeds 1 MiB cap');
+    const bytes = new TextEncoder().encode(body).byteLength;
+    if (bytes > 1024 * 1024) {
+      throw new Error(`fetched ${bytes} bytes, exceeds 1 MiB cap`);
     }
     return body;
   }

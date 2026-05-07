@@ -237,5 +237,45 @@ describe('FederatedPackDetail', () => {
       );
     });
   });
+
+  // I4: the byte-correct cap rejects payloads larger than 1 MiB measured
+  // in UTF-8 bytes (not code units). This test sends a 1.1 MiB body of
+  // ASCII characters — both checks would catch it, but the message must
+  // come from the byte-counting branch.
+  it('rejects fetched bodies larger than 1 MiB measured in bytes', async () => {
+    const body = 'a'.repeat(1024 * 1024 + 1024); // 1 MiB + 1 KiB
+    mockedGetPack.mockResolvedValueOnce(
+      buildDetail({
+        resources: [
+          {
+            kind: 'agent',
+            name: 'big',
+            path: 'agents/big.md',
+            size: body.length,
+            sha256: 'a'.repeat(64),
+            preview: 'aaa',
+            rawUrl: 'https://example.com/big.md',
+            agentshield: { score: 'green', findings: [] },
+          },
+        ],
+      }),
+    );
+    mockFetch(body);
+
+    const { container } = render(FederatedPackDetail, {
+      props: { packId: 'acme/awesome', onclose: () => {} },
+    });
+    await waitFor(() => {
+      expect(container.querySelector('.fed-resource')).not.toBeNull();
+    });
+    const installBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => (b.textContent ?? '').includes('Install all'),
+    ) as HTMLButtonElement;
+    await fireEvent.click(installBtn);
+    await waitFor(() => {
+      expect(container.textContent).toMatch(/exceeds 1 MiB cap/);
+    });
+    expect(mockedInvoke).not.toHaveBeenCalled();
+  });
 });
 
