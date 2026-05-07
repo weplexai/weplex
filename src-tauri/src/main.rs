@@ -5,6 +5,7 @@
 mod agents;
 mod claude;
 mod commands;
+mod compiler;
 mod context;
 mod git;
 mod hook_decision;
@@ -236,6 +237,10 @@ fn main() {
             commands::list_commands,
             commands::save_command,
             commands::delete_command,
+            // Cross-agent manifests + compiler
+            manifest::list_profile_manifests,
+            compiler::compile_profile_to_external_agents,
+            compiler::dry_run_compile_profile,
             // Git & project config
             git::get_project_config,
             git::get_git_branch,

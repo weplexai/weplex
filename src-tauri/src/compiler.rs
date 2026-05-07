@@ -358,12 +358,6 @@ fn save_ledger(profile_dir: &str, ledger: &InstallLedger) -> Result<(), CompileE
 
 // ─── Section-mode renderer ─────────────────────────────────────────────
 
-/// One section we want present in a target file.
-struct DesiredSection {
-    target: PathBuf,
-    block: MarkerBlock,
-}
-
 /// Apply all desired sections to one shared target file. Updates only
 /// our marker blocks; preserves everything else byte-for-byte.
 ///
