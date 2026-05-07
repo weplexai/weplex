@@ -1584,10 +1584,17 @@ fn compile_profile_internal(
         // Track section targets under a synthetic key so future runs can
         // find them even if no manifests target them anymore. Section
         // entries carry empty hashes — we never `remove_file()` a shared
-        // file; orphan cleanup splices markers out instead. Skip any
-        // path that wouldn't pass the safety check on the next read.
-        let section_paths: Vec<LedgerEntry> = all_section_targets
-            .iter()
+        // file; orphan cleanup splices markers out instead.
+        //
+        // Important: only THIS run's section_groups are recorded, NOT the
+        // union of this-run + prior __sections__. Otherwise once a profile
+        // ever rendered to a target, the path would be tracked forever —
+        // and an empty profile would never drop the synthetic key. The
+        // orphan-cleanup phase above already splices our markers out of
+        // any target that's no longer wanted, so dropping the path from
+        // the ledger here is the correct end state.
+        let section_paths: Vec<LedgerEntry> = section_groups
+            .keys()
             .filter(|p| ledger_path_is_safe(p, project_root))
             .map(|p| LedgerEntry {
                 path: p.to_string_lossy().to_string(),
@@ -2862,6 +2869,66 @@ agents:
         drop(held);
         let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn empty_profile_recompile_drops_sections_key() {
+        // 1. Compile a profile with one section-target manifest.
+        // 2. Verify ledger contains __sections__.
+        // 3. Delete the manifest, recompile.
+        // 4. Assert __sections__ is gone from ledger and the previously-
+        //    targeted file has no markers.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("empty-profile-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("empty-profile-profile");
+        let skills = profile.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(
+            skills.join("hello.weplex.yaml"),
+            "id: hello\nversion: 1.0.0\nagents:\n  codex:\n    section: Hello\n",
+        )
+        .unwrap();
+        std::fs::write(skills.join("hello.md"), "Hi\n").unwrap();
+
+        // First compile: __sections__ must be present.
+        let _ = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        let ledger_after_first = std::fs::read_to_string(ledger_path(profile.to_str().unwrap())).unwrap();
+        assert!(
+            ledger_after_first.contains("__sections__"),
+            "first compile didn't record __sections__: {}",
+            ledger_after_first
+        );
+        let agents_md = canon_home.join(".codex").join("AGENTS.md");
+        assert!(agents_md.exists());
+
+        // Empty the profile.
+        std::fs::remove_file(skills.join("hello.weplex.yaml")).unwrap();
+        std::fs::remove_file(skills.join("hello.md")).unwrap();
+
+        // Recompile: orphan cleanup splices markers out, and the new
+        // ledger should NOT carry __sections__ anymore.
+        let _ = compile_profile(profile.to_str().unwrap(), None).unwrap();
+        let ledger_after_empty = std::fs::read_to_string(ledger_path(profile.to_str().unwrap())).unwrap();
+        assert!(
+            !ledger_after_empty.contains("__sections__"),
+            "empty-profile compile still tracks __sections__: {}",
+            ledger_after_empty
+        );
+
+        // The previously-targeted file should no longer have our markers.
+        let after = std::fs::read_to_string(&agents_md).unwrap();
+        assert!(!after.contains("# weplex:begin hello"), "{}", after);
+        assert!(!after.contains("# weplex:end hello"), "{}", after);
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
