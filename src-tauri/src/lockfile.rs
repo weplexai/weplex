@@ -1658,6 +1658,54 @@ pub fn import_profile(
 ///
 /// Source files are NOT deleted. Each migrated resource is recorded in
 /// the target profile's lockfile with `source: imported`.
+#[cfg(unix)]
+fn libc_o_nofollow_legacy() -> i32 {
+    // libc isn't a direct dep — replicate the constant. POSIX value is
+    // platform-specific; these are the standard values for Linux/macOS
+    // (which is where we run). Mirrors `compiler::libc_o_nofollow` and
+    // is kept local to the lockfile module to avoid a cross-module
+    // dependency on a private helper.
+    #[cfg(target_os = "macos")]
+    {
+        0x0100
+    }
+    #[cfg(target_os = "linux")]
+    {
+        0o400000
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        0
+    }
+}
+
+// W1 (residual): close TOCTOU between symlink_metadata-based checks and
+// the subsequent read in legacy migration. Without O_NOFOLLOW an
+// attacker could swap the file for a symlink between the two syscalls
+// and get the read to follow it after we already cleared the path. On
+// Unix we open with O_NOFOLLOW so the kernel refuses if the entry is a
+// symlink at open(2) time. On Windows there is no portable equivalent
+// in std; symlinks there require special privileges by default and the
+// threat model is local-user races on the user's own machine.
+fn read_to_string_nofollow(path: &std::path::Path) -> std::io::Result<String> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc_o_nofollow_legacy())
+            .open(path)?;
+        let mut s = String::new();
+        f.read_to_string(&mut s)?;
+        Ok(s)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::read_to_string(path)
+    }
+}
+
 pub fn migrate_legacy_weplex_dir(
     target_config_dir: &str,
 ) -> Result<MigrationReport, LockfileError> {
@@ -1733,7 +1781,7 @@ pub fn migrate_legacy_weplex_dir(
                 Some(s) => s.to_string(),
                 None => continue,
             };
-            let body = match std::fs::read_to_string(&p) {
+            let body = match read_to_string_nofollow(&p) {
                 Ok(b) => b,
                 Err(e) => {
                     log::warn!("legacy migrate: read {} failed: {}", p.display(), e);
@@ -1743,7 +1791,7 @@ pub fn migrate_legacy_weplex_dir(
             // Optional sidecar — also reject if it's a symlink.
             let sidecar_path = p.with_file_name(format!("{}.weplex.yaml", stem));
             let sidecar = if regular_file_meta(&sidecar_path).is_some() {
-                std::fs::read_to_string(&sidecar_path).ok()
+                read_to_string_nofollow(&sidecar_path).ok()
             } else {
                 None
             };
@@ -1777,7 +1825,7 @@ pub fn migrate_legacy_weplex_dir(
             if regular_file_meta(&skill_md).is_none() {
                 continue;
             }
-            let body = match std::fs::read_to_string(&skill_md) {
+            let body = match read_to_string_nofollow(&skill_md) {
                 Ok(b) => b,
                 Err(e) => {
                     log::warn!("legacy migrate: read {} failed: {}", skill_md.display(), e);
@@ -1786,7 +1834,7 @@ pub fn migrate_legacy_weplex_dir(
             };
             let sidecar_path = p.join("SKILL.weplex.yaml");
             let sidecar = if regular_file_meta(&sidecar_path).is_some() {
-                std::fs::read_to_string(&sidecar_path).ok()
+                read_to_string_nofollow(&sidecar_path).ok()
             } else {
                 None
             };
@@ -3121,5 +3169,35 @@ mod tests {
             unsafe { std::env::set_var("HOME", p); }
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_to_string_nofollow_refuses_symlink() {
+        // W1 residual: even if a path passes a symlink_metadata check,
+        // an attacker could swap it for a symlink before we read. The
+        // O_NOFOLLOW open in `read_to_string_nofollow` must refuse to
+        // follow that symlink at the kernel level so the read can never
+        // hit a victim file.
+        let dir = tmpdir("nofollow");
+        let real = dir.join("secret");
+        std::fs::write(&real, "TOP SECRET").unwrap();
+        let fake = dir.join("fake");
+        std::os::unix::fs::symlink(&real, &fake).unwrap();
+
+        // Reading the symlink directly must fail (ELOOP on Linux,
+        // similar on macOS). The point is: we never get the bytes.
+        let res = read_to_string_nofollow(&fake);
+        assert!(
+            res.is_err(),
+            "read_to_string_nofollow must refuse to follow a symlink, got Ok({:?})",
+            res.ok()
+        );
+
+        // Sanity: reading the real file works.
+        let ok = read_to_string_nofollow(&real).unwrap();
+        assert_eq!(ok, "TOP SECRET");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
