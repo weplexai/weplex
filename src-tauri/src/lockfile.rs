@@ -718,7 +718,8 @@ fn sweep_cache_dirs(profile_config_dir: &str, lf: &Lockfile) -> Result<u32, Lock
 ///   live entry or remaining history entry
 ///
 /// Standalone version: takes the lockfile lock to avoid stomping a
-/// concurrent mutation.
+/// concurrent mutation. Wired up at startup in commit I.
+#[allow(dead_code)]
 pub fn run_cache_gc(profile_config_dir: &str) -> Result<u32, LockfileError> {
     let _lock = acquire_lockfile_lock(profile_config_dir)?;
     let mut lf = load_lockfile(profile_config_dir);
@@ -805,21 +806,16 @@ fn redact_home(s: &str) -> String {
     }
 }
 
-// ─── Export / Import / Migration (stubs filled in subsequent commits) ───
-//
-// These are declared here so the public surface in the architect plan is
-// reserved. The actual implementations land in the next commits to keep
-// each commit focused. `#[allow(dead_code)]` is intentional here — the
-// types are wired up in commits D/H.
+// ─── Export / Import ────────────────────────────────────────────────────
 
-#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportReport {
     pub archive_path: String,
     pub bytes: u64,
     pub resource_count: usize,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveInspection {
@@ -829,7 +825,6 @@ pub struct ArchiveInspection {
     pub conflicts: Vec<ConflictItem>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConflictItem {
@@ -838,7 +833,6 @@ pub struct ConflictItem {
     pub incoming_sha256: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConflictPolicy {
@@ -846,7 +840,6 @@ pub enum ConflictPolicy {
     SkipAll,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportReport {
@@ -862,6 +855,584 @@ pub struct MigrationReport {
     pub already_done: bool,
     pub migrated_agents: u32,
     pub migrated_skills: u32,
+}
+
+// ─── Excluded paths ─────────────────────────────────────────────────────
+
+/// Paths under `.weplex/` that MUST NEVER be exported. Encrypted notes,
+/// override locks, internal ledgers, session maps. Imports also reject
+/// these paths to prevent a malicious archive from planting one.
+const WEPLEX_INTERNAL_EXCLUDED: &[&str] = &[
+    ".weplex/lockfile.lock",
+    ".weplex/overrides.json",
+    ".weplex/compile-ledger.json",
+    ".weplex/legacy-weplex-migrated.flag",
+    ".weplex/session-map",
+    ".weplex/activity",
+];
+
+/// Returns true if the given relative path should be EXCLUDED from the
+/// export tarball.
+fn is_excluded_from_export(rel: &str) -> bool {
+    for prefix in WEPLEX_INTERNAL_EXCLUDED {
+        if rel == *prefix || rel.starts_with(&format!("{}/", prefix)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns true if a relative path is one of the canonical resource
+/// directories or .weplex/cache. The lockfile sits at the root.
+fn is_archive_path_allowed(rel: &str) -> bool {
+    if rel == LOCKFILE_NAME {
+        return true;
+    }
+    let allowed_prefixes = [
+        "agents/",
+        "rules/",
+        "skills/",
+        "commands/",
+        ".weplex/cache/",
+    ];
+    for p in &allowed_prefixes {
+        if rel.starts_with(p) {
+            return true;
+        }
+    }
+    false
+}
+
+// ─── Export ─────────────────────────────────────────────────────────────
+
+/// Export every tracked resource + cache into a gzipped tarball.
+/// The lockfile is the first archive entry so callers can stream-inspect.
+pub fn export_profile_to_archive(
+    profile_config_dir: &str,
+    output_path: &str,
+) -> Result<ExportReport, LockfileError> {
+    let lf = load_lockfile(profile_config_dir);
+    let resource_count = lf.resources.len();
+
+    // Collect every (rel_path, abs_path) we want to put in the tarball,
+    // in stable lexicographic order for reproducibility.
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+
+    let lockfile_abs = PathBuf::from(profile_config_dir).join(LOCKFILE_NAME);
+    if !lockfile_abs.exists() {
+        // Write a fresh empty lockfile to disk first so the archive
+        // always carries one. (Round-trip importers expect it.)
+        save_lockfile(profile_config_dir, &lf)?;
+    }
+    entries.push((LOCKFILE_NAME.to_string(), lockfile_abs));
+
+    // Resource files.
+    let mut resource_paths: Vec<String> = Vec::new();
+    for r in &lf.resources {
+        for f in &r.files {
+            if !is_excluded_from_export(f) {
+                resource_paths.push(f.clone());
+            }
+        }
+    }
+    resource_paths.sort();
+    resource_paths.dedup();
+    for rel in resource_paths {
+        let abs = PathBuf::from(profile_config_dir).join(&rel);
+        if abs.exists() {
+            entries.push((rel, abs));
+        }
+    }
+
+    // Cache files referenced by history entries.
+    let mut cache_paths: Vec<String> = Vec::new();
+    for entries_vec in lf.history.values() {
+        for e in entries_vec {
+            for cp in &e.cache_paths {
+                if !is_excluded_from_export(cp) {
+                    cache_paths.push(cp.clone());
+                }
+            }
+        }
+    }
+    cache_paths.sort();
+    cache_paths.dedup();
+    for rel in cache_paths {
+        let abs = PathBuf::from(profile_config_dir).join(&rel);
+        if abs.exists() {
+            entries.push((rel, abs));
+        }
+    }
+
+    // Build the tarball.
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::fs::File;
+
+    let out_file = File::create(output_path).map_err(|e| {
+        LockfileError::Io(format!("create archive {}: {}", output_path, e))
+    })?;
+    let enc = GzEncoder::new(out_file, Compression::default());
+    let mut tar_builder = tar::Builder::new(enc);
+
+    for (rel, abs) in &entries {
+        if is_excluded_from_export(rel) {
+            continue;
+        }
+        let mut f = std::fs::File::open(abs).map_err(|e| {
+            LockfileError::Io(format!("open {}: {}", abs.display(), e))
+        })?;
+        let meta = f.metadata().map_err(|e| {
+            LockfileError::Io(format!("meta {}: {}", abs.display(), e))
+        })?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(meta.len());
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        tar_builder
+            .append_data(&mut header, rel, &mut f)
+            .map_err(|e| LockfileError::Io(format!("append {}: {}", rel, e)))?;
+    }
+
+    let enc = tar_builder
+        .into_inner()
+        .map_err(|e| LockfileError::Io(format!("close tar: {}", e)))?;
+    enc.finish()
+        .map_err(|e| LockfileError::Io(format!("gzip finish: {}", e)))?;
+
+    let bytes = std::fs::metadata(output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    Ok(ExportReport {
+        archive_path: output_path.to_string(),
+        bytes,
+        resource_count,
+    })
+}
+
+// ─── Inspect ────────────────────────────────────────────────────────────
+
+/// Inspect an archive WITHOUT writing anything. Validates the archive
+/// header, returns the lockfile metadata + a list of conflicts against
+/// the current target. Caller decides whether to import.
+pub fn inspect_profile_archive(
+    archive_path: &str,
+) -> Result<ArchiveInspection, LockfileError> {
+    let lock = read_archive_lockfile(archive_path)?;
+    Ok(ArchiveInspection {
+        schema_version: lock.version,
+        generated_by: lock.generated_by,
+        resource_count: lock.resources.len(),
+        conflicts: Vec::new(),
+    })
+}
+
+/// Inspect an archive against a specific target — populates conflicts.
+pub fn inspect_profile_archive_against(
+    archive_path: &str,
+    target_config_dir: &str,
+) -> Result<ArchiveInspection, LockfileError> {
+    let incoming = read_archive_lockfile(archive_path)?;
+    let existing = load_lockfile(target_config_dir);
+    let mut conflicts = Vec::new();
+    for r in &incoming.resources {
+        if let Some(e) = existing.resources.iter().find(|x| x.id == r.id)
+            && e.sha256 != r.sha256
+        {
+            conflicts.push(ConflictItem {
+                resource_id: r.id.clone(),
+                existing_sha256: e.sha256.clone(),
+                incoming_sha256: r.sha256.clone(),
+            });
+        }
+    }
+    Ok(ArchiveInspection {
+        schema_version: incoming.version,
+        generated_by: incoming.generated_by,
+        resource_count: incoming.resources.len(),
+        conflicts,
+    })
+}
+
+/// Read just the lockfile from an archive (validates archive size).
+fn read_archive_lockfile(archive_path: &str) -> Result<Lockfile, LockfileError> {
+    use flate2::read::GzDecoder;
+    use std::fs::File;
+
+    let meta = std::fs::metadata(archive_path)
+        .map_err(|e| LockfileError::Io(format!("stat {}: {}", archive_path, e)))?;
+    if meta.len() > MAX_ARCHIVE_SIZE_BYTES {
+        return Err(LockfileError::InvalidArchive(format!(
+            "archive too large: {} bytes (max {})",
+            meta.len(),
+            MAX_ARCHIVE_SIZE_BYTES
+        )));
+    }
+
+    let f = File::open(archive_path)
+        .map_err(|e| LockfileError::Io(format!("open {}: {}", archive_path, e)))?;
+    let dec = GzDecoder::new(f);
+    let mut ar = tar::Archive::new(dec);
+
+    let entries = ar.entries().map_err(|e| {
+        LockfileError::InvalidArchive(format!("read tar entries: {}", e))
+    })?;
+
+    for entry_res in entries {
+        let mut entry = entry_res.map_err(|e| {
+            LockfileError::InvalidArchive(format!("read tar entry: {}", e))
+        })?;
+        let path = entry
+            .path()
+            .map_err(|e| LockfileError::InvalidArchive(format!("entry path: {}", e)))?;
+        let path_str = path.to_string_lossy().to_string();
+
+        if path_str == LOCKFILE_NAME {
+            let header_size = entry.header().size().map_err(|e| {
+                LockfileError::InvalidArchive(format!("entry size: {}", e))
+            })?;
+            if header_size > MAX_ARCHIVE_ENTRY_BYTES {
+                return Err(LockfileError::InvalidArchive(format!(
+                    "lockfile entry too large: {} bytes",
+                    header_size
+                )));
+            }
+            let mut buf = String::new();
+            use std::io::Read;
+            entry.read_to_string(&mut buf).map_err(|e| {
+                LockfileError::InvalidArchive(format!("read lockfile entry: {}", e))
+            })?;
+            let lock: Lockfile = serde_yml::from_str(&buf).map_err(|e| {
+                LockfileError::InvalidArchive(format!("parse lockfile: {}", e))
+            })?;
+            if lock.version > LOCKFILE_VERSION {
+                return Err(LockfileError::InvalidArchive(format!(
+                    "lockfile version {} > supported {}",
+                    lock.version, LOCKFILE_VERSION
+                )));
+            }
+            return Ok(lock);
+        }
+
+        // Encountered some other entry first. The export contract puts
+        // .weplex.lock.yaml as the first entry; refuse archives that
+        // don't conform — it makes streaming validation possible.
+        return Err(LockfileError::InvalidArchive(
+            "first archive entry must be .weplex.lock.yaml".into(),
+        ));
+    }
+
+    Err(LockfileError::InvalidArchive(
+        "archive contains no entries".into(),
+    ))
+}
+
+// ─── Import ─────────────────────────────────────────────────────────────
+
+/// Apply the archive to the target profile.
+///
+/// Two-phase: `inspect_profile_archive_against` is the read-only first
+/// half. This function re-validates EVERY entry (path traversal, size
+/// caps, allowed prefixes) before any disk write. Conflicts route
+/// through `apply_resource_mutation` so existing versions land in
+/// history.
+pub fn import_profile_from_archive(
+    target_config_dir: &str,
+    archive_path: &str,
+    policy: ConflictPolicy,
+) -> Result<ImportReport, LockfileError> {
+    use flate2::read::GzDecoder;
+    use std::fs::File;
+    use std::io::Read;
+
+    let archive_meta = std::fs::metadata(archive_path)
+        .map_err(|e| LockfileError::Io(format!("stat archive {}: {}", archive_path, e)))?;
+    if archive_meta.len() > MAX_ARCHIVE_SIZE_BYTES {
+        return Err(LockfileError::InvalidArchive(format!(
+            "archive too large: {} bytes (max {})",
+            archive_meta.len(),
+            MAX_ARCHIVE_SIZE_BYTES
+        )));
+    }
+
+    // Pass 1: collect entries into memory after path/size validation.
+    let f = File::open(archive_path)
+        .map_err(|e| LockfileError::Io(format!("open archive: {}", e)))?;
+    let dec = GzDecoder::new(f);
+    let mut ar = tar::Archive::new(dec);
+
+    let entries_iter = ar
+        .entries()
+        .map_err(|e| LockfileError::InvalidArchive(format!("read entries: {}", e)))?;
+
+    let mut total_uncompressed: u64 = 0;
+    let mut incoming_files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut incoming_lock: Option<Lockfile> = None;
+    let mut first = true;
+
+    for entry_res in entries_iter {
+        let mut entry = entry_res.map_err(|e| {
+            LockfileError::InvalidArchive(format!("read entry: {}", e))
+        })?;
+
+        // Reject symlinks, hard links, char/block devs.
+        let entry_type = entry.header().entry_type();
+        if !matches!(
+            entry_type,
+            tar::EntryType::Regular | tar::EntryType::Directory
+        ) {
+            return Err(LockfileError::InvalidArchive(format!(
+                "disallowed entry type {:?}",
+                entry_type
+            )));
+        }
+
+        let path = entry
+            .path()
+            .map_err(|e| LockfileError::InvalidArchive(format!("entry path: {}", e)))?
+            .into_owned();
+
+        // Reject any non-Normal component (absolute, ParentDir, RootDir,
+        // Prefix, CurDir).
+        for c in path.components() {
+            match c {
+                std::path::Component::Normal(_) => {}
+                _ => {
+                    return Err(LockfileError::InvalidArchive(format!(
+                        "disallowed path component in {}",
+                        path.display()
+                    )));
+                }
+            }
+        }
+
+        let rel = path.to_string_lossy().to_string();
+        if !is_archive_path_allowed(&rel) {
+            return Err(LockfileError::InvalidArchive(format!(
+                "path not in allow-list: {}",
+                rel
+            )));
+        }
+        if is_excluded_from_export(&rel) {
+            return Err(LockfileError::InvalidArchive(format!(
+                "path is in deny-list: {}",
+                rel
+            )));
+        }
+
+        // Directories: nothing to read.
+        if matches!(entry_type, tar::EntryType::Directory) {
+            continue;
+        }
+
+        let size = entry
+            .header()
+            .size()
+            .map_err(|e| LockfileError::InvalidArchive(format!("entry size: {}", e)))?;
+        if size > MAX_ARCHIVE_ENTRY_BYTES {
+            return Err(LockfileError::InvalidArchive(format!(
+                "entry {} too large: {} bytes",
+                rel, size
+            )));
+        }
+        total_uncompressed = total_uncompressed.saturating_add(size);
+        if total_uncompressed > MAX_ARCHIVE_TOTAL_UNCOMPRESSED {
+            return Err(LockfileError::InvalidArchive(format!(
+                "uncompressed total too large: {}",
+                total_uncompressed
+            )));
+        }
+
+        let mut buf = Vec::with_capacity(size as usize);
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| LockfileError::InvalidArchive(format!("read body: {}", e)))?;
+
+        if first {
+            // First entry MUST be the lockfile.
+            if rel != LOCKFILE_NAME {
+                return Err(LockfileError::InvalidArchive(
+                    "first archive entry must be .weplex.lock.yaml".into(),
+                ));
+            }
+            let s = String::from_utf8(buf.clone()).map_err(|e| {
+                LockfileError::InvalidArchive(format!("lockfile not UTF-8: {}", e))
+            })?;
+            let lf: Lockfile = serde_yml::from_str(&s)
+                .map_err(|e| LockfileError::InvalidArchive(format!("lockfile: {}", e)))?;
+            if lf.version > LOCKFILE_VERSION {
+                return Err(LockfileError::InvalidArchive(format!(
+                    "lockfile version {} > supported {}",
+                    lf.version, LOCKFILE_VERSION
+                )));
+            }
+            incoming_lock = Some(lf);
+            first = false;
+        } else {
+            incoming_files.push((rel, buf));
+        }
+    }
+
+    let incoming_lock = incoming_lock.ok_or_else(|| {
+        LockfileError::InvalidArchive("archive missing lockfile".into())
+    })?;
+
+    // Cross-check: every LockfileEntry.files must appear in the archive.
+    let archived_paths: std::collections::HashSet<&str> = incoming_files
+        .iter()
+        .map(|(p, _)| p.as_str())
+        .collect();
+    for r in &incoming_lock.resources {
+        for f in &r.files {
+            if !archived_paths.contains(f.as_str()) {
+                return Err(LockfileError::InvalidArchive(format!(
+                    "lockfile references missing file: {}",
+                    f
+                )));
+            }
+        }
+    }
+    for entries_vec in incoming_lock.history.values() {
+        for e in entries_vec {
+            for cp in &e.cache_paths {
+                if !archived_paths.contains(cp.as_str()) {
+                    return Err(LockfileError::InvalidArchive(format!(
+                        "history references missing cache path: {}",
+                        cp
+                    )));
+                }
+            }
+        }
+    }
+
+    // Index incoming files for quick lookup.
+    let mut by_path: std::collections::HashMap<String, Vec<u8>> = incoming_files
+        .into_iter()
+        .collect();
+
+    let existing = load_lockfile(target_config_dir);
+
+    let mut report = ImportReport {
+        installed: 0,
+        skipped: 0,
+        overwritten: 0,
+    };
+
+    for r in &incoming_lock.resources {
+        let existing_entry = existing.resources.iter().find(|e| e.id == r.id);
+        let is_conflict = matches!(existing_entry, Some(e) if e.sha256 != r.sha256);
+
+        if is_conflict {
+            match policy {
+                ConflictPolicy::SkipAll => {
+                    report.skipped += 1;
+                    continue;
+                }
+                ConflictPolicy::OverwriteAll => {
+                    // fall through to apply
+                }
+            }
+        }
+
+        // Body file path.
+        let body_rel = r
+            .files
+            .iter()
+            .find(|f| !f.ends_with(".weplex.yaml"))
+            .ok_or_else(|| {
+                LockfileError::InvalidArchive(format!(
+                    "resource {} has no body file",
+                    r.id
+                ))
+            })?;
+        let body_bytes = by_path
+            .remove(body_rel)
+            .ok_or_else(|| LockfileError::InvalidArchive(format!("missing body: {}", body_rel)))?;
+        let body = String::from_utf8(body_bytes).map_err(|e| {
+            LockfileError::InvalidArchive(format!("body not UTF-8: {}", e))
+        })?;
+
+        let sidecar_rel = r.files.iter().find(|f| f.ends_with(".weplex.yaml"));
+        let sidecar = if let Some(sr) = sidecar_rel {
+            let bytes = by_path.remove(sr).ok_or_else(|| {
+                LockfileError::InvalidArchive(format!("missing sidecar: {}", sr))
+            })?;
+            Some(String::from_utf8(bytes).map_err(|e| {
+                LockfileError::InvalidArchive(format!("sidecar not UTF-8: {}", e))
+            })?)
+        } else {
+            None
+        };
+
+        let (kind, name) = parse_resource_id(&r.id)?;
+
+        apply_resource_mutation(
+            target_config_dir,
+            kind,
+            &name,
+            r.source,
+            MutationKind::Upsert { body, sidecar },
+        )?;
+
+        if is_conflict {
+            report.overwritten += 1;
+        } else {
+            report.installed += 1;
+        }
+    }
+
+    Ok(report)
+}
+
+// ─── Tauri commands for export/import ───────────────────────────────────
+
+#[tauri::command]
+pub fn export_profile(
+    profile_config_dir: String,
+    output_path: String,
+) -> Result<ExportReport, String> {
+    let dir = validate_config_dir(&profile_config_dir).map_err(|e| redact_home(&e))?;
+    // Output path must be absolute. We DON'T require it under HOME — the
+    // user may want to save to /tmp or an external mount — but we still
+    // refuse traversal-y inputs.
+    if !output_path.starts_with('/') {
+        return Err("output path must be absolute".into());
+    }
+    export_profile_to_archive(&dir, &output_path).map_err(|e| redact_home(&format!("{}", e)))
+}
+
+#[tauri::command]
+pub fn inspect_profile_archive_cmd(
+    archive_path: String,
+    target_config_dir: Option<String>,
+) -> Result<ArchiveInspection, String> {
+    if !archive_path.starts_with('/') {
+        return Err("archive path must be absolute".into());
+    }
+    match target_config_dir {
+        Some(t) => {
+            let dir = validate_config_dir(&t).map_err(|e| redact_home(&e))?;
+            inspect_profile_archive_against(&archive_path, &dir)
+                .map_err(|e| redact_home(&format!("{}", e)))
+        }
+        None => inspect_profile_archive(&archive_path).map_err(|e| redact_home(&format!("{}", e))),
+    }
+}
+
+#[tauri::command]
+pub fn import_profile(
+    target_config_dir: String,
+    archive_path: String,
+    policy: ConflictPolicy,
+) -> Result<ImportReport, String> {
+    let dir = validate_config_dir(&target_config_dir).map_err(|e| redact_home(&e))?;
+    if !archive_path.starts_with('/') {
+        return Err("archive path must be absolute".into());
+    }
+    import_profile_from_archive(&dir, &archive_path, policy)
+        .map_err(|e| redact_home(&format!("{}", e)))
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────
@@ -1346,5 +1917,397 @@ mod tests {
         assert_eq!(lf.resources.len(), 1);
         assert!(dir.join("agents/a1.md").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Export / Import ─────────────────────────────────────────────
+
+    fn build_archive(temp: &std::path::Path, files: &[(&str, &[u8])]) -> std::path::PathBuf {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        let path = temp.join("archive.tar.gz");
+        let f = File::create(&path).unwrap();
+        let enc = GzEncoder::new(f, Compression::default());
+        let mut tb = tar::Builder::new(enc);
+        for (rel, body) in files {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            h.set_mtime(0);
+            // The tar crate's `set_path` and `append_data` reject `..`
+            // and absolute paths defensively. We're TESTING that the
+            // import path catches malicious paths, so bypass via the
+            // raw path bytes in the GNU header. `set_path` exposes
+            // exactly that for old-name-style paths up to 100 bytes.
+            h.set_path(*rel).unwrap_or_else(|_| {
+                // Fallback for paths the high-level setter rejects:
+                // poke the name field directly.
+                let raw = h.as_old_mut();
+                let bytes = rel.as_bytes();
+                let len = bytes.len().min(raw.name.len());
+                raw.name[..len].copy_from_slice(&bytes[..len]);
+            });
+            h.set_cksum();
+            use std::io::Write;
+            tb.get_mut().write_all(h.as_bytes()).unwrap();
+            tb.get_mut().write_all(body).unwrap();
+            // Pad to 512-byte tar block boundary.
+            let pad = (512 - (body.len() % 512)) % 512;
+            if pad > 0 {
+                tb.get_mut().write_all(&vec![0u8; pad]).unwrap();
+            }
+        }
+        let enc = tb.into_inner().unwrap();
+        enc.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn export_round_trip_byte_identical() {
+        let src = tmpdir("export-src");
+        let dst = tmpdir("export-dst");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "hello".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let archive = src.join("out.tar.gz");
+        let report = export_profile_to_archive(
+            src.to_str().unwrap(),
+            archive.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.resource_count, 1);
+        assert!(report.bytes > 0);
+
+        let imp = import_profile_from_archive(
+            dst.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        )
+        .unwrap();
+        assert_eq!(imp.installed, 1);
+        assert_eq!(
+            std::fs::read_to_string(dst.join("agents/a1.md")).unwrap(),
+            "hello"
+        );
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn export_excludes_overrides_json() {
+        let src = tmpdir("export-overrides");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "x".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        // Plant a fake overrides file.
+        let weplex = src.join(".weplex");
+        std::fs::create_dir_all(&weplex).unwrap();
+        std::fs::write(weplex.join("overrides.json"), "secret").unwrap();
+        let archive = src.join("out.tar.gz");
+        export_profile_to_archive(src.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
+
+        // Open and walk archive: must not contain .weplex/overrides.json.
+        use flate2::read::GzDecoder;
+        use std::fs::File;
+        let f = File::open(&archive).unwrap();
+        let dec = GzDecoder::new(f);
+        let mut ar = tar::Archive::new(dec);
+        for e in ar.entries().unwrap() {
+            let e = e.unwrap();
+            let p = e.path().unwrap().to_string_lossy().to_string();
+            assert_ne!(p, ".weplex/overrides.json");
+        }
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn export_excludes_activity_dir() {
+        let src = tmpdir("export-activity");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "x".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let activity = src.join(".weplex").join("activity");
+        std::fs::create_dir_all(&activity).unwrap();
+        std::fs::write(activity.join("session.json"), "encrypted").unwrap();
+        let archive = src.join("out.tar.gz");
+        export_profile_to_archive(src.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
+
+        use flate2::read::GzDecoder;
+        use std::fs::File;
+        let f = File::open(&archive).unwrap();
+        let dec = GzDecoder::new(f);
+        let mut ar = tar::Archive::new(dec);
+        for e in ar.entries().unwrap() {
+            let e = e.unwrap();
+            let p = e.path().unwrap().to_string_lossy().to_string();
+            assert!(!p.starts_with(".weplex/activity"), "leaked: {}", p);
+        }
+        let _ = std::fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn import_rejects_path_traversal_dotdot() {
+        let dir = tmpdir("import-traversal");
+        let archive = build_archive(
+            &dir,
+            &[
+                (LOCKFILE_NAME, b"version: 1\nresources: []\nhistory: {}\n"),
+                ("../escape.md", b"x"),
+            ],
+        );
+        let target = tmpdir("import-traversal-target");
+        let r = import_profile_from_archive(
+            target.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        );
+        assert!(matches!(r, Err(LockfileError::InvalidArchive(_))), "got {:?}", r);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn import_rejects_absolute_paths() {
+        let dir = tmpdir("import-abs");
+        let archive = build_archive(
+            &dir,
+            &[
+                (LOCKFILE_NAME, b"version: 1\nresources: []\nhistory: {}\n"),
+                ("/etc/passwd", b"x"),
+            ],
+        );
+        let target = tmpdir("import-abs-target");
+        let r = import_profile_from_archive(
+            target.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        );
+        assert!(matches!(r, Err(LockfileError::InvalidArchive(_))), "got {:?}", r);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn import_rejects_symlinks() {
+        let dir = tmpdir("import-symlink");
+        // Build a manual archive with a symlink entry.
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::fs::File;
+        let archive_path = dir.join("a.tar.gz");
+        let f = File::create(&archive_path).unwrap();
+        let enc = GzEncoder::new(f, Compression::default());
+        let mut tb = tar::Builder::new(enc);
+        // Lockfile first.
+        let lf_body = b"version: 1\nresources: []\nhistory: {}\n";
+        let mut h = tar::Header::new_gnu();
+        h.set_size(lf_body.len() as u64);
+        h.set_mode(0o644);
+        h.set_mtime(0);
+        h.set_cksum();
+        tb.append_data(&mut h, LOCKFILE_NAME, &lf_body[..]).unwrap();
+        // Symlink entry.
+        let mut sh = tar::Header::new_gnu();
+        sh.set_size(0);
+        sh.set_entry_type(tar::EntryType::Symlink);
+        sh.set_mtime(0);
+        sh.set_link_name("/etc/passwd").unwrap();
+        sh.set_cksum();
+        tb.append_data(&mut sh, "agents/evil.md", &[][..]).unwrap();
+        let enc = tb.into_inner().unwrap();
+        enc.finish().unwrap();
+
+        let target = tmpdir("import-symlink-target");
+        let r = import_profile_from_archive(
+            target.to_str().unwrap(),
+            archive_path.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        );
+        assert!(matches!(r, Err(LockfileError::InvalidArchive(_))), "got {:?}", r);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn import_rejects_oversized_archive_50mb() {
+        let dir = tmpdir("import-oversize");
+        let archive_path = dir.join("big.tar.gz");
+        // Touch a file that pretends to be 51 MB on disk by setting len.
+        // Use a sparse-style trick: write 51 MB of zeros (not great for IO,
+        // but still bounded).
+        let big = vec![0u8; (MAX_ARCHIVE_SIZE_BYTES + 1) as usize];
+        std::fs::write(&archive_path, &big).unwrap();
+
+        let target = tmpdir("import-oversize-target");
+        let r = import_profile_from_archive(
+            target.to_str().unwrap(),
+            archive_path.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        );
+        assert!(matches!(r, Err(LockfileError::InvalidArchive(_))), "got {:?}", r);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn import_skip_all_leaves_existing_untouched() {
+        let src = tmpdir("import-skip-src");
+        let dst = tmpdir("import-skip-dst");
+        // Source: a1=v1
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "from-source".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let archive = src.join("a.tar.gz");
+        export_profile_to_archive(src.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
+        // Destination already has a1=v2 (different content → conflict).
+        apply_resource_mutation(
+            dst.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "from-dest".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let report = import_profile_from_archive(
+            dst.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            ConflictPolicy::SkipAll,
+        )
+        .unwrap();
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.installed, 0);
+        assert_eq!(report.overwritten, 0);
+        assert_eq!(
+            std::fs::read_to_string(dst.join("agents/a1.md")).unwrap(),
+            "from-dest"
+        );
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn import_overwrite_all_pushes_existing_to_history() {
+        let src = tmpdir("import-overwrite-src");
+        let dst = tmpdir("import-overwrite-dst");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "incoming".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let archive = src.join("a.tar.gz");
+        export_profile_to_archive(src.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
+        apply_resource_mutation(
+            dst.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "existing".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let report = import_profile_from_archive(
+            dst.to_str().unwrap(),
+            archive.to_str().unwrap(),
+            ConflictPolicy::OverwriteAll,
+        )
+        .unwrap();
+        assert_eq!(report.overwritten, 1);
+        let lf = load_lockfile(dst.to_str().unwrap());
+        assert!(lf.history.contains_key("agents/a1"));
+        assert_eq!(
+            std::fs::read_to_string(dst.join("agents/a1.md")).unwrap(),
+            "incoming"
+        );
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn inspect_archive_returns_conflicts_without_writing() {
+        let src = tmpdir("inspect-src");
+        let dst = tmpdir("inspect-dst");
+        apply_resource_mutation(
+            src.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "incoming".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let archive = src.join("a.tar.gz");
+        export_profile_to_archive(src.to_str().unwrap(), archive.to_str().unwrap()).unwrap();
+        apply_resource_mutation(
+            dst.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "existing".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let inspection = inspect_profile_archive_against(
+            archive.to_str().unwrap(),
+            dst.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inspection.resource_count, 1);
+        assert_eq!(inspection.conflicts.len(), 1);
+        assert_eq!(inspection.conflicts[0].resource_id, "agents/a1");
+        // Inspection must not write — destination still has "existing".
+        assert_eq!(
+            std::fs::read_to_string(dst.join("agents/a1.md")).unwrap(),
+            "existing"
+        );
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
     }
 }

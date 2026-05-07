@@ -246,6 +246,9 @@ fn main() {
             // Lockfile (Phase 3)
             lockfile::read_lockfile,
             lockfile::restore_resource_version,
+            lockfile::export_profile,
+            lockfile::import_profile,
+            lockfile::inspect_profile_archive_cmd,
             // Cross-agent guard
             guard::scan_resource,
             guard::scan_profile,
