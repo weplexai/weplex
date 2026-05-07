@@ -188,12 +188,13 @@ describe('FederatedPackDetail', () => {
     expect(realSha).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('passes packId through to install_marketplace_package', async () => {
+  it('passes packId and packCommitSha through to install_marketplace_package', async () => {
     const body = '# arch';
     const sha = await sha256Hex(body);
     mockedGetPack.mockResolvedValueOnce(
       buildDetail({
         id: 'acme/awesome',
+        commitSha: 'deadbeef',
         resources: [
           {
             kind: 'agent',
@@ -229,6 +230,9 @@ describe('FederatedPackDetail', () => {
           name: 'arch',
           kind: 'agent',
           pack: 'acme/awesome',
+          // I3: forensics — the commit sha that pinned the install must
+          // round-trip into the lockfile alongside the pack id.
+          packCommitSha: 'deadbeef',
         }),
       );
     });

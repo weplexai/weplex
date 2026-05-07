@@ -310,6 +310,7 @@
       const kind = mapPackageKind(data.type);
       // Phase 5: pass `pack: null` for single-resource publishes so the
       // lockfile records this entry as user-published (not a federated pack).
+      // packCommitSha is meaningful only for federated installs.
       await invoke<MutationReport>('install_marketplace_package', {
         targetConfigDir: installTargetConfigDir,
         name: data.name,
@@ -317,6 +318,7 @@
         sidecar: null,
         kind,
         pack: null,
+        packCommitSha: null,
       });
       lockfileStore.refresh(installTargetConfigDir);
       guardStore.refresh(

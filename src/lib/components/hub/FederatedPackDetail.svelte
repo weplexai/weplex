@@ -133,6 +133,7 @@
     resource: FederatedResourceDto,
     targetConfigDir: string,
     packIdValue: string,
+    packCommitSha: string,
   ): Promise<void> {
     installState = { ...installState, [resource.path]: 'pending' };
     try {
@@ -150,6 +151,7 @@
         sidecar: null,
         kind: toLockfileKind(resource.kind),
         pack: packIdValue,
+        packCommitSha,
       });
       installState = { ...installState, [resource.path]: 'installed' };
     } catch (e) {
@@ -177,7 +179,7 @@
     // so parallelising would just contend. Order is also useful for
     // user feedback (the rows light up top-to-bottom).
     for (const r of pack.resources) {
-      await installOne(r, selectedConfigDir, pack.id);
+      await installOne(r, selectedConfigDir, pack.id, pack.commitSha);
     }
 
     // Refresh dependent stores once at the end. Best-effort: any

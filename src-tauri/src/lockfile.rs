@@ -136,6 +136,14 @@ pub struct LockfileEntry {
     /// `serde(default)` keeps pre-Phase-5 lockfiles loading cleanly.
     #[serde(default)]
     pub pack: Option<String>,
+    /// Commit sha the federated resource was pinned to at install time.
+    /// `Some` only when the install came from a federated pack (alongside
+    /// `pack`); `None` for builtin / user / single-resource publishes.
+    /// Forensic only — used to correlate an installed body with the
+    /// exact commit served by the registry. Backward-compatible via
+    /// `serde(default)` so older lockfiles deserialise unchanged.
+    #[serde(default)]
+    pub pack_commit_sha: Option<String>,
     /// Set by `reconcile_on_load` when on-disk bytes diverge from the
     /// recorded sha. Never persisted.
     #[serde(skip)]
@@ -183,6 +191,11 @@ pub enum MutationKind {
         /// federated installs; `None` for builtin / user-authored /
         /// single-resource marketplace publish flows.
         pack: Option<String>,
+        /// Commit sha the federated install was pinned to. Required
+        /// alongside `pack` for federated installs (the registry guarantees
+        /// every federated resource carries one); `None` for non-federated
+        /// flows.
+        pack_commit_sha: Option<String>,
     },
     Delete,
 }
@@ -416,8 +429,15 @@ pub fn apply_resource_mutation(
     let existing_idx = lf.resources.iter().position(|e| e.id == id);
 
     // Compute new shas + extract pack provenance (None for Delete).
-    let (new_body_sha, new_sidecar_sha, new_body, new_sidecar, new_pack) = match &mutation {
-        MutationKind::Upsert { body, sidecar, pack } => {
+    let (
+        new_body_sha,
+        new_sidecar_sha,
+        new_body,
+        new_sidecar,
+        new_pack,
+        new_pack_commit_sha,
+    ) = match &mutation {
+        MutationKind::Upsert { body, sidecar, pack, pack_commit_sha } => {
             let bsha = sha256_hex(body.as_bytes());
             let ssha = sidecar.as_ref().map(|s| sha256_hex(s.as_bytes()));
             (
@@ -426,9 +446,10 @@ pub fn apply_resource_mutation(
                 Some(body.clone()),
                 sidecar.clone(),
                 pack.clone(),
+                pack_commit_sha.clone(),
             )
         }
-        MutationKind::Delete => (None, None, None, None, None),
+        MutationKind::Delete => (None, None, None, None, None, None),
     };
 
     // Pack provenance collision check. A federated pack owns its
@@ -578,6 +599,7 @@ pub fn apply_resource_mutation(
                 installed_at: now,
                 installed_by: current_user(),
                 pack: new_pack.clone(),
+                pack_commit_sha: new_pack_commit_sha.clone(),
                 drifted: false,
             };
             if let Some(idx) = existing_idx {
@@ -723,13 +745,15 @@ pub fn restore_resource(
 
     // Preserve the current entry's pack provenance — restore is a
     // rollback to a prior body, not a change of provenance, so the
-    // existing pack must carry through (and the collision check in
-    // `apply_resource_mutation` would reject anything else).
-    let existing_pack = lf
+    // existing pack (and the commit sha that pinned it) must carry
+    // through. The collision check in `apply_resource_mutation` would
+    // reject anything else.
+    let existing = lf
         .resources
         .iter()
-        .find(|e| e.id == resource_id_str)
-        .and_then(|e| e.pack.clone());
+        .find(|e| e.id == resource_id_str);
+    let existing_pack = existing.and_then(|e| e.pack.clone());
+    let existing_pack_commit_sha = existing.and_then(|e| e.pack_commit_sha.clone());
 
     apply_resource_mutation(
         profile_config_dir,
@@ -740,6 +764,7 @@ pub fn restore_resource(
             body: body_bytes,
             sidecar: sidecar_bytes,
             pack: existing_pack,
+            pack_commit_sha: existing_pack_commit_sha,
         },
     )
 }
@@ -1651,6 +1676,7 @@ pub fn import_profile_from_archive(
                 body,
                 sidecar,
                 pack: r.pack.clone(),
+                pack_commit_sha: r.pack_commit_sha.clone(),
             },
         )?;
 
@@ -1869,6 +1895,7 @@ pub fn migrate_legacy_weplex_dir(
                     body,
                     sidecar,
                     pack: None,
+                    pack_commit_sha: None,
                 },
             ) {
                 Ok(r) if !r.no_op => report.migrated_agents += 1,
@@ -1916,6 +1943,7 @@ pub fn migrate_legacy_weplex_dir(
                     body,
                     sidecar,
                     pack: None,
+                    pack_commit_sha: None,
                 },
             ) {
                 Ok(r) if !r.no_op => report.migrated_skills += 1,
@@ -1985,6 +2013,7 @@ mod tests {
                 installed_at: now,
                 installed_by: "tester".into(),
                 pack: None,
+                pack_commit_sha: None,
                 drifted: false,
             }],
             history: BTreeMap::new(),
@@ -2029,6 +2058,7 @@ mod tests {
                 body: "# architect".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2064,6 +2094,7 @@ mod tests {
                 body: big,
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         );
         assert!(res.is_err(), "oversized body must be rejected");
@@ -2088,6 +2119,7 @@ mod tests {
                 body: "small".into(),
                 sidecar: Some(big),
                 pack: None,
+                pack_commit_sha: None,
             },
         );
         assert!(res.is_err(), "oversized sidecar must be rejected");
@@ -2108,6 +2140,7 @@ mod tests {
                 body: body.clone(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2120,6 +2153,7 @@ mod tests {
                 body,
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2142,6 +2176,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2154,6 +2189,7 @@ mod tests {
                 body: "v2".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2185,6 +2221,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2219,6 +2256,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2231,6 +2269,7 @@ mod tests {
                 body: "v2".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2257,6 +2296,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2270,6 +2310,7 @@ mod tests {
                 body: "v2".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2295,6 +2336,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2308,6 +2350,7 @@ mod tests {
                 body: "v2".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2343,6 +2386,7 @@ mod tests {
                 body: "good".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2373,6 +2417,7 @@ mod tests {
                 body: "new".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2400,6 +2445,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2413,6 +2459,7 @@ mod tests {
                 body: "v2".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2436,6 +2483,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2459,6 +2507,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2484,6 +2533,7 @@ mod tests {
                     body: format!("body-{}", i),
                     sidecar: None,
                     pack: None,
+                    pack_commit_sha: None,
                 },
             )
             .unwrap();
@@ -2511,6 +2561,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2523,6 +2574,7 @@ mod tests {
                 body: "v2".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2551,6 +2603,7 @@ mod tests {
                 body: "v1".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2617,6 +2670,7 @@ mod tests {
                 body: "hello".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2660,6 +2714,7 @@ mod tests {
                 body: "hello".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2701,6 +2756,7 @@ mod tests {
                 body: "x".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2731,6 +2787,7 @@ mod tests {
                 body: "x".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2760,6 +2817,7 @@ mod tests {
                 body: "x".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -2796,6 +2854,7 @@ mod tests {
                 body: "x".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3020,6 +3079,7 @@ mod tests {
                 body: "from-source".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3035,6 +3095,7 @@ mod tests {
                 body: "from-dest".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3068,6 +3129,7 @@ mod tests {
                 body: "incoming".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3082,6 +3144,7 @@ mod tests {
                 body: "existing".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3115,6 +3178,7 @@ mod tests {
                 body: "incoming".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3129,6 +3193,7 @@ mod tests {
                 body: "existing".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3330,6 +3395,7 @@ mod tests {
                 body: "# architect".into(),
                 sidecar: None,
                 pack: Some("acme/agents".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3344,6 +3410,87 @@ mod tests {
         assert!(yaml.contains("pack: acme/agents"));
         let parsed: Lockfile = serde_yml::from_str(&yaml).unwrap();
         assert_eq!(parsed.resources[0].pack.as_deref(), Some("acme/agents"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// I3 round-trip: pack_commit_sha is persisted alongside `pack` and
+    /// survives a YAML round-trip (serialise → parse). Forensics depends
+    /// on this — without the sha we can't correlate an installed body
+    /// with the exact commit the registry served.
+    #[test]
+    fn upsert_records_pack_commit_sha() {
+        let dir = tmpdir("pack-record-sha");
+        let dir_str = dir.to_str().unwrap();
+
+        apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "# architect".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+                pack_commit_sha: Some("0123abc".into()),
+            },
+        )
+        .unwrap();
+
+        let lf = load_lockfile(dir_str);
+        assert_eq!(lf.resources.len(), 1);
+        assert_eq!(lf.resources[0].pack.as_deref(), Some("acme/agents"));
+        assert_eq!(lf.resources[0].pack_commit_sha.as_deref(), Some("0123abc"));
+
+        // YAML round-trip — confirms the field shows up under camelCase
+        // (matching `serde(rename_all = "camelCase")`). serde_yml may
+        // quote ambiguous values, so we accept both the unquoted and
+        // single-quoted forms.
+        let yaml = serde_yml::to_string(&lf).unwrap();
+        assert!(
+            yaml.contains("packCommitSha: 0123abc")
+                || yaml.contains("packCommitSha: '0123abc'"),
+            "expected packCommitSha key in YAML; got:\n{}",
+            yaml
+        );
+        let parsed: Lockfile = serde_yml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.resources[0].pack_commit_sha.as_deref(), Some("0123abc"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// I3 backward-compat: a lockfile written before pack_commit_sha
+    /// existed loads cleanly with the field set to None.
+    #[test]
+    fn legacy_lockfile_without_pack_commit_sha_loads_cleanly() {
+        let dir = tmpdir("pack-record-sha-legacy");
+        let dir_str = dir.to_str().unwrap();
+        let yaml = format!(
+            "version: 1
+generatedBy: weplex
+resources:
+  - id: agents/architect
+    kind: agent
+    source: marketplace
+    sha256: {sha}
+    sidecarSha256: null
+    files:
+      - agents/architect.md
+    installedAt: 2026-04-01T12:00:00Z
+    installedBy: tester
+    pack: acme/agents
+history: {{}}
+",
+            sha = "b".repeat(64),
+        );
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(dir.join("agents/architect.md"), "# arch").unwrap();
+        std::fs::write(dir.join(LOCKFILE_NAME), yaml).unwrap();
+
+        let lf = load_lockfile(dir_str);
+        assert_eq!(lf.resources.len(), 1);
+        assert_eq!(lf.resources[0].pack.as_deref(), Some("acme/agents"));
+        assert_eq!(lf.resources[0].pack_commit_sha, None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3400,6 +3547,7 @@ history: {{}}
                 body: "from-pack-a".into(),
                 sidecar: None,
                 pack: Some("acme/pack-a".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3413,6 +3561,7 @@ history: {{}}
                 body: "from-pack-b".into(),
                 sidecar: None,
                 pack: Some("foo/pack-b".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap_err();
@@ -3440,6 +3589,7 @@ history: {{}}
                 body: "user-authored".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3453,6 +3603,7 @@ history: {{}}
                 body: "from-pack".into(),
                 sidecar: None,
                 pack: Some("acme/agents".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap_err();
@@ -3479,6 +3630,7 @@ history: {{}}
                 body: "from-pack".into(),
                 sidecar: None,
                 pack: Some("acme/agents".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3492,6 +3644,7 @@ history: {{}}
                 body: "single-resource".into(),
                 sidecar: None,
                 pack: None,
+                pack_commit_sha: None,
             },
         )
         .unwrap_err();
@@ -3514,6 +3667,7 @@ history: {{}}
                 body: "v1".into(),
                 sidecar: None,
                 pack: Some("acme/agents".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3527,6 +3681,7 @@ history: {{}}
                 body: "v2".into(),
                 sidecar: None,
                 pack: Some("acme/agents".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3557,6 +3712,7 @@ history: {{}}
                 body: "v1".into(),
                 sidecar: None,
                 pack: Some("acme/agents".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap();
@@ -3572,6 +3728,7 @@ history: {{}}
                 body: "v2".into(),
                 sidecar: None,
                 pack: Some("acme/agents".into()),
+                pack_commit_sha: None,
             },
         )
         .unwrap();
