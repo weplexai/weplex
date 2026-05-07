@@ -378,7 +378,19 @@ const SECTION_ALLOWLIST_PROJECT_NAMES: &[&str] = &[
 ///   - `${PROJECT}/.cursor/rules/`  (project-level)
 ///
 /// New harness adapters must be added here explicitly.
+///
+/// **Caller contract**: `target` MUST be the output of
+/// `Manifest::resolve_target`, which canonicalizes the parent. If a
+/// non-existent `target` is passed (the file is about to be created),
+/// the canonicalize call here may fail and we fall back to the raw
+/// parent path — that fallback only stays safe because the parent has
+/// already been canonicalized upstream. Bypassing `Manifest::resolve_target`
+/// breaks the safety story.
 fn fragment_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
+    debug_assert!(
+        target.is_absolute(),
+        "fragment_target_allowed expects an absolute path"
+    );
     let parent = match target.parent() {
         Some(p) => p,
         None => return false,
@@ -410,7 +422,22 @@ fn fragment_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
     false
 }
 
+/// Returns true when the target file is on the section-mode allowlist
+/// for either user-level (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`)
+/// or project-level (`AGENTS.md`/`CLAUDE.md`/`.cursorrules` directly at
+/// the project root).
+///
+/// **Caller contract**: `target` MUST be the output of
+/// `Manifest::resolve_target`. The canonicalization of `target` here
+/// silently falls back to the lexical path when the target file
+/// doesn't exist yet (first install), so the *parent* must already be
+/// canonical for the allowlist comparison to be symlink-safe. Bypassing
+/// `Manifest::resolve_target` breaks the safety story.
 fn section_target_allowed(target: &Path, project_root: Option<&Path>) -> bool {
+    debug_assert!(
+        target.is_absolute(),
+        "section_target_allowed expects an absolute path"
+    );
     let home = crate::utils::get_home();
     let home_path = PathBuf::from(&home);
     let canon_home = std::fs::canonicalize(&home_path).unwrap_or(home_path);
