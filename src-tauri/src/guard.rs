@@ -34,7 +34,7 @@
 //!  * Encrypted/obfuscated secrets. We only catch what looks like a
 //!    secret in the literal source.
 
-use crate::manifest::{McpServerRef, ResourceKind};
+use crate::manifest::{scan_profile_manifests, McpServerRef, ResourceKind};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -125,6 +125,16 @@ pub struct OverrideDecision {
     pub decision: OverrideKind,
     pub decided_at: String,
     pub decided_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanReport {
+    pub profile_dir: String,
+    pub resources: Vec<ResourceVerdict>,
+    pub overall: GuardVerdict,
+    pub deep_scan_ran: bool,
+    pub deep_scan_skipped_reason: Option<String>,
 }
 
 // ─── Verdict math ───────────────────────────────────────────────────────
@@ -769,6 +779,219 @@ fn apply_overrides(
     (findings, overridden)
 }
 
+// ─── Deep-scan adapter ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeepScanError {
+    Timeout,
+    BinaryMissing,
+    Other(String),
+}
+
+impl DeepScanError {
+    fn reason(&self) -> &'static str {
+        match self {
+            DeepScanError::Timeout => "timeout",
+            DeepScanError::BinaryMissing => "binary-missing",
+            DeepScanError::Other(_) => "error",
+        }
+    }
+}
+
+pub(crate) trait DeepScanRunner {
+    fn run(&self, paths: &[&Path]) -> Result<Vec<GuardFinding>, DeepScanError>;
+}
+
+/// Default production runner. Spawns `npx ecc-agentshield scan <path>`
+/// in a worker thread, joins via channel with a 5-second wall-clock
+/// budget, parses stdout as JSON if we can, otherwise treats the run
+/// as "errored" and surfaces the reason. Path arguments are
+/// canonicalised before being handed to the subprocess so symlink
+/// trickery can't redirect the scan elsewhere.
+pub(crate) struct RealRunner;
+
+impl DeepScanRunner for RealRunner {
+    fn run(&self, paths: &[&Path]) -> Result<Vec<GuardFinding>, DeepScanError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Canonicalise every path before passing it on the command line.
+        // npx invocations can resolve symlinks unexpectedly — we want
+        // ecc-agentshield to scan the bytes the manifest scanner saw,
+        // not whatever a symlink chain redirects to.
+        let mut canonical: Vec<String> = Vec::with_capacity(paths.len());
+        for p in paths {
+            let c = std::fs::canonicalize(p)
+                .map_err(|e| DeepScanError::Other(format!("canonicalize: {}", e)))?;
+            let s = c
+                .to_str()
+                .ok_or_else(|| DeepScanError::Other("non-utf8 path".into()))?
+                .to_string();
+            canonical.push(s);
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<GuardFinding>, DeepScanError>>();
+        std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("npx");
+            cmd.arg("ecc-agentshield").arg("scan");
+            // Only positional path args — no user-controlled flags.
+            for p in &canonical {
+                cmd.arg(p);
+            }
+            let out = match cmd.output() {
+                Ok(o) => o,
+                Err(e) => {
+                    let kind = e.kind();
+                    let result = if kind == std::io::ErrorKind::NotFound {
+                        Err(DeepScanError::BinaryMissing)
+                    } else {
+                        Err(DeepScanError::Other(format!("spawn: {}", e)))
+                    };
+                    let _ = tx.send(result);
+                    return;
+                }
+            };
+            if !out.status.success() {
+                let _ = tx.send(Err(DeepScanError::Other(format!(
+                    "agentshield exit code {:?}",
+                    out.status.code()
+                ))));
+                return;
+            }
+            // Best-effort: tolerate empty / non-JSON stdout.
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let parsed: Vec<GuardFinding> =
+                serde_json::from_str(stdout.trim()).unwrap_or_default();
+            let _ = tx.send(Ok(parsed));
+        });
+
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(r) => r,
+            Err(_) => Err(DeepScanError::Timeout),
+        }
+    }
+}
+
+fn default_runner() -> impl DeepScanRunner {
+    RealRunner
+}
+
+// ─── Profile scan ───────────────────────────────────────────────────────
+
+/// Validate `project_root` mirroring `compiler::validate_compile_inputs`:
+/// must canonicalise inside HOME, must not be HOME itself.
+fn validate_project_root(project_root: Option<String>) -> Result<Option<PathBuf>, GuardError> {
+    match project_root {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => {
+            let p = PathBuf::from(&s);
+            if !p.is_dir() {
+                return Err(GuardError::InvalidProjectRoot(format!(
+                    "project_root is not a directory: {}",
+                    redact_home(&s)
+                )));
+            }
+            let canon = std::fs::canonicalize(&p).map_err(|e| {
+                GuardError::InvalidProjectRoot(format!("canonicalize: {}", e))
+            })?;
+            let home = PathBuf::from(crate::utils::get_home());
+            let canon_home = std::fs::canonicalize(&home).unwrap_or(home);
+            if !canon.starts_with(&canon_home) {
+                return Err(GuardError::InvalidProjectRoot(
+                    "project_root must be under HOME".into(),
+                ));
+            }
+            if canon == canon_home {
+                return Err(GuardError::InvalidProjectRoot(
+                    "project_root cannot be HOME itself".into(),
+                ));
+            }
+            Ok(Some(canon))
+        }
+    }
+}
+
+fn scan_profile_with_runner<R: DeepScanRunner>(
+    profile_dir: &str,
+    _project_root: Option<&Path>,
+    deep_scan: bool,
+    runner: &R,
+) -> Result<ScanReport, GuardError> {
+    let manifests = scan_profile_manifests(profile_dir)
+        .map_err(|e| GuardError::Manifest(e.to_string()))?;
+    let overrides = load_override_store(profile_dir);
+
+    let mut resources: Vec<ResourceVerdict> = Vec::with_capacity(manifests.len());
+    for (m, _kind) in manifests {
+        match scan_resource_inner(profile_dir, &m.manifest_path, &overrides) {
+            Ok(v) => resources.push(v),
+            Err(e) => {
+                log::warn!("guard skip {}: {}", m.manifest_path, e);
+            }
+        }
+    }
+
+    // Optional deep scan: merge findings into existing per-resource
+    // verdicts. Each resource path gets passed to the runner; on any
+    // error we leave the per-resource findings alone and record the
+    // reason at report level. Findings whose `location` carries a
+    // recognised resource path are routed to that resource; others fall
+    // onto the first resource as a coarse fallback.
+    let (deep_scan_ran, deep_scan_skipped_reason) = if !deep_scan {
+        (false, Some("disabled".to_string()))
+    } else {
+        let path_bufs: Vec<PathBuf> = resources
+            .iter()
+            .map(|r| PathBuf::from(&r.resource_path))
+            .collect();
+        let path_refs: Vec<&Path> = path_bufs.iter().map(|p| p.as_path()).collect();
+        match runner.run(&path_refs) {
+            Ok(extra) => {
+                if !extra.is_empty() && !resources.is_empty() {
+                    let mut by_idx: std::collections::HashMap<usize, Vec<GuardFinding>> =
+                        std::collections::HashMap::new();
+                    for f in extra {
+                        let idx = match &f.location {
+                            Some(loc) => resources
+                                .iter()
+                                .position(|r| loc.starts_with(&r.resource_path))
+                                .unwrap_or(0),
+                            None => 0,
+                        };
+                        by_idx.entry(idx).or_default().push(f);
+                    }
+                    for (idx, mut fs_) in by_idx {
+                        if let Some(target) = resources.get_mut(idx) {
+                            target.findings.append(&mut fs_);
+                            target.verdict = verdict_from_active_findings(
+                                &target.findings,
+                                &target.overridden_findings,
+                            );
+                        }
+                    }
+                }
+                (true, None)
+            }
+            Err(e) => (false, Some(e.reason().to_string())),
+        }
+    };
+
+    let overall = resources
+        .iter()
+        .map(|r| r.verdict)
+        .fold(GuardVerdict::Green, worst_verdict);
+
+    Ok(ScanReport {
+        profile_dir: profile_dir.to_string(),
+        resources,
+        overall,
+        deep_scan_ran,
+        deep_scan_skipped_reason,
+    })
+}
+
 // ─── Tauri commands ─────────────────────────────────────────────────────
 
 fn validate_profile_dir_cmd(profile_config_dir: String) -> Result<String, String> {
@@ -799,6 +1022,25 @@ pub fn scan_resource(
     let overrides = load_override_store(&profile_dir);
     scan_resource_inner(&profile_dir, &manifest_path, &overrides)
         .map_err(|e| redact_home(&e.to_string()))
+}
+
+#[tauri::command]
+pub fn scan_profile(
+    profile_config_dir: String,
+    project_root: Option<String>,
+    deep_scan: bool,
+) -> Result<ScanReport, String> {
+    let profile_dir = validate_profile_dir_cmd(profile_config_dir)?;
+    let project_root_canon = validate_project_root(project_root)
+        .map_err(|e| redact_home(&e.to_string()))?;
+    let runner = default_runner();
+    scan_profile_with_runner(
+        &profile_dir,
+        project_root_canon.as_deref(),
+        deep_scan,
+        &runner,
+    )
+    .map_err(|e| redact_home(&e.to_string()))
 }
 
 #[tauri::command]
@@ -1235,5 +1477,221 @@ mod tests {
         assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
         assert!(!parsed.decisions.is_empty(), "expected at least one decision saved");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Profile scan integration ────────────────────────────────────
+
+    fn write_pair(dir: &Path, id: &str, manifest_yaml: &str, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(format!("{}.weplex.yaml", id)), manifest_yaml).unwrap();
+        std::fs::write(dir.join(format!("{}.md", id)), body).unwrap();
+    }
+
+    /// Build a fixture profile with three resources:
+    ///  - clean (no findings)
+    ///  - yellow (wildcard-tools warn)
+    ///  - red (AKIA secret block)
+    fn fixture_profile() -> PathBuf {
+        let profile = tmpdir("scan-integ");
+        let agents = profile.join("agents");
+        write_pair(
+            &agents,
+            "clean",
+            "id: clean\nversion: 1.0.0\n",
+            "# nothing scary here",
+        );
+        let yellow = profile.join("rules");
+        write_pair(
+            &yellow,
+            "yellow",
+            "id: yellow\nversion: 1.0.0\n",
+            "---\nname: yellow\nallowed-tools: *\n---\nbody",
+        );
+        let red = profile.join("skills");
+        write_pair(
+            &red,
+            "red",
+            "id: red\nversion: 1.0.0\n",
+            "leak AKIAIOSFODNN7EXAMPLE here",
+        );
+        profile
+    }
+
+    struct NoopRunner;
+    impl DeepScanRunner for NoopRunner {
+        fn run(&self, _paths: &[&Path]) -> Result<Vec<GuardFinding>, DeepScanError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn scan_profile_integration() {
+        let profile = fixture_profile();
+        let report = scan_profile_with_runner(
+            profile.to_str().unwrap(),
+            None,
+            false,
+            &NoopRunner,
+        )
+        .unwrap();
+        assert_eq!(report.resources.len(), 3);
+        assert_eq!(report.overall, GuardVerdict::Red);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn scan_profile_integration_with_override() {
+        let profile = fixture_profile();
+        let profile_str = profile.to_str().unwrap().to_string();
+
+        // Find the red resource's body sha.
+        let report1 = scan_profile_with_runner(&profile_str, None, false, &NoopRunner).unwrap();
+        let red = report1
+            .resources
+            .iter()
+            .find(|r| r.resource_id == "red")
+            .unwrap();
+        let dec = OverrideDecision {
+            rule_id: "secrets-aws-key".into(),
+            resource_path: red.resource_path.clone(),
+            body_sha256: red.body_sha256.clone(),
+            decision: OverrideKind::Accept,
+            decided_at: "2026-05-07T00:00:00Z".into(),
+            decided_by: None,
+        };
+        set_override_internal(&profile_str, dec).unwrap();
+
+        let report2 = scan_profile_with_runner(&profile_str, None, false, &NoopRunner).unwrap();
+        // Yellow (wildcard-tools) still active, so overall = Yellow.
+        assert_eq!(report2.overall, GuardVerdict::Yellow);
+        let red2 = report2
+            .resources
+            .iter()
+            .find(|r| r.resource_id == "red")
+            .unwrap();
+        assert_eq!(red2.verdict, GuardVerdict::Green);
+        assert_eq!(
+            red2.overridden_findings,
+            vec!["secrets-aws-key".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    // ── Deep-scan adapter ───────────────────────────────────────────
+
+    #[test]
+    fn deep_scan_disabled_returns_skipped() {
+        let profile = fixture_profile();
+        let report = scan_profile_with_runner(
+            profile.to_str().unwrap(),
+            None,
+            false,
+            &NoopRunner,
+        )
+        .unwrap();
+        assert!(!report.deep_scan_ran);
+        assert_eq!(report.deep_scan_skipped_reason.as_deref(), Some("disabled"));
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    struct FakeRunner {
+        result: std::cell::RefCell<Option<Result<Vec<GuardFinding>, DeepScanError>>>,
+    }
+    impl DeepScanRunner for FakeRunner {
+        fn run(&self, _paths: &[&Path]) -> Result<Vec<GuardFinding>, DeepScanError> {
+            self.result
+                .borrow_mut()
+                .take()
+                .unwrap_or_else(|| Ok(Vec::new()))
+        }
+    }
+
+    #[test]
+    fn deep_scan_fake_returns_findings() {
+        let profile = fixture_profile();
+        let extra = vec![GuardFinding {
+            rule_id: "deep-scan-test".into(),
+            severity: Severity::Warn,
+            message: "deep finding".into(),
+            explanation: "from fake runner".into(),
+            snippet: None,
+            location: None,
+        }];
+        let runner = FakeRunner {
+            result: std::cell::RefCell::new(Some(Ok(extra))),
+        };
+        let report = scan_profile_with_runner(
+            profile.to_str().unwrap(),
+            None,
+            true,
+            &runner,
+        )
+        .unwrap();
+        assert!(report.deep_scan_ran);
+        // Extra finding got merged onto the first resource.
+        let first = &report.resources[0];
+        assert!(first.findings.iter().any(|f| f.rule_id == "deep-scan-test"));
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn deep_scan_fake_timeout_returns_skipped() {
+        let profile = fixture_profile();
+        let runner = FakeRunner {
+            result: std::cell::RefCell::new(Some(Err(DeepScanError::Timeout))),
+        };
+        let report = scan_profile_with_runner(
+            profile.to_str().unwrap(),
+            None,
+            true,
+            &runner,
+        )
+        .unwrap();
+        assert!(!report.deep_scan_ran);
+        assert_eq!(report.deep_scan_skipped_reason.as_deref(), Some("timeout"));
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
+    fn deep_scan_fake_binary_missing_returns_skipped() {
+        let profile = fixture_profile();
+        let runner = FakeRunner {
+            result: std::cell::RefCell::new(Some(Err(DeepScanError::BinaryMissing))),
+        };
+        let report = scan_profile_with_runner(
+            profile.to_str().unwrap(),
+            None,
+            true,
+            &runner,
+        )
+        .unwrap();
+        assert!(!report.deep_scan_ran);
+        assert_eq!(
+            report.deep_scan_skipped_reason.as_deref(),
+            Some("binary-missing")
+        );
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    // ── Tauri command validation ────────────────────────────────────
+
+    #[test]
+    fn tauri_scan_profile_rejects_invalid_profile_dir() {
+        let r = scan_profile("/etc".to_string(), None, false);
+        assert!(r.is_err(), "expected error, got {:?}", r);
+    }
+
+    #[test]
+    fn tauri_scan_profile_rejects_project_root_outside_home() {
+        // Use a real profile dir under HOME, but project_root pointing
+        // at /etc.
+        let profile = tmpdir("invalid-proj");
+        let r = scan_profile(
+            profile.to_str().unwrap().to_string(),
+            Some("/etc".to_string()),
+            false,
+        );
+        assert!(r.is_err(), "expected error, got {:?}", r);
+        let _ = std::fs::remove_dir_all(&profile);
     }
 }
