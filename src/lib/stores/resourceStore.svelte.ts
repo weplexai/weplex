@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { profileStore } from './profileStore.svelte';
+import { settingsStore } from './settingsStore.svelte';
+import { schedule as scheduleCompile } from '../utils/compileScheduler';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -46,6 +48,24 @@ function getProfileInfos(): ProfileInfo[] {
     name: p.name,
     configDir: p.configDir,
   }));
+}
+
+/** Fire-and-forget cross-agent compile for a profile after a mutation. */
+function triggerCompile(configDir: string | null | undefined): void {
+  if (!configDir) return;
+  scheduleCompile(configDir, {
+    deepScan: settingsStore.settings.agentshieldDeepScan,
+  });
+}
+
+/** Find the owning profile for a body file by configDir prefix match. */
+function profileForFilePath(filePath: string): string | null {
+  for (const p of profileStore.profiles) {
+    if (p.configDir && filePath.startsWith(p.configDir)) {
+      return p.configDir;
+    }
+  }
+  return null;
 }
 
 // ─── Store ──────────────────────────────────────────────────────────────
@@ -114,6 +134,7 @@ export const resourceStore = {
       overwrite,
     });
     await this.discover();
+    triggerCompile(targetConfigDir);
     return copied;
   },
 
@@ -141,12 +162,15 @@ export const resourceStore = {
       content,
     });
     await this.discover();
+    triggerCompile(configDir);
     return path;
   },
 
   /** Delete a resource file. */
   async delete(filePath: string) {
+    const owningProfile = profileForFilePath(filePath);
     await invoke('delete_resource_file', { filePath });
     await this.discover();
+    triggerCompile(owningProfile);
   },
 };
