@@ -238,20 +238,23 @@ mcp_servers: []
         if !std::path::Path::new(&path).exists() {
             std::fs::write(&path, content).map_err(|e| e.to_string())?;
             created += 1;
+        }
 
-            // Best-effort: drop the sibling sidecar manifest. Failures
-            // here must NOT break the .md write (which already succeeded
-            // and is what Claude needs). Log and continue.
-            if let Some(sidecar_body) = sidecar_for(name) {
-                let sidecar_path = format!("{}/{}.weplex.yaml", dir, name);
-                if !std::path::Path::new(&sidecar_path).exists() {
-                    if let Err(e) = std::fs::write(&sidecar_path, sidecar_body) {
-                        log::warn!(
-                            "ensure_default_commands: failed to write sidecar {}: {}",
-                            sidecar_path,
-                            e
-                        );
-                    }
+        // Self-heal sidecar manifests independently from the .md write.
+        // If a previous run created the .md but failed (or was skipped)
+        // for the sidecar — e.g. the .weplex.yaml story was added in a
+        // later release, or the sidecar was deleted by hand — write it
+        // now. Best-effort: never fail the whole call on a sidecar
+        // write error, the .md alone still works as Claude-only.
+        if let Some(sidecar_body) = sidecar_for(name) {
+            let sidecar_path = format!("{}/{}.weplex.yaml", dir, name);
+            if !std::path::Path::new(&sidecar_path).exists() {
+                if let Err(e) = std::fs::write(&sidecar_path, sidecar_body) {
+                    log::warn!(
+                        "ensure_default_commands: failed to write sidecar {}: {}",
+                        sidecar_path,
+                        e
+                    );
                 }
             }
         }
