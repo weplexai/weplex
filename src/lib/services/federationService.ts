@@ -64,8 +64,12 @@ export const federationService = {
 
   /**
    * Fetch the full pack detail (resources + AgentShield findings).
-   * `packId` is `<owner>/<repo>` lowercase — both segments are
-   * URL-encoded so a `repo.with.dots` doesn't get parsed as a path.
+   * `packId` is `<owner>/<repo>` lowercase. The whole id (including the
+   * separating `/`) is URL-encoded once so it lands at the server as a
+   * SINGLE path segment — NestJS / path-to-regexp v6 binds `:packId` to
+   * one segment, so a literal slash would 404 instead of matching.
+   * `encodeURIComponent` turns `/` into `%2F`, which Express then decodes
+   * back to `/` after routing has already matched.
    */
   async getPack(packId: string): Promise<FederatedPackDetailDto | null> {
     if (!packId) return null;
@@ -73,7 +77,9 @@ export const federationService = {
     if (!owner || !repo) {
       throw new Error(`invalid packId: ${packId}`);
     }
-    const path = `/marketplace/federated/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    // Lowercase before encoding so the cache key matches the server's
+    // canonical form (`getById` lower-cases on the way in).
+    const path = `/marketplace/federated/${encodeURIComponent(packId.toLowerCase())}`;
     try {
       return await request<FederatedPackDetailDto>(path, { skipAuth: true });
     } catch (e) {

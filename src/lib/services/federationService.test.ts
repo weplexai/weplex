@@ -119,11 +119,22 @@ describe('federationService.list', () => {
 describe('federationService.getPack', () => {
   beforeEach(() => mockedRequest.mockReset());
 
-  it('URL-encodes both packId segments', async () => {
+  // Single-encodes the full packId so the slash becomes %2F. NestJS /
+  // path-to-regexp v6 matches `:packId` against one path segment — a
+  // literal `/` would 404. encodeURIComponent over the full id solves
+  // that AND lower-cases it to match the server's canonical form.
+  it('single-encodes the full packId so the slash becomes %2F', async () => {
     mockedRequest.mockResolvedValueOnce(buildDetail());
-    await federationService.getPack('acme/awesome.repo');
+    await federationService.getPack('Acme/Awesome.repo');
     const path = mockedRequest.mock.calls[0][0] as string;
-    expect(path).toBe('/marketplace/federated/acme/awesome.repo');
+    expect(path).toBe('/marketplace/federated/acme%2Fawesome.repo');
+  });
+
+  it('lower-cases the packId before encoding (server-side canonicalisation)', async () => {
+    mockedRequest.mockResolvedValueOnce(buildDetail());
+    await federationService.getPack('OWNER/REPO');
+    const path = mockedRequest.mock.calls[0][0] as string;
+    expect(path).toBe('/marketplace/federated/owner%2Frepo');
   });
 
   it('throws on a malformed packId', async () => {
