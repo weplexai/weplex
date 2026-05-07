@@ -1677,12 +1677,53 @@ pub fn migrate_legacy_weplex_dir(
         migrated_skills: 0,
     };
 
+    // W1: helper that returns Some(metadata) if `p` is a regular file
+    // (NOT a symlink). `Path::is_file` follows symlinks, which would let
+    // an attacker who can plant `~/.weplex/agents/legit.md` as a symlink
+    // to e.g. `~/.ssh/id_rsa` smuggle that content into the profile via
+    // legacy migration. symlink_metadata never follows.
+    fn regular_file_meta(p: &std::path::Path) -> Option<std::fs::Metadata> {
+        match std::fs::symlink_metadata(p) {
+            Ok(m) => {
+                if m.file_type().is_symlink() {
+                    log::warn!(
+                        "[weplex] legacy migration: skipping symlink at {}",
+                        p.display()
+                    );
+                    None
+                } else if m.is_file() {
+                    Some(m)
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn regular_dir(p: &std::path::Path) -> bool {
+        match std::fs::symlink_metadata(p) {
+            Ok(m) => {
+                if m.file_type().is_symlink() {
+                    log::warn!(
+                        "[weplex] legacy migration: skipping symlink at {}",
+                        p.display()
+                    );
+                    false
+                } else {
+                    m.is_dir()
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
     // Agents: ~/.weplex/agents/*.md
     let agents_dir = format!("{}/.weplex/agents", home);
     if let Ok(entries) = std::fs::read_dir(&agents_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if !p.is_file() {
+            if regular_file_meta(&p).is_none() {
                 continue;
             }
             if p.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -1699,9 +1740,9 @@ pub fn migrate_legacy_weplex_dir(
                     continue;
                 }
             };
-            // Optional sidecar.
+            // Optional sidecar — also reject if it's a symlink.
             let sidecar_path = p.with_file_name(format!("{}.weplex.yaml", stem));
-            let sidecar = if sidecar_path.exists() {
+            let sidecar = if regular_file_meta(&sidecar_path).is_some() {
                 std::fs::read_to_string(&sidecar_path).ok()
             } else {
                 None
@@ -1725,7 +1766,7 @@ pub fn migrate_legacy_weplex_dir(
     if let Ok(entries) = std::fs::read_dir(&skills_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if !p.is_dir() {
+            if !regular_dir(&p) {
                 continue;
             }
             let name = match p.file_name().and_then(|n| n.to_str()) {
@@ -1733,7 +1774,7 @@ pub fn migrate_legacy_weplex_dir(
                 None => continue,
             };
             let skill_md = p.join("SKILL.md");
-            if !skill_md.exists() {
+            if regular_file_meta(&skill_md).is_none() {
                 continue;
             }
             let body = match std::fs::read_to_string(&skill_md) {
@@ -1744,7 +1785,7 @@ pub fn migrate_legacy_weplex_dir(
                 }
             };
             let sidecar_path = p.join("SKILL.weplex.yaml");
-            let sidecar = if sidecar_path.exists() {
+            let sidecar = if regular_file_meta(&sidecar_path).is_some() {
                 std::fs::read_to_string(&sidecar_path).ok()
             } else {
                 None
@@ -3021,6 +3062,60 @@ mod tests {
         assert!(target.join("skills/s1/SKILL.md").exists());
         // Source unchanged.
         assert!(legacy_agents.join("a1.md").exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn migrate_legacy_weplex_skips_symlinked_agent() {
+        // W1 regression: a symlink planted in ~/.weplex/agents/ that
+        // points at e.g. ~/.ssh/id_rsa must NOT be followed and its
+        // target content must NOT be migrated into the profile.
+        use crate::utils::test_support::HOME_ENV_LOCK as ENV_LOCK;
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("legacy-symlink");
+        let canon = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon); }
+
+        let legacy_agents = canon.join(".weplex/agents");
+        std::fs::create_dir_all(&legacy_agents).unwrap();
+        // Real agent — should migrate.
+        std::fs::write(legacy_agents.join("good.md"), "good body").unwrap();
+        // Plant a "secret" outside the legacy dir and a symlink that
+        // points at it from inside the agents dir.
+        let secret = canon.join("secret.txt");
+        std::fs::write(&secret, "TOP SECRET").unwrap();
+        std::os::unix::fs::symlink(&secret, legacy_agents.join("smuggled.md")).unwrap();
+
+        // Skills: a symlinked skill *directory* must also be skipped.
+        let real_dir = canon.join("real-skill");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::write(real_dir.join("SKILL.md"), "skill body").unwrap();
+        let legacy_skills = canon.join(".weplex/skills");
+        std::fs::create_dir_all(&legacy_skills).unwrap();
+        std::os::unix::fs::symlink(&real_dir, legacy_skills.join("evil")).unwrap();
+
+        let target = canon.join(".claude");
+        std::fs::create_dir_all(&target).unwrap();
+        let r = migrate_legacy_weplex_dir(target.to_str().unwrap()).unwrap();
+        // Only the real agent migrated; the symlink was skipped.
+        assert_eq!(r.migrated_agents, 1, "only the real agent should migrate");
+        assert_eq!(r.migrated_skills, 0, "symlinked skill dir must be skipped");
+        assert!(target.join("agents/good.md").exists());
+        assert!(
+            !target.join("agents/smuggled.md").exists(),
+            "symlinked agent must not be migrated"
+        );
+        // Even if a file by that name was somehow created, its body
+        // must not be the secret.
+        if let Ok(b) = std::fs::read_to_string(target.join("agents/smuggled.md")) {
+            assert_ne!(b, "TOP SECRET");
+        }
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
