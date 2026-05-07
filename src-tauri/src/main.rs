@@ -272,8 +272,7 @@ fn main() {
             // Platform
             platform::open_url,
             // Marketplace
-            marketplace::save_marketplace_package,
-            marketplace::save_marketplace_skill,
+            marketplace::install_marketplace_package,
             // Plugins & browser
             list_installed_plugins,
             activate_plugin,
