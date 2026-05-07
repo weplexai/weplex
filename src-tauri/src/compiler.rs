@@ -460,19 +460,21 @@ fn resolve_target_and_mode(
     harness: &str,
     spec: &TargetSpec,
     id: &str,
-    home: &str,
+    _home: &str,
     project_root: Option<&Path>,
 ) -> Result<Option<(PathBuf, RenderMode)>, CompileError> {
     // Resolve target path (placeholder + safety check).
+    // Defaults use the `~/` placeholder so they go through the same
+    // path-expansion + containment check as user-supplied targets.
     let target_str: String = match spec.target.as_deref() {
         Some(t) => t.to_string(),
         None => match harness {
-            "codex" => format!("{}/.codex/AGENTS.md", home),
+            "codex" => "~/.codex/AGENTS.md".to_string(),
             "cursor" => match project_root {
                 Some(_) => "${PROJECT}/.cursorrules".to_string(),
                 None => return Ok(None),
             },
-            "opencode" => format!("{}/.config/opencode/skills/{}.md", home, id),
+            "opencode" => format!("~/.config/opencode/skills/{}.md", id),
             "claude" => return Ok(None), // Claude reads body directly
             _ => return Ok(None),
         },

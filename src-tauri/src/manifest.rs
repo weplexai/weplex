@@ -303,7 +303,8 @@ impl Manifest {
     ///
     /// - `~` and `~/...` expand to $HOME.
     /// - `${PROJECT}/...` expands to `project_root` (if provided).
-    /// - Absolute paths must be inside HOME.
+    /// - Rejects raw absolute paths (`/...`) — targets MUST go through
+    ///   the placeholder system so the allowed root is unambiguous.
     /// - Rejects `..` segments after expansion.
     /// - Canonicalizes the parent directory and re-checks containment to
     ///   catch symlink-to-outside.
@@ -318,7 +319,11 @@ impl Manifest {
         let home = crate::utils::get_home();
         let home_path = PathBuf::from(&home);
 
-        // Expand placeholders.
+        // Expand placeholders. Raw absolute paths are intentionally
+        // refused — they bypass the placeholder system that signals
+        // "user-scope" vs "project-scope" intent and create surprising
+        // behaviour (a `/etc/...` target would only fail downstream
+        // during canonicalisation, with a confusing error message).
         let expanded: PathBuf = if let Some(rest) = target.strip_prefix("${PROJECT}/") {
             let root = project_root.ok_or_else(|| {
                 ManifestError::InvalidPath(format!(
@@ -338,11 +343,9 @@ impl Manifest {
             home_path.clone()
         } else if let Some(rest) = target.strip_prefix("~/") {
             home_path.join(rest)
-        } else if target.starts_with('/') {
-            PathBuf::from(target)
         } else {
             return Err(ManifestError::InvalidPath(format!(
-                "target must start with `~/`, `${{PROJECT}}/`, or `/`: {}", target
+                "target must start with `~/` or `${{PROJECT}}/`: {}", target
             )));
         };
 
@@ -714,14 +717,24 @@ mcp_servers:
     }
 
     #[test]
-    fn resolve_target_rejects_absolute_outside_home() {
+    fn resolve_target_rejects_raw_absolute_paths() {
+        // Raw absolute paths bypass the placeholder system entirely.
+        // Targets must use ~/ or ${PROJECT}/ so the allowed root is
+        // unambiguous from the manifest text alone.
         let _g = ENV_LOCK.lock().unwrap();
-        let scratch = tmpdir("outside");
+        let scratch = tmpdir("absolute");
         let prev = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", &scratch); }
 
-        let r = Manifest::resolve_target("/etc/passwd", None);
-        assert!(matches!(r, Err(ManifestError::InvalidPath(_))), "got {:?}", r);
+        for bad in ["/etc/passwd", "/tmp/foo", "/Users/blackmesa/foo"] {
+            let r = Manifest::resolve_target(bad, None);
+            assert!(
+                matches!(r, Err(ManifestError::InvalidPath(_))),
+                "expected rejection for {}, got {:?}",
+                bad,
+                r
+            );
+        }
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
