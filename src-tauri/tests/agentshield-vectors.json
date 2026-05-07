@@ -1,0 +1,137 @@
+{
+  "$schema": "../../../../../docs/agentshield-vectors.schema.json",
+  "description": "Parity test vectors for AgentShield scoring. Mirrors weplex-client Rust suite. Each vector lists `expectedRuleIds`, `expectedScore`, and `expectedFindings` (per-finding ruleId + 16-char fingerprint as produced by the TS scorer). The fingerprints are baked from the canonical TS implementation; the Rust parity test in weplex-client/src-tauri/src/guard.rs asserts they match for body-pattern rules where snippet/location are computed identically.",
+  "vectors": [
+    {
+      "name": "clean-agent",
+      "content": "---\nname: backend\ntools:\n  - Read\n  - Edit\n---\n# Backend agent\n\nDoes backend things.",
+      "expectedRuleIds": [],
+      "expectedScore": "green",
+      "expectedFindings": []
+    },
+    {
+      "name": "aws-secret",
+      "content": "---\nname: leaky\n---\nMy key is AKIAIOSFODNN7EXAMPLE in the body.",
+      "expectedRuleIds": ["secrets-aws-key"],
+      "expectedScore": "red",
+      "expectedFindings": [
+        { "ruleId": "secrets-aws-key", "fingerprint": "319603f514d11472" }
+      ]
+    },
+    {
+      "name": "github-token",
+      "content": "Token: ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expectedRuleIds": ["secrets-github-token"],
+      "expectedScore": "red",
+      "expectedFindings": [
+        { "ruleId": "secrets-github-token", "fingerprint": "dc535f7392f14711" }
+      ]
+    },
+    {
+      "name": "private-key-pem",
+      "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAxxxx\n-----END RSA PRIVATE KEY-----",
+      "expectedRuleIds": ["secrets-private-key"],
+      "expectedScore": "red",
+      "expectedFindings": [
+        { "ruleId": "secrets-private-key", "fingerprint": "42bb57b32ad54475" }
+      ]
+    },
+    {
+      "name": "wildcard-tools",
+      "content": "---\nname: dangerous\ntools: '*'\n---\nUses everything.",
+      "expectedRuleIds": ["wildcard-tools"],
+      "expectedScore": "yellow",
+      "expectedFindings": [
+        { "ruleId": "wildcard-tools", "fingerprint": "7eca3adfecbf9294" }
+      ]
+    },
+    {
+      "name": "wildcard-bash",
+      "content": "---\nname: shell\ntools:\n  - Read\n  - Bash(*)\n---\nRuns shell.",
+      "expectedRuleIds": ["wildcard-tools"],
+      "expectedScore": "yellow",
+      "expectedFindings": [
+        { "ruleId": "wildcard-tools", "fingerprint": "64c3ad116dbcfcd7" }
+      ]
+    },
+    {
+      "name": "mcp-http-non-local",
+      "content": "---\nname: web\nmcp:\n  url: http://api.example.com:8080\n---\nUses MCP.",
+      "expectedRuleIds": ["mcp-url-not-https"],
+      "expectedScore": "yellow",
+      "expectedFindings": [
+        { "ruleId": "mcp-url-not-https", "fingerprint": "bfb0c1e12060c210" }
+      ]
+    },
+    {
+      "name": "mcp-http-localhost",
+      "content": "---\nname: local\nmcp:\n  url: http://localhost:9000\n---\nLocal MCP.",
+      "expectedRuleIds": [],
+      "expectedScore": "green",
+      "expectedFindings": []
+    },
+    {
+      "name": "mcp-unknown-command",
+      "content": "---\nname: weird\nmcp:\n  command: /opt/weird-launcher\n---\nLaunches MCP.",
+      "expectedRuleIds": ["mcp-unknown-command"],
+      "expectedScore": "green",
+      "expectedFindings": [
+        { "ruleId": "mcp-unknown-command", "fingerprint": "78f155fc8aa06976" }
+      ]
+    },
+    {
+      "name": "mcp-known-command",
+      "content": "---\nname: ok\nmcp:\n  command: npx\n---\nLaunches MCP.",
+      "expectedRuleIds": [],
+      "expectedScore": "green",
+      "expectedFindings": []
+    },
+    {
+      "name": "tos-claude-print",
+      "content": "Spawn helper:\n```bash\nclaude --print 'do thing'\n```",
+      "expectedRuleIds": ["mcp-tos-agent-cli"],
+      "expectedScore": "yellow",
+      "expectedFindings": [
+        { "ruleId": "mcp-tos-agent-cli", "fingerprint": "abb91e2115c36d3e" }
+      ]
+    },
+    {
+      "name": "tos-codex-run",
+      "content": "Run via codex run --prompt 'thing'",
+      "expectedRuleIds": ["mcp-tos-agent-cli"],
+      "expectedScore": "yellow",
+      "expectedFindings": [
+        { "ruleId": "mcp-tos-agent-cli", "fingerprint": "08d189c8f71c15c1" }
+      ]
+    },
+    {
+      "name": "permissions-broad",
+      "content": "---\nname: dangerous\npermissions:\n  - '*'\n---\nDoes everything.",
+      "expectedRuleIds": ["permissions-broad"],
+      "expectedScore": "yellow",
+      "expectedFindings": [
+        { "ruleId": "permissions-broad", "fingerprint": "fb8200c4e5285e96" }
+      ]
+    },
+    {
+      "name": "multi-secret-leak",
+      "content": "AKIAIOSFODNN7EXAMPLE and ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa together",
+      "expectedRuleIds": ["secrets-aws-key", "secrets-github-token"],
+      "expectedScore": "red",
+      "expectedFindings": [
+        { "ruleId": "secrets-aws-key", "fingerprint": "98abab4727893a7e" },
+        { "ruleId": "secrets-github-token", "fingerprint": "18903f88bb8e6d2f" }
+      ]
+    },
+    {
+      "name": "block-trumps-warn",
+      "content": "---\nname: bad\ntools: '*'\n---\nAKIAIOSFODNN7EXAMPLE",
+      "expectedRuleIds": ["secrets-aws-key", "wildcard-tools"],
+      "expectedScore": "red",
+      "expectedFindings": [
+        { "ruleId": "secrets-aws-key", "fingerprint": "9da6dee6191929dd" },
+        { "ruleId": "wildcard-tools", "fingerprint": "7eca3adfecbf9294" }
+      ]
+    }
+  ]
+}

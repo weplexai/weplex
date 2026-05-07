@@ -335,6 +335,8 @@ mcp_servers: []
                 crate::lockfile::MutationKind::Upsert {
                     body: body_for_install,
                     sidecar: sidecar_body,
+                    pack: None,
+                    pack_commit_sha: None,
                 },
             ) {
                 Ok(_) => {
@@ -495,6 +497,8 @@ pub fn save_command(
         crate::lockfile::MutationKind::Upsert {
             body: content,
             sidecar: None,
+            pack: None,
+            pack_commit_sha: None,
         },
     )
     .map_err(|e| format!("{}", e))?;

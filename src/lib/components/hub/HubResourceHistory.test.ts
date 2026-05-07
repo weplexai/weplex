@@ -31,6 +31,7 @@ function buildCurrent(overrides: Partial<LockfileEntry> = {}): LockfileEntry {
     files: ['agents/architect.md'],
     installedAt: '2026-04-15T12:00:00Z',
     installedBy: 'tester',
+    pack: null,
     drifted: false,
     ...overrides,
   };

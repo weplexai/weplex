@@ -13,7 +13,7 @@
   import HubSpaces from './HubSpaces.svelte';
   import HubResources from './HubResources.svelte';
   import HubCommands from './HubCommands.svelte';
-  import MarketplacePanel from '../overlays/MarketplaceOverlay.svelte';
+  import HubMarketplace from './HubMarketplace.svelte';
   import type { HubSection } from '../../types';
 
   // Placeholder meta for sections not yet wired up
@@ -45,7 +45,7 @@
       {:else if uiStore.hubSection === 'commands' && featureFlags.commands}
         <HubCommands />
       {:else if uiStore.hubSection === 'marketplace' && featureFlags.marketplace}
-        <MarketplacePanel />
+        <HubMarketplace />
       {:else if uiStore.hubSection === 'settings'}
         <SettingsPanel />
       {:else if uiStore.hubSection === 'account'}

@@ -388,6 +388,10 @@
           {@const drifted = guardProfileDir
             ? lockfileStore.isDrifted(guardProfileDir, lockfileId)
             : false}
+          {@const lockfileEntry = guardProfileDir
+            ? lockfileStore.entryForResource(guardProfileDir, lockfileId)
+            : null}
+          {@const packId = lockfileEntry?.pack ?? null}
           <button
             class="resource-row"
             class:selected={selectedResource?.name === r.name && editMode === 'view'}
@@ -396,7 +400,7 @@
             <span class="row-icon">{initial(r.name)}</span>
             <div class="row-content">
               <span class="row-name">{r.name}</span>
-              {#if hasMultipleProfiles || drifted}
+              {#if hasMultipleProfiles || drifted || packId}
                 <span class="row-badges">
                   {#if hasMultipleProfiles}
                     <span class="badge" class:differs={r.differs}>
@@ -411,6 +415,12 @@
                       class="drift-pill"
                       title="On-disk file differs from the lockfile — see History"
                     >drifted</span>
+                  {/if}
+                  {#if packId}
+                    <span
+                      class="pack-badge"
+                      title={`From federated pack ${packId}`}
+                    >{packId.split('/')[0]}</span>
                   {/if}
                 </span>
               {/if}
@@ -1032,6 +1042,24 @@
     border-radius: var(--weplex-radius-sm);
     background: color-mix(in srgb, var(--weplex-warning, #f59e0b) 16%, transparent);
     color: var(--weplex-warning, #f59e0b);
+  }
+
+  /* Phase 5: federated-pack provenance badge — shows the owner of the
+     pack a resource came from. Tooltip carries the full `<owner>/<repo>`
+     so users can identify the pack without bloating the row. */
+  .pack-badge {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+    padding: 1px 6px;
+    border-radius: var(--weplex-radius-sm);
+    background: color-mix(in srgb, var(--weplex-accent) 14%, transparent);
+    color: var(--weplex-accent);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Phase 3: secondary tab strip inside the right detail pane.

@@ -9,7 +9,6 @@
   import ProjectDashboard from './lib/components/dashboard/ProjectDashboard.svelte';
   import SpaceDashboard from './lib/components/dashboard/SpaceDashboard.svelte';
   import SpectatorView from './lib/components/terminal/SpectatorView.svelte';
-  import MarketplaceOverlay from './lib/components/overlays/MarketplaceOverlay.svelte';
   import PluginView from './lib/components/terminal/PluginView.svelte';
   import DetailPanel from './lib/components/detail/DetailPanel.svelte';
   import SpaceChat from './lib/components/detail/SpaceChat.svelte';

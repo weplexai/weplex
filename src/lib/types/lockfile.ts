@@ -27,6 +27,14 @@ export interface LockfileEntry {
   /** ISO-8601 timestamp. */
   installedAt: string;
   installedBy: string;
+  /**
+   * Federated pack provenance — `<owner>/<repo>` (lowercase) when this
+   * entry was installed via a federated marketplace pack; `null` for
+   * builtin / user / single-resource marketplace publishes. The Hub UI
+   * surfaces this as a small badge so the user can tell where a
+   * resource came from at a glance.
+   */
+  pack: string | null;
   /** Set when on-disk bytes diverge from the recorded sha. Never persisted. */
   drifted: boolean;
 }

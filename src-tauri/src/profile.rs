@@ -346,6 +346,8 @@ pub fn copy_resource_to_profile(
         crate::lockfile::MutationKind::Upsert {
             body,
             sidecar,
+            pack: None,
+            pack_commit_sha: None,
         },
     )
     .map_err(|e| format!("{}", e))?;
@@ -392,6 +394,8 @@ pub fn create_resource_in_profile(
         crate::lockfile::MutationKind::Upsert {
             body: content,
             sidecar: None,
+            pack: None,
+            pack_commit_sha: None,
         },
     )
     .map_err(|e| format!("{}", e))?;
