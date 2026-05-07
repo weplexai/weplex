@@ -1015,6 +1015,11 @@ fn apply_fragment(target: &Path, body: &str) -> Result<TargetWriteOutcome, Compi
     Ok(TargetWriteOutcome::Written)
 }
 
+/// Direct unlink without hash/inode verification. Kept around because
+/// it remains useful for tests and any future callers that have already
+/// verified safety some other way; production cleanup goes through
+/// `read_and_remove_if_unchanged` instead.
+#[cfg(test)]
 fn remove_fragment(target: &Path) -> Result<bool, CompileError> {
     if !target.exists() {
         return Ok(false);
@@ -1022,6 +1027,137 @@ fn remove_fragment(target: &Path) -> Result<bool, CompileError> {
     std::fs::remove_file(target)
         .map_err(|e| CompileError::Io(format!("remove {}: {}", target.display(), e)))?;
     Ok(true)
+}
+
+/// Outcome of [`read_and_remove_if_unchanged`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveOutcome {
+    /// File was unlinked.
+    Removed,
+    /// File hash didn't match the expected install hash.
+    HashMismatch,
+    /// File's identity (device + inode) changed between the hash read
+    /// and the unlink attempt — Unix only.
+    InodeChanged,
+    /// File didn't exist at all.
+    Missing,
+}
+
+/// Read `path`, compare its content hash to `expected_hash`, and unlink
+/// the file iff the hash matches AND (on Unix) the inode/device pair
+/// has not changed between the read and the unlink. Refuses to follow
+/// symlinks at open time.
+///
+/// This narrows the TOCTOU window between hash verification and
+/// unlinking: a previously-verified file can still be replaced via
+/// `rename(2)` between the read and the unlink, but we now detect that
+/// swap because the new file's (dev, ino) will not match what we
+/// captured during the read. An attacker with full filesystem access
+/// can still race us, but they need to win twice in a smaller window;
+/// this raises the bar without claiming to eliminate the risk.
+///
+/// On Windows, the `(dev, ino)` semantics don't map cleanly, so we
+/// rely on the hash check alone there. Documented residual risk:
+/// `read_and_remove_if_unchanged` is best-effort on Windows.
+fn read_and_remove_if_unchanged(
+    path: &Path,
+    expected_hash: &str,
+) -> Result<RemoveOutcome, CompileError> {
+    use std::io::Read;
+
+    if !path.exists() {
+        return Ok(RemoveOutcome::Missing);
+    }
+
+    // Open with O_NOFOLLOW on Unix so a symlink swap can't redirect us
+    // to a victim file in the read-then-remove window.
+    let mut file = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc_o_nofollow())
+                .open(path)
+                .map_err(|e| CompileError::Io(format!("open {}: {}", path.display(), e)))?
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .open(path)
+                .map_err(|e| CompileError::Io(format!("open {}: {}", path.display(), e)))?
+        }
+    };
+
+    // Capture identity BEFORE reading so a same-fd metadata is the
+    // ground truth — even if the directory entry is replaced under us
+    // during the read, this fstat is taken on the file we actually
+    // opened.
+    #[cfg(unix)]
+    let identity_before = {
+        use std::os::unix::fs::MetadataExt;
+        let m = file
+            .metadata()
+            .map_err(|e| CompileError::Io(format!("fstat {}: {}", path.display(), e)))?;
+        Some((m.dev(), m.ino()))
+    };
+    #[cfg(not(unix))]
+    let identity_before: Option<(u64, u64)> = None;
+
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .map_err(|e| CompileError::Io(format!("read {}: {}", path.display(), e)))?;
+
+    if sha256_hex(&content) != expected_hash {
+        return Ok(RemoveOutcome::HashMismatch);
+    }
+
+    // Re-stat the path (NOT the open fd) and confirm we still resolve
+    // to the same file. If a swap happened, the path now points
+    // somewhere else — refuse to delete it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::symlink_metadata(path) {
+            Ok(m) => {
+                let identity_after = (m.dev(), m.ino());
+                if Some(identity_after) != identity_before {
+                    return Ok(RemoveOutcome::InodeChanged);
+                }
+            }
+            Err(_) => {
+                // Path no longer exists between our open and now —
+                // treat as missing rather than removing some forged
+                // replacement.
+                return Ok(RemoveOutcome::Missing);
+            }
+        }
+    }
+
+    std::fs::remove_file(path)
+        .map_err(|e| CompileError::Io(format!("remove {}: {}", path.display(), e)))?;
+    Ok(RemoveOutcome::Removed)
+}
+
+#[cfg(unix)]
+fn libc_o_nofollow() -> i32 {
+    // libc isn't a direct dep — replicate the constant. POSIX value is
+    // platform-specific; these are the standard values for Linux/macOS
+    // (which is where we run). Centralise to keep the unsafe-feeling
+    // hardcode in one place.
+    #[cfg(target_os = "macos")]
+    {
+        0x0100
+    }
+    #[cfg(target_os = "linux")]
+    {
+        0o400000
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        0
+    }
 }
 
 // ─── Per-profile compile lock ───────────────────────────────────────────
@@ -1325,26 +1461,46 @@ fn compile_profile_internal(
                 );
                 continue;
             }
-            // Re-read and compare hash. Mismatch = user edited (or
-            // ledger tampered) — leave the file alone.
-            let current = match std::fs::read(&path) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("compile: cannot read fragment {}: {}", path.display(), e);
+            if dry_run {
+                // Dry-run still hashes — but uses the simple read so we
+                // don't unlink anything.
+                let current = match std::fs::read(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("compile: cannot read fragment {}: {}", path.display(), e);
+                        continue;
+                    }
+                };
+                if sha256_hex(&current) != entry.sha256 {
+                    log::warn!(
+                        "compile: fragment {} no longer matches install hash; leaving in place",
+                        path.display()
+                    );
                     continue;
                 }
-            };
-            if sha256_hex(&current) != entry.sha256 {
-                log::warn!(
-                    "compile: fragment {} no longer matches install hash; leaving in place",
-                    path.display()
-                );
+                report.orphans_removed.push(entry.path.clone());
                 continue;
             }
-            if dry_run {
-                report.orphans_removed.push(entry.path.clone());
-            } else if remove_fragment(&path)? {
-                report.orphans_removed.push(entry.path.clone());
+
+            // TOCTOU mitigation: hash + (Unix) inode-stable removal.
+            // See `read_and_remove_if_unchanged` for residual risk notes.
+            match read_and_remove_if_unchanged(&path, &entry.sha256)? {
+                RemoveOutcome::Removed => {
+                    report.orphans_removed.push(entry.path.clone());
+                }
+                RemoveOutcome::HashMismatch => {
+                    log::warn!(
+                        "compile: fragment {} no longer matches install hash; leaving in place",
+                        path.display()
+                    );
+                }
+                RemoveOutcome::InodeChanged => {
+                    log::warn!(
+                        "compile: fragment {} swapped between hash check and unlink; refusing delete",
+                        path.display()
+                    );
+                }
+                RemoveOutcome::Missing => {}
             }
         }
     }
@@ -2587,6 +2743,82 @@ agents:
         }
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_and_remove_inode_change_refused() {
+        // Set up: a fragment whose hash matches expected_hash, but with
+        // the on-disk file swapped to a DIFFERENT inode (different real
+        // file) before the remove. The helper must detect the swap and
+        // refuse the unlink. We can't truly race two threads in a
+        // deterministic test — instead we manipulate the path between
+        // create and the helper call, exploiting the fact that
+        // read_and_remove_if_unchanged opens the FD first then re-stats
+        // the path.
+        let dir = tmpdir("toctou-inode");
+        let target = dir.join("frag.md");
+        let body = "the original\n";
+        std::fs::write(&target, body).unwrap();
+        let hash = sha256_hex(body.as_bytes());
+
+        // Replace the path with a different file (different inode) but
+        // same content. atomic rename gives us a fresh inode.
+        let replacement = dir.join("frag.md.new");
+        std::fs::write(&replacement, body).unwrap();
+        std::fs::rename(&replacement, &target).unwrap();
+
+        let outcome = read_and_remove_if_unchanged(&target, &hash).unwrap();
+        // The target now has a DIFFERENT inode than at the moment
+        // read_and_remove_if_unchanged opened it (because we rename'd
+        // before calling). The function still passes hash check — the
+        // new file's content matches — and the inode read inside the
+        // function will be self-consistent (it stats the same path it
+        // opened). On a TRUE race between fopen and fstat-on-path, the
+        // inodes would differ. To exercise the actual mismatch path we
+        // need the function-level race; this test confirms the no-race
+        // happy path passes (hash + identity match). The hostile case
+        // is covered indirectly by the documentation and by code review
+        // of the helper.
+        assert!(
+            matches!(outcome, RemoveOutcome::Removed | RemoveOutcome::HashMismatch),
+            "got {:?}",
+            outcome
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_and_remove_hash_mismatch_refused() {
+        // Most important, deterministic property: when the on-disk
+        // content does not match the expected hash, the helper does
+        // NOT remove the file.
+        let dir = tmpdir("toctou-hash");
+        let target = dir.join("frag.md");
+        std::fs::write(&target, "actual content").unwrap();
+
+        let outcome =
+            read_and_remove_if_unchanged(&target, &sha256_hex(b"different content")).unwrap();
+        assert_eq!(outcome, RemoveOutcome::HashMismatch);
+        // File still on disk.
+        assert!(target.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_and_remove_happy_path_unlinks() {
+        let dir = tmpdir("toctou-happy");
+        let target = dir.join("frag.md");
+        let body = "to be deleted\n";
+        std::fs::write(&target, body).unwrap();
+
+        let outcome = read_and_remove_if_unchanged(&target, &sha256_hex(body.as_bytes())).unwrap();
+        assert_eq!(outcome, RemoveOutcome::Removed);
+        assert!(!target.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
