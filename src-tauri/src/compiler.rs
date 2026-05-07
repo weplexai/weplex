@@ -658,16 +658,11 @@ fn ledger_path(profile_dir: &str) -> PathBuf {
     PathBuf::from(profile_dir).join(".weplex").join("compile-ledger.json")
 }
 
-/// SHA-256 of `content` as lowercase hex. Used to detect post-install
-/// tampering of installed fragments before we delete them.
+/// SHA-256 of `content` as lowercase hex. Re-exported from `crate::utils`
+/// to keep call sites in this module unchanged. Used to detect
+/// post-install tampering of installed fragments before we delete them.
 fn sha256_hex(content: &[u8]) -> String {
-    let d = ring::digest::digest(&ring::digest::SHA256, content);
-    let mut hex = String::with_capacity(d.as_ref().len() * 2);
-    for b in d.as_ref() {
-        use std::fmt::Write;
-        let _ = write!(hex, "{:02x}", b);
-    }
-    hex
+    crate::utils::sha256_hex(content)
 }
 
 fn load_ledger(profile_dir: &str) -> InstallLedger {

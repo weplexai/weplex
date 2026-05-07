@@ -6,6 +6,19 @@ pub fn get_home() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
 }
 
+/// SHA-256 of `content` as lowercase hex. Used by the compiler ledger to
+/// detect post-install tampering and by the cross-agent guard to bind
+/// override decisions to a specific resource body.
+pub fn sha256_hex(content: &[u8]) -> String {
+    let d = ring::digest::digest(&ring::digest::SHA256, content);
+    let mut hex = String::with_capacity(d.as_ref().len() * 2);
+    for b in d.as_ref() {
+        use std::fmt::Write;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    hex
+}
+
 /// Atomically write `contents` to `path` with mode 0600 (data file).
 pub fn atomic_write_owner_only(path: &str, contents: &str) -> Result<(), String> {
     atomic_write_with_mode(path, contents, 0o600)
