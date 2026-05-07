@@ -8,6 +8,7 @@ mod commands;
 mod compiler;
 mod context;
 mod git;
+mod guard;
 mod hook_decision;
 mod hook_server;
 mod hooks;
