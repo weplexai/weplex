@@ -17,6 +17,18 @@ pub fn atomic_write_exec_owner_only(path: &str, contents: &str) -> Result<(), St
     atomic_write_with_mode(path, contents, 0o700)
 }
 
+/// Atomically write `contents` to `path` with mode 0644 (user-readable).
+/// Use for files the user reads in their own IDE or editor:
+/// `AGENTS.md`, `.cursorrules`, `.mdc`, OpenCode skill files, etc.
+///
+/// These are config files for *external* tools (Codex, Cursor, OpenCode),
+/// not Weplex secrets — they intentionally live in well-known locations
+/// like `~/.codex/AGENTS.md` where the user (and the target tool) read
+/// them. 0644 mirrors what those tools would create themselves.
+pub fn atomic_write_user_readable(path: &str, contents: &str) -> Result<(), String> {
+    atomic_write_with_mode(path, contents, 0o644)
+}
+
 /// Internal: atomic tmp+rename with explicit unix mode.
 ///
 /// - Creates a sibling `<path>.<pid>.tmp`. The PID suffix makes concurrent
@@ -127,6 +139,18 @@ mod atomic_write_tests {
         atomic_write_exec_owner_only(target.to_str().unwrap(), "#!/bin/bash\nexit 0\n").unwrap();
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "expected 0700, got {:o}", mode);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_readable_variant_sets_0644_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmpdir();
+        let target = dir.join("AGENTS.md");
+        atomic_write_user_readable(target.to_str().unwrap(), "# heading\n").unwrap();
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "expected 0644, got {:o}", mode);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
