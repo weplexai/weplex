@@ -2878,6 +2878,66 @@ agents:
     }
 
     #[test]
+    fn ledger_hash_mismatch_with_valid_path_refuses_delete() {
+        // Compile a fragment manifest → file is written, ledger v1
+        // records the correct hash. Manually rewrite the ledger so the
+        // path is still valid but the sha256 is wrong. Delete the
+        // manifest and recompile: the file must NOT be deleted because
+        // the on-disk hash no longer matches the (forged) ledger hash.
+        // This isolates the hash check from the path safety check.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ledger-hashforge-home");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let profile = tmpdir("ledger-hashforge-profile");
+        let skills = profile.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(
+            skills.join("greet.weplex.yaml"),
+            "id: greet\nversion: 1.0.0\nagents:\n  opencode: {}\n",
+        )
+        .unwrap();
+        std::fs::write(skills.join("greet.md"), "Original\n").unwrap();
+        let _ = compile_profile(profile.to_str().unwrap(), None).unwrap();
+
+        let frag = canon_home.join(".config/opencode/skills/greet.md");
+        assert!(frag.exists(), "fragment not installed");
+
+        // Forge the ledger: same path, wrong sha256.
+        let forged = format!(
+            r#"{{"version":1,"entries":{{"greet":[{{"path":"{}","sha256":"{}"}}]}}}}"#,
+            frag.to_string_lossy(),
+            sha256_hex(b"completely-different-bytes-than-installed"),
+        );
+        std::fs::write(
+            profile.join(".weplex").join("compile-ledger.json"),
+            forged,
+        )
+        .unwrap();
+
+        // Delete the manifest and recompile. With a forged hash, cleanup
+        // must refuse the delete.
+        std::fs::remove_file(skills.join("greet.weplex.yaml")).unwrap();
+        std::fs::remove_file(skills.join("greet.md")).unwrap();
+        let report = compile_profile(profile.to_str().unwrap(), None).unwrap();
+
+        assert!(
+            !report.orphans_removed.iter().any(|p| p == frag.to_string_lossy().as_ref()),
+            "hash-mismatch fragment was deleted despite forged ledger hash: {:?}",
+            report.orphans_removed
+        );
+        assert!(frag.exists(), "fragment with bad ledger hash was deleted");
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    #[test]
     fn empty_profile_recompile_drops_sections_key() {
         // 1. Compile a profile with one section-target manifest.
         // 2. Verify ledger contains __sections__.
