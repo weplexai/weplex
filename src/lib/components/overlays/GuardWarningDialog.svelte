@@ -15,8 +15,11 @@
   let working = $state(false);
   let errorMsg = $state<string | null>(null);
 
-  function isOverridden(ruleId: string): boolean {
-    return resource.overriddenFindings.includes(ruleId);
+  function isOverridden(fingerprint: string): boolean {
+    // overriddenFindings is now a list of fingerprints (per-instance),
+    // not rule_ids — accepting one AKIA does not auto-mark the second
+    // AKIA as overridden.
+    return resource.overriddenFindings.includes(fingerprint);
   }
 
   function severityLabel(s: Severity): string {
@@ -25,15 +28,19 @@
     return 'Info';
   }
 
-  async function allowFinding(ruleId: string): Promise<void> {
+  async function allowFinding(ruleId: string, fingerprint: string): Promise<void> {
     if (working) return;
     working = true;
     errorMsg = null;
     try {
+      // Per-instance accept: pass the finding's fingerprint so only this
+      // specific match is silenced. Other matches of the same rule in
+      // the same body remain active.
       await guardStore.setOverride(profileConfigDir, {
         ruleId,
         resourcePath: resource.resourcePath,
         bodySha256: resource.bodySha256,
+        fingerprint,
         decision: 'accept',
         decidedAt: new Date().toISOString(),
       });
@@ -65,8 +72,8 @@
         <p class="guard-empty">No findings — this resource passed all checks.</p>
       {:else}
         <ul class="finding-list">
-          {#each resource.findings as f (f.ruleId)}
-            {@const overridden = isOverridden(f.ruleId)}
+          {#each resource.findings as f (f.fingerprint)}
+            {@const overridden = isOverridden(f.fingerprint)}
             <li class="finding finding-{f.severity}" class:overridden>
               <div class="finding-head">
                 <span class="severity-chip severity-{f.severity}">
@@ -97,9 +104,9 @@
                   <Button
                     variant="secondary"
                     disabled={working}
-                    onclick={() => allowFinding(f.ruleId)}
+                    onclick={() => allowFinding(f.ruleId, f.fingerprint)}
                   >
-                    Allow this rule for this resource
+                    Allow this finding
                   </Button>
                 </div>
               {/if}

@@ -11,17 +11,21 @@ function buildVerdict(active: number, overridden = 0): ResourceVerdict {
       severity: 'warn' as const,
       message: 'Test',
       explanation: 'Why',
+      fingerprint: `fp-rule-${i}`,
     });
   }
-  const overriddenIds: string[] = [];
+  // overriddenFindings is keyed by per-instance fingerprint, not rule_id.
+  const overriddenFingerprints: string[] = [];
   for (let i = 0; i < overridden; i++) {
+    const fp = `fp-over-${i}`;
     findings.push({
       ruleId: `over-${i}`,
       severity: 'warn' as const,
       message: 'Test',
       explanation: 'Why',
+      fingerprint: fp,
     });
-    overriddenIds.push(`over-${i}`);
+    overriddenFingerprints.push(fp);
   }
   return {
     resourcePath: '/p/agents/a.md',
@@ -31,7 +35,7 @@ function buildVerdict(active: number, overridden = 0): ResourceVerdict {
     bodySha256: 'abc',
     verdict: 'yellow',
     findings,
-    overriddenFindings: overriddenIds,
+    overriddenFindings: overriddenFingerprints,
   };
 }
 

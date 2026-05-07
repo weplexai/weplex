@@ -92,6 +92,39 @@ pub struct GuardFinding {
     pub explanation: String,
     pub snippet: Option<String>,
     pub location: Option<String>,
+    /// 16-hex-char SHA-256 prefix of `(rule_id, location, snippet[..60])`.
+    /// Identifies a SPECIFIC firing of a rule — multiple matches in the
+    /// same body get distinct fingerprints, enabling per-instance overrides
+    /// (accept one AKIA, keep flagging the other). See
+    /// `compute_finding_fingerprint`.
+    pub fingerprint: String,
+}
+
+impl GuardFinding {
+    /// Construct a finding and compute its fingerprint from the same
+    /// inputs serde will see. Centralised here so every rule fn /
+    /// synthesizer / test stays in lock-step with the hash recipe.
+    fn new(
+        rule_id: impl Into<String>,
+        severity: Severity,
+        message: impl Into<String>,
+        explanation: impl Into<String>,
+        snippet: Option<String>,
+        location: Option<String>,
+    ) -> Self {
+        let rule_id = rule_id.into();
+        let fingerprint =
+            compute_finding_fingerprint(&rule_id, location.as_deref(), snippet.as_deref());
+        Self {
+            rule_id,
+            severity,
+            message: message.into(),
+            explanation: explanation.into(),
+            snippet,
+            location,
+            fingerprint,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +153,14 @@ pub struct OverrideDecision {
     pub rule_id: String,
     pub resource_path: String,
     pub body_sha256: String,
+    /// Per-instance fingerprint (see `GuardFinding::fingerprint`). When
+    /// `Some`, this override applies ONLY to the matching finding —
+    /// other matches of the same rule_id in the same body remain active.
+    /// `None` is the legacy "all instances of this rule" semantics
+    /// (preserved so v2-on-disk decisions deserialise without a default
+    /// migration step).
+    #[serde(default)]
+    pub fingerprint: Option<String>,
     pub decision: OverrideKind,
     pub decided_at: String,
     pub decided_by: Option<String>,
@@ -173,18 +214,21 @@ fn verdict_from_findings(findings: &[GuardFinding]) -> GuardVerdict {
         .fold(GuardVerdict::Green, worst_verdict)
 }
 
-/// Pick the worst verdict implied by findings, ignoring any rule_id
-/// listed in `overridden`. This is the load-bearing entry point for
-/// computing a resource's effective verdict — overridden findings
-/// remain in the list (so the UI can render "you accepted this earlier")
-/// but they no longer steer the verdict.
+/// Pick the worst verdict implied by findings, ignoring any whose
+/// `fingerprint` is listed in `overridden`. This is the load-bearing
+/// entry point for computing a resource's effective verdict — overridden
+/// findings remain in the list (so the UI can render "you accepted this
+/// earlier") but they no longer steer the verdict.
+///
+/// Granularity: per-instance. Two findings of the same rule_id can have
+/// different fingerprints; accepting one does not silence the other.
 fn verdict_from_active_findings(
     findings: &[GuardFinding],
     overridden: &[String],
 ) -> GuardVerdict {
     findings
         .iter()
-        .filter(|f| !overridden.iter().any(|id| id == &f.rule_id))
+        .filter(|f| !overridden.iter().any(|fp| fp == &f.fingerprint))
         .map(|f| severity_to_verdict(f.severity))
         .fold(GuardVerdict::Green, worst_verdict)
 }
@@ -316,6 +360,57 @@ fn redact_private_key_lines(s: &str) -> String {
     out
 }
 
+/// Compute a per-finding fingerprint that identifies a specific instance
+/// of a rule firing, scoped tighter than the rule_id alone. Used by the
+/// override store so accepting one of N matches in a body does not
+/// silently silence the other N-1 matches (which a per-rule_id override
+/// would).
+///
+/// Inputs:
+///  * `rule_id` — the catalogue id of the firing rule
+///  * `location` — formatted "line X, col Y" string (or None for rules
+///    without a positional anchor — they'll all share one fingerprint
+///    per resource, which is fine: there's only one such finding per
+///    rule per body)
+///  * `snippet` — the redacted snippet, prefix-truncated to 60 bytes
+///    so a marginal byte-level edit elsewhere on the same line doesn't
+///    silently revoke the override
+///
+/// The snippet is already redacted by `redact_all_secrets` BEFORE this is
+/// called, so secrets cannot leak into the hash via this path. Output is
+/// the first 16 hex chars of SHA-256 — a 64-bit fingerprint, plenty for
+/// disambiguating a handful of matches per body.
+fn compute_finding_fingerprint(
+    rule_id: &str,
+    location: Option<&str>,
+    snippet: Option<&str>,
+) -> String {
+    let snippet_prefix = snippet
+        .map(|s| {
+            let bytes = s.as_bytes();
+            let take = bytes.len().min(60);
+            // Keep the slice on a UTF-8 boundary so we never panic on
+            // mid-codepoint truncation.
+            std::str::from_utf8(&bytes[..take])
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| {
+                    // Fall back to the full string if truncation lands
+                    // mid-codepoint — the hash stability is not worth
+                    // the panic risk.
+                    s.to_string()
+                })
+        })
+        .unwrap_or_default();
+    let key = format!(
+        "{}|{}|{}",
+        rule_id,
+        location.unwrap_or(""),
+        snippet_prefix,
+    );
+    let hash = crate::utils::sha256_hex(key.as_bytes());
+    hash[..16].to_string()
+}
+
 /// Format a 1-based `(line, col)` location for a byte offset.
 fn locate(body: &str, offset: usize) -> String {
     let mut line = 1usize;
@@ -385,18 +480,16 @@ const RULES: &[Rule] = &[
 fn rule_secrets_aws_key(ctx: &RuleCtx) -> Vec<GuardFinding> {
     let mut out = Vec::new();
     for m in re_aws_key().find_iter(ctx.body) {
-        out.push(GuardFinding {
-            rule_id: "secrets-aws-key".into(),
-            severity: Severity::Block,
-            message: "AWS access key id detected in body".into(),
-            explanation:
-                "AKIA-prefixed AWS access key ids are root-level credentials. \
-                 They must never be committed to a resource body — anyone with \
-                 read access to the manifest gets the key."
-                    .into(),
-            snippet: Some(redacted_snippet(ctx.body, m.start(), m.end())),
-            location: Some(locate(ctx.body, m.start())),
-        });
+        out.push(GuardFinding::new(
+            "secrets-aws-key",
+            Severity::Block,
+            "AWS access key id detected in body",
+            "AKIA-prefixed AWS access key ids are root-level credentials. \
+             They must never be committed to a resource body — anyone with \
+             read access to the manifest gets the key.",
+            Some(redacted_snippet(ctx.body, m.start(), m.end())),
+            Some(locate(ctx.body, m.start())),
+        ));
     }
     out
 }
@@ -404,18 +497,16 @@ fn rule_secrets_aws_key(ctx: &RuleCtx) -> Vec<GuardFinding> {
 fn rule_secrets_github_token(ctx: &RuleCtx) -> Vec<GuardFinding> {
     let mut out = Vec::new();
     for m in re_github_token().find_iter(ctx.body) {
-        out.push(GuardFinding {
-            rule_id: "secrets-github-token".into(),
-            severity: Severity::Block,
-            message: "GitHub personal access token detected in body".into(),
-            explanation:
-                "Tokens prefixed with `ghp_` (classic) or `ghs_` (server-to-server) \
-                 grant repo-scoped access. Never embed them in a resource body — \
-                 rotate the token immediately if you see this finding."
-                    .into(),
-            snippet: Some(redacted_snippet(ctx.body, m.start(), m.end())),
-            location: Some(locate(ctx.body, m.start())),
-        });
+        out.push(GuardFinding::new(
+            "secrets-github-token",
+            Severity::Block,
+            "GitHub personal access token detected in body",
+            "Tokens prefixed with `ghp_` (classic) or `ghs_` (server-to-server) \
+             grant repo-scoped access. Never embed them in a resource body — \
+             rotate the token immediately if you see this finding.",
+            Some(redacted_snippet(ctx.body, m.start(), m.end())),
+            Some(locate(ctx.body, m.start())),
+        ));
     }
     out
 }
@@ -435,19 +526,17 @@ fn rule_secrets_private_key(ctx: &RuleCtx) -> Vec<GuardFinding> {
                 .find('\n')
                 .map(|i| begin_idx + i)
                 .unwrap_or(ctx.body.len());
-            out.push(GuardFinding {
-                rule_id: "secrets-private-key".into(),
-                severity: Severity::Block,
-                message: "Embedded private key detected in body".into(),
-                explanation:
-                    "PEM private keys (`-----BEGIN ... PRIVATE KEY-----`) must not \
-                     ship inside an agent / rule / skill body. Move the key to your \
-                     OS keychain or a `.env` file referenced via `${SECRET_NAME}` \
-                     at runtime."
-                        .into(),
-                snippet: Some(redacted_snippet(ctx.body, begin_idx, line_end)),
-                location: Some(locate(ctx.body, begin_idx)),
-            });
+            out.push(GuardFinding::new(
+                "secrets-private-key",
+                Severity::Block,
+                "Embedded private key detected in body",
+                "PEM private keys (`-----BEGIN ... PRIVATE KEY-----`) must not \
+                 ship inside an agent / rule / skill body. Move the key to your \
+                 OS keychain or a `.env` file referenced via `${SECRET_NAME}` \
+                 at runtime.",
+                Some(redacted_snippet(ctx.body, begin_idx, line_end)),
+                Some(locate(ctx.body, begin_idx)),
+            ));
         }
         // Advance past this BEGIN marker. We don't care about overlapping
         // matches because PEM headers are line-level and well-separated.
@@ -488,24 +577,19 @@ fn rule_wildcard_tools(ctx: &RuleCtx) -> Vec<GuardFinding> {
                 false
             };
             if has_wild || multiline_wild {
-                out.push(GuardFinding {
-                    rule_id: "wildcard-tools".into(),
-                    severity: Severity::Warn,
-                    message: format!(
-                        "Frontmatter `{}` grants `*` (all tools)",
-                        key
-                    ),
-                    explanation:
-                        "Granting `*` to a Claude agent or rule disables \
-                         tool gating entirely — the resource can run any \
-                         registered tool, including ones added later. \
-                         Prefer an explicit allow-list (e.g. `[Read, Edit, \
-                         Bash]`) so future tools don't silently inherit \
-                         access."
-                            .into(),
-                    snippet: Some(format!("{}: {}", key, value.trim())),
-                    location: None,
-                });
+                out.push(GuardFinding::new(
+                    "wildcard-tools",
+                    Severity::Warn,
+                    format!("Frontmatter `{}` grants `*` (all tools)", key),
+                    "Granting `*` to a Claude agent or rule disables \
+                     tool gating entirely — the resource can run any \
+                     registered tool, including ones added later. \
+                     Prefer an explicit allow-list (e.g. `[Read, Edit, \
+                     Bash]`) so future tools don't silently inherit \
+                     access.",
+                    Some(format!("{}: {}", key, value.trim())),
+                    None,
+                ));
             }
         }
     }
@@ -574,21 +658,16 @@ fn rule_mcp_url_not_https(ctx: &RuleCtx) -> Vec<GuardFinding> {
     for s in ctx.mcp_servers {
         if let Some(u) = &s.url {
             if !is_mcp_url_allowed(u) {
-                out.push(GuardFinding {
-                    rule_id: "mcp-url-not-https".into(),
-                    severity: Severity::Block,
-                    message: format!(
-                        "MCP server `{}` uses non-HTTPS url",
-                        s.name
-                    ),
-                    explanation:
-                        "Plain-HTTP MCP endpoints are vulnerable to MitM on \
-                         hostile networks. Either switch to `https://` or, \
-                         for local development, bind to `localhost`/`127.0.0.1`."
-                            .into(),
-                    snippet: Some(format!("{}: {}", s.name, u)),
-                    location: None,
-                });
+                out.push(GuardFinding::new(
+                    "mcp-url-not-https",
+                    Severity::Block,
+                    format!("MCP server `{}` uses non-HTTPS url", s.name),
+                    "Plain-HTTP MCP endpoints are vulnerable to MitM on \
+                     hostile networks. Either switch to `https://` or, \
+                     for local development, bind to `localhost`/`127.0.0.1`.",
+                    Some(format!("{}: {}", s.name, u)),
+                    None,
+                ));
             }
         }
     }
@@ -614,23 +693,23 @@ fn rule_mcp_unknown_command(ctx: &RuleCtx) -> Vec<GuardFinding> {
                 })
                 .unwrap_or_else(|| cmd.clone());
             if !ALLOWED_MCP_COMMANDS.contains(&basename.as_str()) {
-                out.push(GuardFinding {
-                    rule_id: "mcp-unknown-command".into(),
-                    severity: Severity::Warn,
-                    message: format!(
+                out.push(GuardFinding::new(
+                    "mcp-unknown-command",
+                    Severity::Warn,
+                    format!(
                         "MCP server `{}` invokes an unknown launcher: {}",
                         s.name, basename
                     ),
-                    explanation: format!(
+                    format!(
                         "MCP servers should be started with a recognised \
                          package runner ({}). An unfamiliar command \
                          (e.g. `curl` or a hand-rolled binary) makes the \
                          supply chain harder to audit.",
                         ALLOWED_MCP_COMMANDS.join(", ")
                     ),
-                    snippet: Some(format!("{}: {}", s.name, cmd)),
-                    location: None,
-                });
+                    Some(format!("{}: {}", s.name, cmd)),
+                    None,
+                ));
             }
         }
     }
@@ -650,19 +729,17 @@ fn rule_mcp_tos_agent_cli(ctx: &RuleCtx) -> Vec<GuardFinding> {
         // `claude --print AKIA...` must not leak the AKIA key just
         // because the primary match here was the agent CLI invocation.
         let raw = &ctx.body[pre_start..post_end];
-        out.push(GuardFinding {
-            rule_id: "mcp-tos-agent-cli".into(),
-            severity: Severity::Block,
-            message: "Resource body invokes another agent CLI in headless mode".into(),
-            explanation:
-                "Agent-on-agent orchestration via headless CLI (e.g. \
-                 `claude --print`, `codex run`, `aider --message`) violates the \
-                 MCP terms-of-service guideline against Claude-on-Claude \
-                 spawning. Use a tool / MCP server boundary instead."
-                    .into(),
-            snippet: Some(redact_all_secrets(raw)),
-            location: Some(locate(ctx.body, m.start())),
-        });
+        out.push(GuardFinding::new(
+            "mcp-tos-agent-cli",
+            Severity::Block,
+            "Resource body invokes another agent CLI in headless mode",
+            "Agent-on-agent orchestration via headless CLI (e.g. \
+             `claude --print`, `codex run`, `aider --message`) violates the \
+             MCP terms-of-service guideline against Claude-on-Claude \
+             spawning. Use a tool / MCP server boundary instead.",
+            Some(redact_all_secrets(raw)),
+            Some(locate(ctx.body, m.start())),
+        ));
     }
     out
 }
@@ -676,20 +753,18 @@ fn rule_permissions_broad(ctx: &RuleCtx) -> Vec<GuardFinding> {
             "network_*" | "system_*" | "exec_*"
         );
         if bare_wild || prefix_wild {
-            out.push(GuardFinding {
-                rule_id: "permissions-broad".into(),
-                severity: Severity::Warn,
-                message: format!("Manifest permissions include `{}`", p),
-                explanation:
-                    "Broad permission grants (`*`, `network_*`, `system_*`, \
-                     `exec_*`) widen the agent's reach beyond what the body \
-                     plausibly needs. Prefer named scopes (e.g. \
-                     `network_github`, `read_files`) so future categories \
-                     don't auto-inherit."
-                        .into(),
-                snippet: Some(p.clone()),
-                location: None,
-            });
+            out.push(GuardFinding::new(
+                "permissions-broad",
+                Severity::Warn,
+                format!("Manifest permissions include `{}`", p),
+                "Broad permission grants (`*`, `network_*`, `system_*`, \
+                 `exec_*`) widen the agent's reach beyond what the body \
+                 plausibly needs. Prefer named scopes (e.g. \
+                 `network_github`, `read_files`) so future categories \
+                 don't auto-inherit.",
+                Some(p.clone()),
+                None,
+            ));
         }
     }
     out
@@ -762,23 +837,21 @@ fn scan_resource_inner(
         // is bound to the file at all (overrides won't ever match — by
         // design, you can't override "this file is too big").
         let body_sha = crate::utils::sha256_hex(resource_path.as_bytes());
-        let finding = GuardFinding {
-            rule_id: "body-too-large".into(),
-            severity: Severity::Block,
-            message: format!(
+        let finding = GuardFinding::new(
+            "body-too-large",
+            Severity::Block,
+            format!(
                 "Resource body exceeds {} bytes (got {})",
                 MAX_BODY_SIZE_BYTES,
                 metadata.len()
             ),
-            explanation:
-                "Resource bodies must fit within 1 MiB to be scanned. Large \
-                 binaries or generated artefacts have no business sitting in \
-                 a Weplex resource — split the body or move the data out of \
-                 the manifest."
-                    .into(),
-            snippet: None,
-            location: None,
-        };
+            "Resource bodies must fit within 1 MiB to be scanned. Large \
+             binaries or generated artefacts have no business sitting in \
+             a Weplex resource — split the body or move the data out of \
+             the manifest.",
+            None,
+            None,
+        );
         return Ok(ResourceVerdict {
             resource_path,
             manifest_path: manifest.manifest_path,
@@ -824,12 +897,23 @@ fn scan_resource_inner(
 //
 // Schema:
 //   v1 (legacy): { version: 1, decisions: [...] }                  - unauthenticated
-//   v2 (current): { version: 2, hmac: "<hex>", decisions: [...] }  - HMAC-SHA256
+//   v2 (legacy): { version: 2, hmac: "<hex>", decisions: [...] }   - HMAC-SHA256, no fingerprint
+//   v3 (current): { version: 3, hmac: "<hex>", decisions: [...] }  - HMAC-SHA256, optional fingerprint
 //
-// On read of v1: accept once, immediately rewrite as v2 with a freshly
+// v2 and v3 have the same on-disk shape; the difference is that v3
+// decisions may carry an optional `fingerprint` field for per-instance
+// overrides. v2 files deserialise into v3 cleanly (`fingerprint`
+// defaults to `None`), so the migration is just bump-version +
+// recompute-HMAC.
+//
+// On read of v1: accept once, immediately rewrite as v3 with a freshly
 // computed HMAC. Subsequent tampering is detected.
 //
-// On read of v2: compute HMAC over `serde_json::to_vec(&decisions)`
+// On read of v2: re-stamp as v3 under the override lock (no behavioural
+// change — `None` fingerprint means "all instances", which matches v2's
+// rule_id-based semantics).
+//
+// On read of v3: compute HMAC over `serde_json::to_vec(&decisions)`
 // (canonical via serde's struct-field order) and compare against the
 // stored hex. Mismatch -> log warning, return empty store, do NOT delete
 // the file (preserve forensic evidence).
@@ -840,8 +924,11 @@ struct OverrideStoreV1 {
     decisions: Vec<OverrideDecision>,
 }
 
+/// On-disk envelope for v2 and v3. The shape is identical; only the
+/// `version` discriminator differs. v2 files load cleanly because
+/// `OverrideDecision::fingerprint` is `#[serde(default)]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OverrideStoreV2 {
+struct OverrideStoreV3 {
     version: u32,
     hmac: String,
     decisions: Vec<OverrideDecision>,
@@ -854,7 +941,7 @@ struct OverrideStoreProbe {
     version: u32,
 }
 
-const OVERRIDE_STORE_VERSION: u32 = 2;
+const OVERRIDE_STORE_VERSION: u32 = 3;
 
 fn override_store_path(profile_dir: &str) -> PathBuf {
     PathBuf::from(profile_dir)
@@ -963,14 +1050,21 @@ fn hex_eq_constant_time(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-/// Outcome of a load — distinguishes "store was empty" from "store was
-/// migrated v1 -> v2" so the caller can persist the freshly-HMAC-stamped
+/// Outcome of a load — distinguishes "store was empty" from "store
+/// needs migration" so the caller can persist the freshly-HMAC-stamped
 /// file even on read paths.
+///
+/// Both v1 (no HMAC) and v2 (HMAC over rule_id-only schema) trigger
+/// `NeedsMigration`. v2 keeps its HMAC valid because v3's on-disk shape
+/// is identical to v2's modulo the optional `fingerprint` field, but we
+/// re-stamp anyway so the version discriminator on disk reflects the
+/// actual store generation.
 enum LoadOutcome {
     Empty,
     Verified(Vec<OverrideDecision>),
-    /// Legacy v1 store: HMAC absent, accept once and rewrite. The caller
-    /// holds the lock on read paths that need to migrate.
+    /// Legacy store (v1 unauthenticated, or v2 pre-fingerprint). The
+    /// caller is expected to acquire the override lock and rewrite the
+    /// file as v3 with a freshly computed HMAC.
     NeedsMigration(Vec<OverrideDecision>),
 }
 
@@ -1004,7 +1098,7 @@ fn load_override_store_outcome(profile_dir: &str) -> LoadOutcome {
         1 => match serde_json::from_str::<OverrideStoreV1>(&raw) {
             Ok(s) => {
                 log::info!(
-                    "[guard] migrating override store at {} from v1 to v2",
+                    "[guard] migrating override store at {} from v1 to v3",
                     path.display()
                 );
                 LoadOutcome::NeedsMigration(s.decisions)
@@ -1018,13 +1112,18 @@ fn load_override_store_outcome(profile_dir: &str) -> LoadOutcome {
                 LoadOutcome::Empty
             }
         },
-        2 => {
-            let store: OverrideStoreV2 = match serde_json::from_str(&raw) {
+        2 | 3 => {
+            // v2 and v3 share the same envelope; the only difference is
+            // the optional `fingerprint` field on each decision (v2 omits
+            // it, v3 may include it). `serde(default)` on the field lets
+            // us deserialise both into the same struct.
+            let store: OverrideStoreV3 = match serde_json::from_str(&raw) {
                 Ok(s) => s,
                 Err(e) => {
                     log::warn!(
-                        "[guard] override store at {} v2 parse failed: {} — treating as empty",
+                        "[guard] override store at {} v{} parse failed: {} — treating as empty",
                         path.display(),
+                        probe.version,
                         e
                     );
                     return LoadOutcome::Empty;
@@ -1057,7 +1156,20 @@ fn load_override_store_outcome(profile_dir: &str) -> LoadOutcome {
                 );
                 return LoadOutcome::Empty;
             }
-            LoadOutcome::Verified(store.decisions)
+            // v2 verified successfully — flag for rewrite as v3 so the
+            // version discriminator on disk is accurate. The HMAC stays
+            // valid (same canonical JSON, optional field defaults).
+            if probe.version < OVERRIDE_STORE_VERSION {
+                log::info!(
+                    "[guard] migrating override store at {} from v{} to v{}",
+                    path.display(),
+                    probe.version,
+                    OVERRIDE_STORE_VERSION
+                );
+                LoadOutcome::NeedsMigration(store.decisions)
+            } else {
+                LoadOutcome::Verified(store.decisions)
+            }
         }
         v => {
             log::warn!(
@@ -1071,21 +1183,22 @@ fn load_override_store_outcome(profile_dir: &str) -> LoadOutcome {
 }
 
 /// Convenience wrapper used by read-only callers (e.g. `list_overrides`,
-/// `scan_resource`). v1 stores are silently re-saved as v2 — a one-time
-/// migration on first read after upgrade.
+/// `scan_resource`). Legacy stores (v1, v2) are silently re-saved as v3
+/// — a one-time migration on first read after upgrade.
 ///
-/// The initial probe + read is lock-free (cheap, repeatable). Once v1 is
-/// detected, we acquire the override lock BEFORE rewriting so that a
-/// concurrent `set_override_decision` cannot race with the migration and
-/// silently lose decisions. Inside the locked window we re-probe — another
-/// process may have already migrated the file to v2 between our first read
-/// and lock acquisition. The lock window covers ONLY the write, not the
-/// happy-path verified read, to keep contention minimal.
+/// The initial probe + read is lock-free (cheap, repeatable). Once a
+/// legacy version is detected, we acquire the override lock BEFORE
+/// rewriting so that a concurrent `set_override_decision` cannot race
+/// with the migration and silently lose decisions. Inside the locked
+/// window we re-probe — another process may have already migrated the
+/// file between our first read and lock acquisition. The lock window
+/// covers ONLY the write, not the happy-path verified read, to keep
+/// contention minimal.
 fn load_override_store(profile_dir: &str) -> Vec<OverrideDecision> {
     match load_override_store_outcome(profile_dir) {
         LoadOutcome::Empty => Vec::new(),
         LoadOutcome::Verified(d) => d,
-        LoadOutcome::NeedsMigration(_) => migrate_v1_under_lock(profile_dir),
+        LoadOutcome::NeedsMigration(_) => migrate_legacy_under_lock(profile_dir),
     }
 }
 
@@ -1104,21 +1217,22 @@ fn load_override_store_lock_held(profile_dir: &str) -> Vec<OverrideDecision> {
 }
 
 /// Acquire the override lock and re-resolve the store under the lock so
-/// the v1->v2 migration is serialised against `set_override_decision`.
-/// If the file has already been migrated by another process between the
-/// initial detection and the lock acquisition, the v2 path runs and we
-/// just return the verified decisions. On lock failure we skip the
-/// rewrite and honour the v1 decisions for this read — a concurrent
-/// writer will eventually persist a v2 file.
-fn migrate_v1_under_lock(profile_dir: &str) -> Vec<OverrideDecision> {
+/// the legacy-format migration is serialised against
+/// `set_override_decision`. If the file has already been migrated by
+/// another process between the initial detection and the lock
+/// acquisition, the verified path runs and we just return the
+/// decisions. On lock failure we skip the rewrite and honour the legacy
+/// decisions for this read — a concurrent writer will eventually
+/// persist a current-format file.
+fn migrate_legacy_under_lock(profile_dir: &str) -> Vec<OverrideDecision> {
     let _lock = match acquire_override_lock(profile_dir) {
         Ok(l) => l,
         Err(e) => {
             log::warn!(
-                "[guard] override v1->v2 lock failed: {} — honouring v1 decisions for this read, leaving file unchanged",
+                "[guard] override legacy migration lock failed: {} — honouring legacy decisions for this read, leaving file unchanged",
                 e
             );
-            // Re-read once more (lock-free) to surface the v1 decisions
+            // Re-read once more (lock-free) to surface the legacy decisions
             // without rewriting. We can't migrate without the lock.
             return match load_override_store_outcome(profile_dir) {
                 LoadOutcome::NeedsMigration(d) | LoadOutcome::Verified(d) => d,
@@ -1133,7 +1247,7 @@ fn migrate_v1_under_lock(profile_dir: &str) -> Vec<OverrideDecision> {
         LoadOutcome::NeedsMigration(d) => {
             if let Err(e) = save_override_store(profile_dir, &d) {
                 log::warn!(
-                    "[guard] override v1->v2 migration save failed: {} — continuing",
+                    "[guard] override legacy migration save failed: {} — continuing",
                     e
                 );
             }
@@ -1182,10 +1296,10 @@ fn acquire_override_lock(profile_dir: &str) -> Result<std::fs::File, GuardError>
 /// Persist the store back to disk with mode 0600 + atomic rename. The
 /// caller MUST hold the override lock around this call.
 ///
-/// Writes v2 schema with HMAC-SHA256 over the canonical JSON of
-/// `decisions` using the per-profile Keychain key. A future read will
-/// recompute and verify; tampering with either field invalidates the
-/// HMAC.
+/// Writes the current schema (v3) with HMAC-SHA256 over the canonical
+/// JSON of `decisions` using the per-profile Keychain key. A future read
+/// will recompute and verify; tampering with either field invalidates
+/// the HMAC.
 fn save_override_store(
     profile_dir: &str,
     decisions: &[OverrideDecision],
@@ -1197,7 +1311,7 @@ fn save_override_store(
     }
     let key = override_hmac_key(profile_dir)?;
     let hmac = compute_overrides_hmac(decisions, &key)?;
-    let payload = OverrideStoreV2 {
+    let payload = OverrideStoreV3 {
         version: OVERRIDE_STORE_VERSION,
         hmac,
         decisions: decisions.to_vec(),
@@ -1212,12 +1326,19 @@ fn save_override_store(
     Ok(())
 }
 
-/// Apply the override store to a list of findings: any finding whose
-/// `(rule_id, body_sha256, resource_path)` triple matches an active
-/// `Accept` decision is downgraded — the finding stays in the list (so
-/// the UI can render "you accepted this earlier") but its rule_id is
-/// added to `overridden`. The verdict computation downstream consults
-/// `overridden` to ignore those rule_ids.
+/// Apply the override store to a list of findings. A finding is
+/// considered overridden when an active `Accept` decision matches all of:
+///  * `rule_id`
+///  * `body_sha256` (revoked automatically when the body changes)
+///  * `resource_path`
+///  * either `fingerprint` is `None` (legacy/all-instances semantics)
+///    or `fingerprint == finding.fingerprint` (per-instance accept)
+///
+/// Returns the (unchanged) findings list plus a `Vec<String>` of
+/// FINGERPRINTS of overridden findings — same field name on
+/// `ResourceVerdict` as before, but the unit is now per-instance, not
+/// per-rule_id. Two findings sharing a rule_id but with different
+/// fingerprints are silenced independently.
 ///
 /// **Override invalidation**: if the body content changes, the sha256
 /// changes, and the override no longer matches — the finding is back to
@@ -1230,18 +1351,17 @@ fn apply_overrides(
     resource_path: &str,
 ) -> (Vec<GuardFinding>, Vec<String>) {
     let mut overridden: Vec<String> = Vec::new();
-    for o in overrides {
-        if matches!(o.decision, OverrideKind::Accept)
-            && o.body_sha256 == body_sha
-            && o.resource_path == resource_path
-        {
-            // For every accept-override, find any matching finding and
-            // record it as overridden (deduped).
-            if findings.iter().any(|f| f.rule_id == o.rule_id)
-                && !overridden.contains(&o.rule_id)
-            {
-                overridden.push(o.rule_id.clone());
-            }
+    for f in &findings {
+        let matched = overrides.iter().any(|o| {
+            matches!(o.decision, OverrideKind::Accept)
+                && o.rule_id == f.rule_id
+                && o.body_sha256 == body_sha
+                && o.resource_path == resource_path
+                && (o.fingerprint.is_none()
+                    || o.fingerprint.as_deref() == Some(&f.fingerprint))
+        });
+        if matched && !overridden.contains(&f.fingerprint) {
+            overridden.push(f.fingerprint.clone());
         }
     }
     (findings, overridden)
@@ -1946,22 +2066,8 @@ mod tests {
     #[test]
     fn worst_severity_picks_red() {
         let findings = vec![
-            GuardFinding {
-                rule_id: "x".into(),
-                severity: Severity::Warn,
-                message: "".into(),
-                explanation: "".into(),
-                snippet: None,
-                location: None,
-            },
-            GuardFinding {
-                rule_id: "y".into(),
-                severity: Severity::Block,
-                message: "".into(),
-                explanation: "".into(),
-                snippet: None,
-                location: None,
-            },
+            GuardFinding::new("x", Severity::Warn, "", "", None, None),
+            GuardFinding::new("y", Severity::Block, "", "", None, None),
         ];
         assert_eq!(verdict_from_findings(&findings), GuardVerdict::Red);
     }
@@ -1989,20 +2095,21 @@ mod tests {
 
     #[test]
     fn apply_overrides_removes_for_matching_sha() {
-        let findings = vec![GuardFinding {
-            rule_id: "secrets-aws-key".into(),
-            severity: Severity::Block,
-            message: "".into(),
-            explanation: "".into(),
-            snippet: None,
-            location: None,
-        }];
+        let findings = vec![GuardFinding::new(
+            "secrets-aws-key",
+            Severity::Block,
+            "",
+            "",
+            None,
+            None,
+        )];
         let body_sha = "abc123";
         let resource_path = "/tmp/foo.md";
         let overrides = vec![OverrideDecision {
             rule_id: "secrets-aws-key".into(),
             resource_path: resource_path.into(),
             body_sha256: body_sha.into(),
+            fingerprint: None,
             decision: OverrideKind::Accept,
             decided_at: "2026-01-01T00:00:00Z".into(),
             decided_by: None,
@@ -2010,26 +2117,29 @@ mod tests {
         let (filtered, overridden) =
             apply_overrides(findings.clone(), &overrides, body_sha, resource_path);
         assert_eq!(filtered.len(), 1, "finding stays in list");
-        assert_eq!(overridden, vec!["secrets-aws-key".to_string()]);
+        // Override is recorded by per-instance fingerprint, matching the
+        // single finding's fingerprint exactly.
+        assert_eq!(overridden, vec![filtered[0].fingerprint.clone()]);
         let v = verdict_from_active_findings(&filtered, &overridden);
         assert_eq!(v, GuardVerdict::Green, "verdict downgraded");
     }
 
     #[test]
     fn apply_overrides_skips_after_body_edit() {
-        let findings = vec![GuardFinding {
-            rule_id: "secrets-aws-key".into(),
-            severity: Severity::Block,
-            message: "".into(),
-            explanation: "".into(),
-            snippet: None,
-            location: None,
-        }];
+        let findings = vec![GuardFinding::new(
+            "secrets-aws-key",
+            Severity::Block,
+            "",
+            "",
+            None,
+            None,
+        )];
         let resource_path = "/tmp/foo.md";
         let overrides = vec![OverrideDecision {
             rule_id: "secrets-aws-key".into(),
             resource_path: resource_path.into(),
             body_sha256: "old-sha".into(),
+            fingerprint: None,
             decision: OverrideKind::Accept,
             decided_at: "2026-01-01T00:00:00Z".into(),
             decided_by: None,
@@ -2068,6 +2178,7 @@ mod tests {
             rule_id: "secrets-aws-key".into(),
             resource_path: "/tmp/foo.md".into(),
             body_sha256: "abc".into(),
+            fingerprint: None,
             decision: OverrideKind::Accept,
             decided_at: "2026-05-07T00:00:00Z".into(),
             decided_by: Some("user".into()),
@@ -2082,7 +2193,7 @@ mod tests {
         // re-serialise must produce the same shape (modulo JSON whitespace).
         let path = override_store_path(&profile);
         let raw = std::fs::read_to_string(&path).unwrap();
-        let parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
+        let parsed: OverrideStoreV3 = serde_json::from_str(&raw).unwrap();
         assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
         assert!(!parsed.hmac.is_empty(), "v2 store must include hmac");
         assert_eq!(parsed.decisions.len(), 1);
@@ -2108,6 +2219,7 @@ mod tests {
                     rule_id: "secrets-aws-key".into(),
                     resource_path: format!("/tmp/a-{}.md", i),
                     body_sha256: "sha-a".into(),
+                    fingerprint: None,
                     decision: OverrideKind::Accept,
                     decided_at: "2026-05-07T00:00:00Z".into(),
                     decided_by: None,
@@ -2121,6 +2233,7 @@ mod tests {
                     rule_id: "wildcard-tools".into(),
                     resource_path: format!("/tmp/b-{}.md", i),
                     body_sha256: "sha-b".into(),
+                    fingerprint: None,
                     decision: OverrideKind::Accept,
                     decided_at: "2026-05-07T00:00:00Z".into(),
                     decided_by: None,
@@ -2133,7 +2246,7 @@ mod tests {
         // Final read must succeed (no JSON corruption).
         let path = override_store_path(&profile);
         let raw = std::fs::read_to_string(&path).unwrap();
-        let parsed: OverrideStoreV2 = serde_json::from_str(&raw)
+        let parsed: OverrideStoreV3 = serde_json::from_str(&raw)
             .expect("final override store must be valid JSON");
         assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
         assert!(!parsed.hmac.is_empty(), "v2 store must include hmac");
@@ -2163,6 +2276,7 @@ mod tests {
             rule_id: rule_id.into(),
             resource_path: "/tmp/foo.md".into(),
             body_sha256: "sha-1".into(),
+            fingerprint: None,
             decision: OverrideKind::Accept,
             decided_at: "2026-05-07T00:00:00Z".into(),
             decided_by: None,
@@ -2193,11 +2307,12 @@ mod tests {
         // the original HMAC. A naive verifier would accept this.
         let path = override_store_path(&profile);
         let raw = std::fs::read_to_string(&path).unwrap();
-        let mut parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
+        let mut parsed: OverrideStoreV3 = serde_json::from_str(&raw).unwrap();
         parsed.decisions.push(OverrideDecision {
             rule_id: "wildcard-tools".into(),
             resource_path: "/tmp/forged.md".into(),
             body_sha256: "sha-forged".into(),
+            fingerprint: None,
             decision: OverrideKind::Accept,
             decided_at: "2026-05-07T00:00:00Z".into(),
             decided_by: None,
@@ -2225,7 +2340,7 @@ mod tests {
 
         let path = override_store_path(&profile);
         let raw = std::fs::read_to_string(&path).unwrap();
-        let mut parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
+        let mut parsed: OverrideStoreV3 = serde_json::from_str(&raw).unwrap();
         // Flip a single byte in the hex string. Constant-time compare
         // ensures this falls into the same "rejected" path as a wholly
         // bogus value.
@@ -2246,7 +2361,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn override_v1_migrates_to_v2_on_first_read() {
+    fn override_v1_migrates_to_current_on_first_read() {
         let dir = tmpdir("hmac-v1-migrate");
         let profile = dir.to_str().unwrap().to_string();
 
@@ -2259,6 +2374,7 @@ mod tests {
                 rule_id: "secrets-aws-key".into(),
                 resource_path: "/tmp/foo.md".into(),
                 body_sha256: "sha-1".into(),
+                fingerprint: None,
                 decision: OverrideKind::Accept,
                 decided_at: "2026-05-07T00:00:00Z".into(),
                 decided_by: None,
@@ -2267,20 +2383,168 @@ mod tests {
         std::fs::write(&path, serde_json::to_string_pretty(&v1).unwrap()).unwrap();
 
         // First read: decisions should be migrated and the file rewritten
-        // as v2 with a valid HMAC.
+        // at the current schema version with a valid HMAC.
         let listed = load_override_store(&profile);
         assert_eq!(listed.len(), 1, "v1 decisions must be honoured once");
 
-        // File is now v2 + has valid HMAC.
+        // File is now at current version + has valid HMAC.
         let raw = std::fs::read_to_string(&path).unwrap();
-        let parsed: OverrideStoreV2 = serde_json::from_str(&raw).unwrap();
-        assert_eq!(parsed.version, 2);
+        let parsed: OverrideStoreV3 = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
         assert!(!parsed.hmac.is_empty());
         // Subsequent reads see the same decisions via the verified path.
         let listed_again = load_override_store(&profile);
         assert_eq!(listed_again.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
         cleanup_keychain(&profile);
+    }
+
+    /// v2 store on disk (HMAC-stamped, no fingerprint field on decisions)
+    /// must migrate cleanly to v3. Each migrated decision keeps
+    /// `fingerprint: None` (legacy semantics: silence all instances).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn override_v2_migrates_to_v3_with_no_fingerprints() {
+        // Build a minimal v2 envelope by hand: same shape as v3 but
+        // decisions omit the fingerprint field (we hand-write the JSON to
+        // simulate the on-disk format from before the field existed).
+        let dir = tmpdir("hmac-v2-migrate");
+        let profile = dir.to_str().unwrap().to_string();
+        let path = override_store_path(&profile);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // Compute the HMAC over the canonical decisions list. Since v2
+        // and v3 share the deserialised struct (with `fingerprint:
+        // serde(default)`), a v2 file with no `fingerprint` keys
+        // canonicalises through serde to the same bytes as a v3 file
+        // with `fingerprint: null`. That keeps the HMAC valid across
+        // migration.
+        let key = override_hmac_key(&profile).unwrap();
+        let decisions = vec![OverrideDecision {
+            rule_id: "secrets-aws-key".into(),
+            resource_path: "/tmp/foo.md".into(),
+            body_sha256: "sha-1".into(),
+            fingerprint: None,
+            decision: OverrideKind::Accept,
+            decided_at: "2026-05-07T00:00:00Z".into(),
+            decided_by: None,
+        }];
+        let hmac = compute_overrides_hmac(&decisions, &key).unwrap();
+        let v2_json = serde_json::json!({
+            "version": 2,
+            "hmac": hmac,
+            "decisions": [{
+                "ruleId": "secrets-aws-key",
+                "resourcePath": "/tmp/foo.md",
+                "bodySha256": "sha-1",
+                "decision": "accept",
+                "decidedAt": "2026-05-07T00:00:00Z",
+                "decidedBy": null,
+            }],
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&v2_json).unwrap()).unwrap();
+
+        // First read migrates v2 -> v3 transparently.
+        let listed = load_override_store(&profile);
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].fingerprint.is_none(), "v2 decisions migrate as legacy/all-instances");
+
+        // File on disk is now v3 with a valid HMAC.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: OverrideStoreV3 = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
+        assert!(!parsed.hmac.is_empty());
+        assert_eq!(parsed.decisions.len(), 1);
+        assert!(parsed.decisions[0].fingerprint.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup_keychain(&profile);
+    }
+
+    // ── Per-finding fingerprint overrides ────────────────────────────
+
+    /// Body with two AKIA matches → two findings, each with its own
+    /// fingerprint. An override carrying the fingerprint of the FIRST
+    /// finding silences only that one; the second remains active and
+    /// the overall verdict stays Red.
+    #[test]
+    fn override_per_instance_silences_only_matching_finding() {
+        let body = "leak AKIAIOSFODNN7EXAMPLE plus AKIA1234567890ABCDEF";
+        let findings = scan_body_internal(body);
+        let aws: Vec<&GuardFinding> = findings
+            .iter()
+            .filter(|f| f.rule_id == "secrets-aws-key")
+            .collect();
+        assert_eq!(aws.len(), 2, "expected one finding per AKIA match");
+        assert_ne!(
+            aws[0].fingerprint, aws[1].fingerprint,
+            "distinct AKIAs must hash to distinct fingerprints"
+        );
+
+        let body_sha = "body-sha";
+        let resource_path = "/tmp/two-aws.md";
+        let overrides = vec![OverrideDecision {
+            rule_id: "secrets-aws-key".into(),
+            resource_path: resource_path.into(),
+            body_sha256: body_sha.into(),
+            fingerprint: Some(aws[0].fingerprint.clone()),
+            decision: OverrideKind::Accept,
+            decided_at: "2026-05-07T00:00:00Z".into(),
+            decided_by: None,
+        }];
+        let (filtered, overridden) =
+            apply_overrides(findings.clone(), &overrides, body_sha, resource_path);
+        // Only the first finding is recorded as overridden.
+        assert_eq!(overridden.len(), 1, "exactly one finding silenced");
+        assert_eq!(overridden[0], aws[0].fingerprint);
+        // Verdict remains Red because the second AKIA still actively flags.
+        let v = verdict_from_active_findings(&filtered, &overridden);
+        assert_eq!(v, GuardVerdict::Red, "second AKIA still active");
+    }
+
+    /// Legacy override with `fingerprint: None` silences ALL findings
+    /// of that rule_id in the body — backward-compat with the v2
+    /// semantics where one accept-decision per rule_id silenced every
+    /// instance.
+    #[test]
+    fn override_legacy_no_fingerprint_silences_all_instances() {
+        let body = "leak AKIAIOSFODNN7EXAMPLE plus AKIA1234567890ABCDEF";
+        let findings = scan_body_internal(body);
+        let aws_count = findings
+            .iter()
+            .filter(|f| f.rule_id == "secrets-aws-key")
+            .count();
+        assert_eq!(aws_count, 2);
+
+        let body_sha = "body-sha";
+        let resource_path = "/tmp/two-aws.md";
+        let overrides = vec![OverrideDecision {
+            rule_id: "secrets-aws-key".into(),
+            resource_path: resource_path.into(),
+            body_sha256: body_sha.into(),
+            fingerprint: None, // legacy semantics
+            decision: OverrideKind::Accept,
+            decided_at: "2026-05-07T00:00:00Z".into(),
+            decided_by: None,
+        }];
+        let (filtered, overridden) =
+            apply_overrides(findings.clone(), &overrides, body_sha, resource_path);
+        // Both AKIA findings appear in `overridden` (by their distinct
+        // fingerprints).
+        let aws_fps: Vec<&String> = filtered
+            .iter()
+            .filter(|f| f.rule_id == "secrets-aws-key")
+            .map(|f| &f.fingerprint)
+            .collect();
+        for fp in &aws_fps {
+            assert!(
+                overridden.contains(fp),
+                "fingerprint {} should be silenced under legacy override",
+                fp
+            );
+        }
+        let v = verdict_from_active_findings(&filtered, &overridden);
+        assert_eq!(v, GuardVerdict::Green, "all AKIAs silenced");
     }
 
     // ── Profile scan integration ────────────────────────────────────
@@ -2359,6 +2623,7 @@ mod tests {
             rule_id: "secrets-aws-key".into(),
             resource_path: red.resource_path.clone(),
             body_sha256: red.body_sha256.clone(),
+            fingerprint: None,
             decision: OverrideKind::Accept,
             decided_at: "2026-05-07T00:00:00Z".into(),
             decided_by: None,
@@ -2374,10 +2639,17 @@ mod tests {
             .find(|r| r.resource_id == "red")
             .unwrap();
         assert_eq!(red2.verdict, GuardVerdict::Green);
-        assert_eq!(
-            red2.overridden_findings,
-            vec!["secrets-aws-key".to_string()]
-        );
+        // Override is recorded by per-instance fingerprint. With a
+        // legacy `fingerprint: None` decision, all matching findings of
+        // that rule_id are silenced — verify by fingerprint count instead
+        // of comparing to a fixed string.
+        let red2_aws_fps: Vec<String> = red2
+            .findings
+            .iter()
+            .filter(|f| f.rule_id == "secrets-aws-key")
+            .map(|f| f.fingerprint.clone())
+            .collect();
+        assert_eq!(red2.overridden_findings, red2_aws_fps);
         let _ = std::fs::remove_dir_all(&profile);
         cleanup_keychain(&profile_str);
     }
@@ -2420,22 +2692,22 @@ mod tests {
         let red_path = profile.join("skills/red.md");
         let red_path_str = red_path.to_str().unwrap().to_string();
         let extra = vec![
-            GuardFinding {
-                rule_id: "deep-scan-unlocated".into(),
-                severity: Severity::Warn,
-                message: "deep finding without location".into(),
-                explanation: "from fake runner".into(),
-                snippet: None,
-                location: None,
-            },
-            GuardFinding {
-                rule_id: "deep-scan-located".into(),
-                severity: Severity::Warn,
-                message: "deep finding for red".into(),
-                explanation: "from fake runner".into(),
-                snippet: None,
-                location: Some(red_path_str.clone()),
-            },
+            GuardFinding::new(
+                "deep-scan-unlocated",
+                Severity::Warn,
+                "deep finding without location",
+                "from fake runner",
+                None,
+                None,
+            ),
+            GuardFinding::new(
+                "deep-scan-located",
+                Severity::Warn,
+                "deep finding for red",
+                "from fake runner",
+                None,
+                Some(red_path_str.clone()),
+            ),
         ];
         let runner = FakeRunner {
             result: std::cell::RefCell::new(Some(Ok(extra))),

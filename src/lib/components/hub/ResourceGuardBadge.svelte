@@ -18,8 +18,9 @@
 
   let activeCount = $derived.by(() => {
     if (!findings) return 0;
+    // overriddenFindings is now a list of per-instance fingerprints.
     const overridden = new Set(findings.overriddenFindings);
-    return findings.findings.filter((f) => !overridden.has(f.ruleId)).length;
+    return findings.findings.filter((f) => !overridden.has(f.fingerprint)).length;
   });
 
   let tooltip = $derived.by(() => {

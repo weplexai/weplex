@@ -13,6 +13,12 @@ export interface GuardFinding {
   explanation: string;
   snippet?: string;
   location?: string;
+  /**
+   * 16-hex-char per-instance identifier — distinguishes different
+   * matches of the same rule in one body. Used as the override key so
+   * accepting one finding does not silence its siblings.
+   */
+  fingerprint: string;
 }
 
 export interface ResourceVerdict {
@@ -45,6 +51,13 @@ export interface OverrideDecision {
   ruleId: string;
   resourcePath: string;
   bodySha256: string;
+  /**
+   * Per-instance fingerprint of the finding being overridden. `null` /
+   * `undefined` is the legacy "all instances of this rule" semantics
+   * (preserved for v2 store entries that pre-date per-instance
+   * overrides).
+   */
+  fingerprint?: string | null;
   decision: OverrideKind;
   decidedAt: string;
   decidedBy?: string | null;

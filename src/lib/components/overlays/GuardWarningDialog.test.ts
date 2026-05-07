@@ -12,6 +12,13 @@ const mockedInvoke = vi.mocked(invoke);
 
 const PROFILE = '/tmp/profile';
 
+// Stable fake fingerprints for fixtures. The Rust backend computes
+// real SHA-256 prefixes; tests just need distinct, predictable strings
+// to assert on.
+const FP_WILDCARD = 'fp-wildcard';
+const FP_MCP_TOS = 'fp-mcp-tos';
+const FP_PERMISSIONS = 'fp-permissions';
+
 function buildResource(overrides: Partial<ResourceVerdict> = {}): ResourceVerdict {
   return {
     resourcePath: '/p/agents/a.md',
@@ -28,18 +35,21 @@ function buildResource(overrides: Partial<ResourceVerdict> = {}): ResourceVerdic
         explanation: 'Tools include "*", which grants every tool',
         location: 'frontmatter.tools',
         snippet: 'tools: ["*"]',
+        fingerprint: FP_WILDCARD,
       },
       {
         ruleId: 'mcp-tos-agent-cli',
         severity: 'block',
         message: 'MCP server uses agent CLI',
         explanation: 'Headless agent invocation breaks ToS',
+        fingerprint: FP_MCP_TOS,
       },
       {
         ruleId: 'permissions-broad',
         severity: 'info',
         message: 'Broad permission scope',
         explanation: 'Permissions include shell:*',
+        fingerprint: FP_PERMISSIONS,
       },
     ],
     overriddenFindings: [],
@@ -105,8 +115,9 @@ describe('GuardWarningDialog', () => {
   });
 
   it('shows Overridden tag for findings in overriddenFindings', () => {
+    // overriddenFindings is now a list of fingerprints (per-instance).
     const resource = buildResource({
-      overriddenFindings: ['wildcard-tools'],
+      overriddenFindings: [FP_WILDCARD],
     });
     const { container } = render(GuardWarningDialog, {
       props: {
@@ -123,7 +134,7 @@ describe('GuardWarningDialog', () => {
 
   it('does not show Allow button for already-overridden findings', () => {
     const resource = buildResource({
-      overriddenFindings: ['wildcard-tools'],
+      overriddenFindings: [FP_WILDCARD],
     });
     const { container } = render(GuardWarningDialog, {
       props: {
@@ -169,12 +180,20 @@ describe('GuardWarningDialog', () => {
     expect(overrideCall).toBeDefined();
     const payload = overrideCall![1] as {
       profileConfigDir: string;
-      decision: { ruleId: string; resourcePath: string; bodySha256: string; decision: string };
+      decision: {
+        ruleId: string;
+        resourcePath: string;
+        bodySha256: string;
+        fingerprint?: string | null;
+        decision: string;
+      };
     };
     expect(payload.profileConfigDir).toBe(PROFILE);
     expect(payload.decision.ruleId).toBe('wildcard-tools');
     expect(payload.decision.resourcePath).toBe(resource.resourcePath);
     expect(payload.decision.bodySha256).toBe(resource.bodySha256);
+    // Per-instance accept: the dialog passes the finding's fingerprint.
+    expect(payload.decision.fingerprint).toBe(FP_WILDCARD);
     expect(payload.decision.decision).toBe('accept');
   });
 });
