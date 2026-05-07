@@ -7,3 +7,4 @@ export * from './ui';
 export * from './auth';
 export * from './collaboration';
 export * from './hooks';
+export * from './guard';

@@ -11,6 +11,7 @@ const DEFAULTS: AppSettings = {
   persistSessions: true,
   chatSoundEnabled: true,
   chatNotificationsEnabled: true,
+  agentshieldDeepScan: false,
 };
 
 let settings = $state<AppSettings>({ ...DEFAULTS });

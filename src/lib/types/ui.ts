@@ -24,6 +24,7 @@ export interface AppSettings {
   persistSessions: boolean;
   chatSoundEnabled: boolean;
   chatNotificationsEnabled: boolean;
+  agentshieldDeepScan: boolean;
 }
 
 export interface SplitLeaf {
