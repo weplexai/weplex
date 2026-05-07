@@ -58,10 +58,18 @@ function triggerCompile(configDir: string | null | undefined): void {
   });
 }
 
-/** Find the owning profile for a body file by configDir prefix match. */
+/**
+ * Find the owning profile for a body file by configDir match.
+ * The match must be on a path-segment boundary: `/Users/x/.claude` should
+ * own `/Users/x/.claude/agents/foo.md` but NOT `/Users/x/.claude-evil/foo`.
+ * A naive `startsWith` accepts the latter (W-7) — append `/` to the
+ * configDir before comparing so the prefix has to end at a path boundary.
+ */
 function profileForFilePath(filePath: string): string | null {
   for (const p of profileStore.profiles) {
-    if (p.configDir && filePath.startsWith(p.configDir)) {
+    if (!p.configDir) continue;
+    const dir = p.configDir.endsWith('/') ? p.configDir : p.configDir + '/';
+    if (filePath === p.configDir || filePath.startsWith(dir)) {
       return p.configDir;
     }
   }
