@@ -1,13 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { GitBranch } from 'lucide-svelte';
   import { commandStore, type Command } from '../../stores/commandStore.svelte';
   import { featureFlags } from '../../stores/featureFlagsStore.svelte';
   import type { Session } from '../../types';
 
   let { session }: { session: Session } = $props();
 
-  let commands = $derived(commandStore.getPanelCommands());
+  let panel = $derived(commandStore.getPanelCommands());
+  // Pipelines are shown together regardless of scope — execution path is the
+  // same as for commands (slash for Claude, adapter/body for others).
+  let pipelines = $derived([...panel.userPipelines, ...panel.projectPipelines]);
   let isBusy = $derived(session.status === 'thinking' || session.status === 'active');
   let executing = $state(false);
 
@@ -31,12 +35,33 @@
 </script>
 
 {#if featureFlags.commands}
+  <!-- Pipelines (user + project, combined) -->
+  {#if pipelines.length > 0}
+    <section class="section">
+      <h3 class="section-title">Pipelines</h3>
+      <div class="cmd-list">
+        {#each pipelines as cmd (cmd.scope + ':' + cmd.name)}
+          <button class="cmd-btn" class:disabled={isBusy || executing} onclick={() => execute(cmd)}>
+            <span class="cmd-icon cmd-icon-pipeline" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">
+              <GitBranch size={11} strokeWidth={2} />
+            </span>
+            <span class="cmd-name">{cmd.name}</span>
+            <span class="cmd-slash">/{cmd.name}</span>
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
+
   <!-- User Commands -->
-  {#if commands.user.length > 0}
+  {#if panel.userCommands.length > 0}
+    {#if pipelines.length > 0}
+      <div class="divider"></div>
+    {/if}
     <section class="section">
       <h3 class="section-title">Commands</h3>
       <div class="cmd-list">
-        {#each commands.user as cmd (cmd.name)}
+        {#each panel.userCommands as cmd (cmd.name)}
           <button class="cmd-btn" class:disabled={isBusy || executing} onclick={() => execute(cmd)}>
             <span class="cmd-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">{cmd.icon}</span>
             <span class="cmd-name">{cmd.name}</span>
@@ -48,12 +73,12 @@
   {/if}
 
   <!-- Project Commands -->
-  {#if commands.project.length > 0}
+  {#if panel.projectCommands.length > 0}
     <div class="divider"></div>
     <section class="section">
       <h3 class="section-title">Project Commands</h3>
       <div class="cmd-list">
-        {#each commands.project as cmd (cmd.name)}
+        {#each panel.projectCommands as cmd (cmd.name)}
           <button class="cmd-btn" class:disabled={isBusy || executing} onclick={() => execute(cmd)}>
             <span class="cmd-icon" style="--cmd-color: var(--weplex-{commandStore.safeIconColor(cmd)})">{cmd.icon}</span>
             <span class="cmd-name">{cmd.name}</span>
@@ -64,7 +89,7 @@
     </section>
   {/if}
 
-  {#if commands.user.length === 0 && commands.project.length === 0}
+  {#if panel.userCommands.length === 0 && panel.projectCommands.length === 0 && pipelines.length === 0}
     <section class="section">
       <h3 class="section-title">Commands</h3>
       <p class="empty-hint">No commands found. Create them in Hub or add .md files to ~/.claude/commands/</p>
@@ -127,6 +152,7 @@
     font-family: var(--weplex-font-mono);
     flex-shrink: 0;
   }
+  .cmd-icon-pipeline { color: var(--cmd-color); }
 
   .cmd-name { flex: 1; font-weight: 500; }
 
