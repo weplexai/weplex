@@ -1819,6 +1819,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_marker_blocks_roundtrip_no_trailing_newline_after_end() {
+        // Edge case: file ends with the END marker line but no trailing
+        // newline. Reassembly always emits a `\n` per line — so this
+        // input may diverge from byte-equality by at most one trailing
+        // newline. The intent we lock in is idempotency: re-parsing the
+        // reassembled output produces the same logical block structure,
+        // and the divergence is bounded by 1 byte of trailing whitespace.
+        let input = "# weplex:begin only\nbody\n# weplex:end only";
+        let parsed = parse_marker_blocks(input);
+        let back = parsed.reassemble();
+        // Either byte-equal or differs only by a single trailing newline.
+        assert!(
+            back == input || back == format!("{}\n", input),
+            "unexpected divergence: input={:?}, output={:?}",
+            input,
+            back,
+        );
+        // Re-parsing the reassembled output is stable: same one block,
+        // same id, same body shape.
+        let reparsed = parse_marker_blocks(&back);
+        assert_eq!(reparsed.blocks.len(), 1);
+        assert_eq!(reparsed.blocks[0].id, "only");
+    }
+
+    #[test]
     fn pad_interstitials_no_op_when_nothing_appended() {
         // Existing markers, no new blocks → output mirrors input.
         let original = vec!["pre\n".to_string(), "between\n".to_string(), "post\n".to_string()];
