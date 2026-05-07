@@ -1,6 +1,7 @@
 /// Claude commands (.claude/commands/*.md) parsing and management.
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandFile {
     pub name: String,
     pub file_path: String,
@@ -10,6 +11,14 @@ pub struct CommandFile {
     pub allowed_tools: Vec<String>,
     pub model: String,
     pub body: String,
+    /// Discriminator: "command" (default) or "pipeline".
+    /// `#[serde(default)]` makes existing serialized data continue to deserialize.
+    #[serde(default = "default_command_type")]
+    pub command_type: String,
+}
+
+fn default_command_type() -> String {
+    "command".to_string()
 }
 
 /// Parse a Claude command .md file (YAML frontmatter + body).
@@ -25,6 +34,7 @@ fn parse_command_file(content: &str, file_path: &str, scope: &str) -> CommandFil
     let mut argument_hint = String::new();
     let mut allowed_tools: Vec<String> = Vec::new();
     let mut model = String::new();
+    let mut command_type = "command".to_string();
     let mut body = content.to_string();
 
     if content.starts_with("---") {
@@ -65,6 +75,15 @@ fn parse_command_file(content: &str, file_path: &str, scope: &str) -> CommandFil
                                 .filter(|s| !s.is_empty())
                                 .collect();
                         }
+                        "type" => {
+                            // Whitelist: only accept "pipeline" — everything else
+                            // (including unknown values) falls back to the default.
+                            command_type = if value == "pipeline" {
+                                "pipeline".to_string()
+                            } else {
+                                "command".to_string()
+                            };
+                        }
                         _ => {}
                     }
                 }
@@ -81,6 +100,7 @@ fn parse_command_file(content: &str, file_path: &str, scope: &str) -> CommandFil
         allowed_tools,
         model,
         body,
+        command_type,
     }
 }
 
@@ -531,6 +551,27 @@ mod tests {
         ));
         std::fs::create_dir_all(&base).unwrap();
         base
+    }
+
+    #[test]
+    fn parse_command_file_pipeline_type() {
+        let content = "---\ndescription: x\ntype: pipeline\n---\nbody";
+        let f = parse_command_file(content, "/x.md", "user");
+        assert_eq!(f.command_type, "pipeline");
+    }
+
+    #[test]
+    fn parse_command_file_unknown_type_defaults_to_command() {
+        let content = "---\ndescription: x\ntype: weird\n---\nbody";
+        let f = parse_command_file(content, "/x.md", "user");
+        assert_eq!(f.command_type, "command");
+    }
+
+    #[test]
+    fn parse_command_file_no_type_defaults_to_command() {
+        let content = "---\ndescription: x\n---\nbody";
+        let f = parse_command_file(content, "/x.md", "user");
+        assert_eq!(f.command_type, "command");
     }
 
     #[test]
