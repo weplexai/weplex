@@ -181,7 +181,7 @@ impl Manifest {
         let raw = std::fs::read_to_string(manifest_path)
             .map_err(|e| ManifestError::Io(format!("{}: {}", manifest_path, e)))?;
 
-        let mut m: Manifest = serde_yaml::from_str(&raw)
+        let mut m: Manifest = serde_yml::from_str(&raw)
             .map_err(|e| ManifestError::Parse(format!("{}: {}", manifest_path, e)))?;
 
         Self::validate_id(&m.id)?;
