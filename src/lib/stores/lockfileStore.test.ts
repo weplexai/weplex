@@ -42,6 +42,7 @@ function buildEntry(
     files: [`${id}.md`],
     installedAt: '2026-04-01T10:00:00Z',
     installedBy: 'tester',
+    pack: null,
     drifted: false,
     ...overrides,
   };

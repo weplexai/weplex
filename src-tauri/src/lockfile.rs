@@ -60,6 +60,14 @@ pub enum LockfileError {
     InvalidArchive(String),
     Sha256Mismatch { expected: String, got: String },
     NotFound(String),
+    /// Refused to overwrite an entry because its pack provenance does
+    /// not match the new mutation. See `apply_resource_mutation` for
+    /// the policy.
+    PackCollision {
+        id: String,
+        existing_pack: Option<String>,
+        new_pack: Option<String>,
+    },
 }
 
 impl std::fmt::Display for LockfileError {
@@ -72,6 +80,23 @@ impl std::fmt::Display for LockfileError {
                 write!(f, "sha256 mismatch: expected {}, got {}", expected, got)
             }
             LockfileError::NotFound(m) => write!(f, "not found: {}", m),
+            LockfileError::PackCollision {
+                id,
+                existing_pack,
+                new_pack,
+            } => {
+                let fmt_opt = |o: &Option<String>| match o {
+                    Some(s) => format!("'{}'", s),
+                    None => "<none>".to_string(),
+                };
+                write!(
+                    f,
+                    "pack collision for '{}': existing pack {} cannot be replaced by {}",
+                    id,
+                    fmt_opt(existing_pack),
+                    fmt_opt(new_pack),
+                )
+            }
         }
     }
 }
@@ -105,6 +130,12 @@ pub struct LockfileEntry {
     pub files: Vec<String>,
     pub installed_at: DateTime<Utc>,
     pub installed_by: String,
+    /// Provenance for federated packs — `<owner>/<repo>` (lowercase) when
+    /// the resource was installed as part of a federated marketplace pack;
+    /// `None` for builtin / user / single-resource marketplace publishes.
+    /// `serde(default)` keeps pre-Phase-5 lockfiles loading cleanly.
+    #[serde(default)]
+    pub pack: Option<String>,
     /// Set by `reconcile_on_load` when on-disk bytes diverge from the
     /// recorded sha. Never persisted.
     #[serde(skip)]
@@ -148,6 +179,10 @@ pub enum MutationKind {
     Upsert {
         body: String,
         sidecar: Option<String>,
+        /// Federated pack provenance. `Some("<owner>/<repo>")` for
+        /// federated installs; `None` for builtin / user-authored /
+        /// single-resource marketplace publish flows.
+        pack: Option<String>,
     },
     Delete,
 }
@@ -353,7 +388,7 @@ pub fn apply_resource_mutation(
     // the same limit: marketplace install, create/copy resource,
     // save_command, ensure_default_commands, and archive import all flow
     // through this entry point.
-    if let MutationKind::Upsert { body, sidecar } = &mutation {
+    if let MutationKind::Upsert { body, sidecar, .. } = &mutation {
         if body.len() > MAX_RESOURCE_BYTES {
             return Err(LockfileError::Io(format!(
                 "resource '{}' body exceeds {} byte cap ({} bytes)",
@@ -380,15 +415,37 @@ pub fn apply_resource_mutation(
     // Find existing entry index (if any).
     let existing_idx = lf.resources.iter().position(|e| e.id == id);
 
-    // Compute new shas (None for Delete).
-    let (new_body_sha, new_sidecar_sha, new_body, new_sidecar) = match &mutation {
-        MutationKind::Upsert { body, sidecar } => {
+    // Compute new shas + extract pack provenance (None for Delete).
+    let (new_body_sha, new_sidecar_sha, new_body, new_sidecar, new_pack) = match &mutation {
+        MutationKind::Upsert { body, sidecar, pack } => {
             let bsha = sha256_hex(body.as_bytes());
             let ssha = sidecar.as_ref().map(|s| sha256_hex(s.as_bytes()));
-            (Some(bsha), ssha, Some(body.clone()), sidecar.clone())
+            (
+                Some(bsha),
+                ssha,
+                Some(body.clone()),
+                sidecar.clone(),
+                pack.clone(),
+            )
         }
-        MutationKind::Delete => (None, None, None, None),
+        MutationKind::Delete => (None, None, None, None, None),
     };
+
+    // Pack provenance collision check. A federated pack owns its
+    // resources — once installed, only the SAME pack may overwrite, and
+    // user/single-resource publishes (`pack: None`) cannot replace
+    // federated entries (or vice-versa). This protects users from
+    // silently mixing competing sources of truth for the same resource id.
+    if let (Some(idx), MutationKind::Upsert { .. }) = (existing_idx, &mutation) {
+        let existing_pack = &lf.resources[idx].pack;
+        if existing_pack != &new_pack {
+            return Err(LockfileError::PackCollision {
+                id: id.clone(),
+                existing_pack: existing_pack.clone(),
+                new_pack: new_pack.clone(),
+            });
+        }
+    }
 
     // Same-sha no-op short-circuit.
     if let Some(idx) = existing_idx {
@@ -520,6 +577,7 @@ pub fn apply_resource_mutation(
                 files: resource_files(kind, &safe_name, new_sidecar.is_some()),
                 installed_at: now,
                 installed_by: current_user(),
+                pack: new_pack.clone(),
                 drifted: false,
             };
             if let Some(idx) = existing_idx {
@@ -663,6 +721,16 @@ pub fn restore_resource(
     // Recover (kind, name) from the resource id (`<kind_dir>/<name>`).
     let (kind, name) = parse_resource_id(resource_id_str)?;
 
+    // Preserve the current entry's pack provenance — restore is a
+    // rollback to a prior body, not a change of provenance, so the
+    // existing pack must carry through (and the collision check in
+    // `apply_resource_mutation` would reject anything else).
+    let existing_pack = lf
+        .resources
+        .iter()
+        .find(|e| e.id == resource_id_str)
+        .and_then(|e| e.pack.clone());
+
     apply_resource_mutation(
         profile_config_dir,
         kind,
@@ -671,6 +739,7 @@ pub fn restore_resource(
         MutationKind::Upsert {
             body: body_bytes,
             sidecar: sidecar_bytes,
+            pack: existing_pack,
         },
     )
 }
@@ -1578,7 +1647,11 @@ pub fn import_profile_from_archive(
             kind,
             &name,
             r.source,
-            MutationKind::Upsert { body, sidecar },
+            MutationKind::Upsert {
+                body,
+                sidecar,
+                pack: r.pack.clone(),
+            },
         )?;
 
         if is_conflict {
@@ -1792,7 +1865,11 @@ pub fn migrate_legacy_weplex_dir(
                 ResourceKind::Agent,
                 &stem,
                 ResourceSource::Imported,
-                MutationKind::Upsert { body, sidecar },
+                MutationKind::Upsert {
+                    body,
+                    sidecar,
+                    pack: None,
+                },
             ) {
                 Ok(r) if !r.no_op => report.migrated_agents += 1,
                 Ok(_) => {}
@@ -1835,7 +1912,11 @@ pub fn migrate_legacy_weplex_dir(
                 ResourceKind::Skill,
                 &name,
                 ResourceSource::Imported,
-                MutationKind::Upsert { body, sidecar },
+                MutationKind::Upsert {
+                    body,
+                    sidecar,
+                    pack: None,
+                },
             ) {
                 Ok(r) if !r.no_op => report.migrated_skills += 1,
                 Ok(_) => {}
@@ -1903,6 +1984,7 @@ mod tests {
                 files: vec!["agents/architect.md".into()],
                 installed_at: now,
                 installed_by: "tester".into(),
+                pack: None,
                 drifted: false,
             }],
             history: BTreeMap::new(),
@@ -1946,6 +2028,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "# architect".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -1980,6 +2063,7 @@ mod tests {
             MutationKind::Upsert {
                 body: big,
                 sidecar: None,
+                pack: None,
             },
         );
         assert!(res.is_err(), "oversized body must be rejected");
@@ -2003,6 +2087,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "small".into(),
                 sidecar: Some(big),
+                pack: None,
             },
         );
         assert!(res.is_err(), "oversized sidecar must be rejected");
@@ -2022,6 +2107,7 @@ mod tests {
             MutationKind::Upsert {
                 body: body.clone(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2033,6 +2119,7 @@ mod tests {
             MutationKind::Upsert {
                 body,
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2054,6 +2141,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2065,6 +2153,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v2".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2095,6 +2184,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2128,6 +2218,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2139,6 +2230,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v2".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2164,6 +2256,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2176,6 +2269,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v2".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2200,6 +2294,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2212,6 +2307,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v2".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2246,6 +2342,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "good".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2275,6 +2372,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "new".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2301,6 +2399,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2313,6 +2412,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v2".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2335,6 +2435,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2357,6 +2458,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2381,6 +2483,7 @@ mod tests {
                 MutationKind::Upsert {
                     body: format!("body-{}", i),
                     sidecar: None,
+                    pack: None,
                 },
             )
             .unwrap();
@@ -2407,6 +2510,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2418,6 +2522,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v2".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2445,6 +2550,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "v1".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2510,6 +2616,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "hello".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2552,6 +2659,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "hello".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2592,6 +2700,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "x".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2621,6 +2730,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "x".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2649,6 +2759,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "x".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2684,6 +2795,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "x".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2907,6 +3019,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "from-source".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2921,6 +3034,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "from-dest".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2953,6 +3067,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "incoming".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2966,6 +3081,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "existing".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -2998,6 +3114,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "incoming".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -3011,6 +3128,7 @@ mod tests {
             MutationKind::Upsert {
                 body: "existing".into(),
                 sidecar: None,
+                pack: None,
             },
         )
         .unwrap();
@@ -3189,6 +3307,283 @@ mod tests {
         // Sanity: reading the real file works.
         let ok = read_to_string_nofollow(&real).unwrap();
         assert_eq!(ok, "TOP SECRET");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Pack provenance + collision (Phase 5) ───────────────────────
+
+    /// Federated installs record `pack` on the lockfile entry, and a
+    /// pre-existing v3 lockfile (no `pack` field on disk) loads cleanly
+    /// with `pack = None`.
+    #[test]
+    fn upsert_records_pack_provenance() {
+        let dir = tmpdir("pack-record");
+        let dir_str = dir.to_str().unwrap();
+
+        let report = apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "# architect".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+            },
+        )
+        .unwrap();
+        assert!(!report.no_op);
+
+        let lf = load_lockfile(dir_str);
+        assert_eq!(lf.resources.len(), 1);
+        assert_eq!(lf.resources[0].pack.as_deref(), Some("acme/agents"));
+
+        // Round-trip through YAML so we know the field is serialised.
+        let yaml = serde_yml::to_string(&lf).unwrap();
+        assert!(yaml.contains("pack: acme/agents"));
+        let parsed: Lockfile = serde_yml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.resources[0].pack.as_deref(), Some("acme/agents"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Backward-compat: a v3 lockfile from before Phase 5 (no `pack`
+    /// key) deserialises with `pack: None` thanks to `serde(default)`.
+    #[test]
+    fn legacy_lockfile_without_pack_loads_cleanly() {
+        let dir = tmpdir("pack-legacy");
+        let dir_str = dir.to_str().unwrap();
+        // Hand-write a lockfile with no `pack` field — what every
+        // existing user has on disk today.
+        let yaml = format!(
+            "version: 1
+generatedBy: weplex
+resources:
+  - id: agents/architect
+    kind: agent
+    source: user
+    sha256: {sha}
+    sidecarSha256: null
+    files:
+      - agents/architect.md
+    installedAt: 2026-04-01T12:00:00Z
+    installedBy: tester
+history: {{}}
+",
+            sha = "a".repeat(64),
+        );
+        // Need an agent file on disk for path validation later.
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(dir.join("agents/architect.md"), "# arch").unwrap();
+        std::fs::write(dir.join(LOCKFILE_NAME), yaml).unwrap();
+
+        let lf = load_lockfile(dir_str);
+        assert_eq!(lf.resources.len(), 1);
+        assert_eq!(lf.resources[0].pack, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Different pack on the same id → PackCollision. The on-disk body
+    /// must NOT have been overwritten.
+    #[test]
+    fn collision_rejects_different_pack() {
+        let dir = tmpdir("pack-collide-diff");
+        let dir_str = dir.to_str().unwrap();
+        apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "from-pack-a".into(),
+                sidecar: None,
+                pack: Some("acme/pack-a".into()),
+            },
+        )
+        .unwrap();
+
+        let err = apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "from-pack-b".into(),
+                sidecar: None,
+                pack: Some("foo/pack-b".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, LockfileError::PackCollision { .. }));
+
+        // Disk untouched.
+        let on_disk = std::fs::read_to_string(dir.join("agents/architect.md")).unwrap();
+        assert_eq!(on_disk, "from-pack-a");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// User-created entry (`pack: None`) cannot be claimed by a federated
+    /// pack mutation.
+    #[test]
+    fn collision_rejects_pack_claiming_user_entry() {
+        let dir = tmpdir("pack-collide-user");
+        let dir_str = dir.to_str().unwrap();
+        apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "user-authored".into(),
+                sidecar: None,
+                pack: None,
+            },
+        )
+        .unwrap();
+
+        let err = apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "from-pack".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, LockfileError::PackCollision { .. }));
+
+        let on_disk = std::fs::read_to_string(dir.join("agents/architect.md")).unwrap();
+        assert_eq!(on_disk, "user-authored");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A federated entry cannot be overwritten by a single-resource
+    /// publish (`pack: None`). Same rule, opposite direction.
+    #[test]
+    fn collision_rejects_user_overwriting_pack_entry() {
+        let dir = tmpdir("pack-collide-pack-user");
+        let dir_str = dir.to_str().unwrap();
+        apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "from-pack".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+            },
+        )
+        .unwrap();
+
+        let err = apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "single-resource".into(),
+                sidecar: None,
+                pack: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, LockfileError::PackCollision { .. }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Same pack overwriting same id is permitted (pack updates).
+    #[test]
+    fn same_pack_can_overwrite() {
+        let dir = tmpdir("pack-same");
+        let dir_str = dir.to_str().unwrap();
+        apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "v1".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+            },
+        )
+        .unwrap();
+
+        let report = apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "v2".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+            },
+        )
+        .unwrap();
+        assert!(!report.no_op);
+
+        let lf = load_lockfile(dir_str);
+        assert_eq!(lf.resources.len(), 1);
+        assert_eq!(lf.resources[0].pack.as_deref(), Some("acme/agents"));
+
+        let on_disk = std::fs::read_to_string(dir.join("agents/architect.md")).unwrap();
+        assert_eq!(on_disk, "v2");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Restore preserves the existing entry's pack — a rollback is a body
+    /// change, not a provenance change.
+    #[test]
+    fn restore_preserves_pack_provenance() {
+        let dir = tmpdir("pack-restore");
+        let dir_str = dir.to_str().unwrap();
+        apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "v1".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+            },
+        )
+        .unwrap();
+        let v1_sha = sha256_hex(b"v1");
+
+        // Upgrade in place (same pack).
+        apply_resource_mutation(
+            dir_str,
+            ResourceKind::Agent,
+            "architect",
+            ResourceSource::Marketplace,
+            MutationKind::Upsert {
+                body: "v2".into(),
+                sidecar: None,
+                pack: Some("acme/agents".into()),
+            },
+        )
+        .unwrap();
+
+        // Roll back to v1 from history.
+        let r = restore_resource(dir_str, "agents/architect", &v1_sha).unwrap();
+        assert!(!r.no_op);
+
+        let lf = load_lockfile(dir_str);
+        assert_eq!(lf.resources[0].pack.as_deref(), Some("acme/agents"));
+        let on_disk = std::fs::read_to_string(dir.join("agents/architect.md")).unwrap();
+        assert_eq!(on_disk, "v1");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
