@@ -12,6 +12,7 @@ mod hook_server;
 mod hooks;
 mod ipc_server;
 mod keychain;
+mod manifest;
 mod marketplace;
 mod mcp;
 mod notes_crypto;
