@@ -4,6 +4,12 @@
   import { invoke } from '@tauri-apps/api/core';
   // Modal removed — Marketplace now renders inline in Hub
   import { authStore } from '../../stores/authStore.svelte';
+  import { profileStore } from '../../stores/profileStore.svelte';
+  import { lockfileStore } from '../../stores/lockfileStore.svelte';
+  import { guardStore } from '../../stores/guardStore.svelte';
+  import { settingsStore } from '../../stores/settingsStore.svelte';
+  import { schedule as scheduleCompile } from '../../utils/compileScheduler';
+  import type { MutationReport, ResourceKind } from '../../types/lockfile';
   import {
     searchPackages, installPackage as apiInstall, ratePackage, publishPackage,
     type MarketplacePackage,
@@ -25,6 +31,16 @@
 
   // ── Installed packages tracking ──
   let installedNames = $state<Set<string>>(new Set());
+
+  // ── Profile install target (Phase 3) ──
+  // Marketplace installs now land in a specific profile's lockfile
+  // (not the legacy ~/.weplex/* global). Default to the first profile
+  // with a configDir; users can switch via the picker before installing.
+  let installTargetConfigDir = $state<string>('');
+
+  let installableProfiles = $derived(
+    profileStore.profiles.filter((p) => !!p.configDir),
+  );
 
   // ── View mode: browse | publish ──
   let view = $state<'browse' | 'publish' | 'rate'>('browse');
@@ -104,8 +120,38 @@
     return null; // valid
   }
 
+  /**
+   * Map a marketplace package's `type` field to the lockfile's
+   * `ResourceKind`. Marketplace API only emits `agent | skill` today,
+   * but the install command accepts the full set so we keep the door
+   * open for `rule | command` packages without another rewrite.
+   */
+  function mapPackageKind(t: string): ResourceKind {
+    if (t === 'skill') return 'skill';
+    if (t === 'rule') return 'rule';
+    if (t === 'command') return 'command';
+    return 'agent';
+  }
+
+  /** Resource id used by the lockfile: `<kind_dir>/<name>`. */
+  function lockfileIdFor(kind: ResourceKind, name: string): string {
+    const dir =
+      kind === 'agent'
+        ? 'agents'
+        : kind === 'rule'
+          ? 'rules'
+          : kind === 'skill'
+            ? 'skills'
+            : 'commands';
+    return `${dir}/${name}`;
+  }
+
   // ── Install ──
   async function installPackage(pkg: MarketplacePackage) {
+    if (!installTargetConfigDir) {
+      browseError = 'Choose a profile to install into.';
+      return;
+    }
     installing = pkg.id;
     browseError = '';
     try {
@@ -118,13 +164,32 @@
         return;
       }
 
-      const dir = data.type === 'skill' ? 'skills' : 'agents';
+      const kind = mapPackageKind(data.type);
 
-      if (data.type === 'skill') {
-        await invoke('save_marketplace_skill', { name: data.name, content: data.content });
-      } else {
-        await invoke('save_marketplace_package', { dir, name: data.name, content: data.content });
-      }
+      // Phase 3: route through the lockfile module. Same command for every
+      // resource kind — no more skill-vs-agent special case at the call site.
+      // Backend records provenance as `marketplace` and rolls the previous
+      // version (if any) into history.
+      await invoke<MutationReport>('install_marketplace_package', {
+        targetConfigDir: installTargetConfigDir,
+        name: data.name,
+        content: data.content,
+        sidecar: null,
+        kind,
+      });
+
+      // Refresh dependent stores: lockfile (history/version), guard
+      // (re-scan to update verdict), and external-agent compile (so the
+      // new package becomes available to Claude/etc.). All best-effort
+      // — install itself already succeeded.
+      lockfileStore.refresh(installTargetConfigDir);
+      guardStore.refresh(
+        installTargetConfigDir,
+        settingsStore.settings.agentshieldDeepScan,
+      );
+      scheduleCompile(installTargetConfigDir, {
+        deepScan: settingsStore.settings.agentshieldDeepScan,
+      });
 
       installedNames.add(pkg.name);
       installedNames = new Set(installedNames);
@@ -229,6 +294,19 @@
   onMount(() => {
     search();
     loadInstalled();
+    // Phase 3: pick a sensible default install target. Prefer the
+    // default profile if it has a configDir, else the first that does.
+    const def = profileStore.defaultProfile;
+    if (def?.configDir) {
+      installTargetConfigDir = def.configDir;
+    } else {
+      installTargetConfigDir = installableProfiles[0]?.configDir ?? '';
+    }
+    // Refresh lockfile for the target so the "installed/update" hint
+    // can compare versions accurately.
+    if (installTargetConfigDir) {
+      lockfileStore.refresh(installTargetConfigDir);
+    }
   });
 </script>
 
@@ -277,6 +355,24 @@
         ]}
       />
     </div>
+
+    <!-- Install target picker. Hidden when only one profile has a configDir
+         (the trivial case) — keeps the toolbar uncluttered for solo users. -->
+    {#if installableProfiles.length > 1}
+      <div class="mp-install-target">
+        <label for="mp-install-target-select">Install to profile:</label>
+        <select
+          id="mp-install-target-select"
+          class="mp-install-target-select"
+          bind:value={installTargetConfigDir}
+          onchange={() => installTargetConfigDir && lockfileStore.refresh(installTargetConfigDir)}
+        >
+          {#each installableProfiles as p (p.id)}
+            <option value={p.configDir}>{p.name}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
 
     <!-- Results -->
     <div class="mp-results">
@@ -355,25 +451,38 @@
           {/each}
         </div>
         <div class="mp-detail-actions">
-          <button
-            class="mp-install-btn"
-            class:installing={installing === selectedPkg.id}
-            class:success={installSuccess === selectedPkg.id}
-            onclick={() => selectedPkg && installPackage(selectedPkg)}
-            disabled={installing !== null}
-          >
-            {#if installSuccess === selectedPkg.id}
-              Installed ✓
-            {:else if installing === selectedPkg.id}
-              Installing...
-            {:else if installedNames.has(selectedPkg.name)}
-              Reinstall
-            {:else}
-              Install
+          {#if selectedPkg}
+            {@const existingEntry = installTargetConfigDir
+              ? lockfileStore.entryForResource(
+                  installTargetConfigDir,
+                  lockfileIdFor(mapPackageKind(selectedPkg.type), selectedPkg.name),
+                )
+              : null}
+            {@const existingVersion = existingEntry?.version ?? null}
+            {@const isDifferentVersion =
+              existingVersion !== null && existingVersion !== selectedPkg.version}
+            <button
+              class="mp-install-btn"
+              class:installing={installing === selectedPkg.id}
+              class:success={installSuccess === selectedPkg.id}
+              onclick={() => selectedPkg && installPackage(selectedPkg)}
+              disabled={installing !== null || !installTargetConfigDir}
+            >
+              {#if installSuccess === selectedPkg.id}
+                Installed ✓
+              {:else if installing === selectedPkg.id}
+                Installing...
+              {:else if isDifferentVersion}
+                Update from v{existingVersion}
+              {:else if existingEntry}
+                Reinstall
+              {:else}
+                Install
+              {/if}
+            </button>
+            {#if authStore.user}
+              <button class="mp-rate-btn" onclick={() => openRating(selectedPkg!)}>Rate</button>
             {/if}
-          </button>
-          {#if authStore.user}
-            <button class="mp-rate-btn" onclick={() => openRating(selectedPkg!)}>Rate</button>
           {/if}
         </div>
       </div>
@@ -511,6 +620,34 @@
   .mp-tab.active { color: var(--weplex-text); background: var(--weplex-surface); font-weight: 600; }
 
   .mp-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+
+  .mp-install-target {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 6px 10px;
+    background: var(--weplex-surface);
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-sm);
+    font-size: var(--weplex-text-xs);
+    color: var(--weplex-text-muted);
+  }
+  .mp-install-target label {
+    font-weight: 600;
+  }
+  .mp-install-target-select {
+    padding: 4px 8px;
+    background: var(--weplex-bg);
+    border: 1px solid var(--weplex-border);
+    border-radius: var(--weplex-radius-sm);
+    color: var(--weplex-text);
+    font-size: var(--weplex-text-xs);
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+  }
+  .mp-install-target-select:focus { border-color: var(--weplex-accent); }
   .mp-search {
     flex: 1; padding: 6px 10px;
     background: var(--weplex-bg); border: 1px solid var(--weplex-border);
