@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { profileStore } from './profileStore.svelte';
 import { settingsStore } from './settingsStore.svelte';
+import { lockfileStore } from './lockfileStore.svelte';
 import { schedule as scheduleCompile } from '../utils/compileScheduler';
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -50,12 +51,19 @@ function getProfileInfos(): ProfileInfo[] {
   }));
 }
 
-/** Fire-and-forget cross-agent compile for a profile after a mutation. */
+/**
+ * Fire-and-forget cross-agent compile for a profile after a mutation.
+ * Also kicks the lockfile refresh — the backend mutation routes through
+ * `apply_resource_mutation` which updates the lockfile, but the FE cache
+ * is stale until we re-read it. Both are best-effort: the source-of-
+ * truth write already happened before this is called.
+ */
 function triggerCompile(configDir: string | null | undefined): void {
   if (!configDir) return;
   scheduleCompile(configDir, {
     deepScan: settingsStore.settings.agentshieldDeepScan,
   });
+  lockfileStore.refresh(configDir);
 }
 
 /**
