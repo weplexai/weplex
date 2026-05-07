@@ -19,6 +19,15 @@ pub fn sha256_hex(content: &[u8]) -> String {
     hex
 }
 
+/// SHA-256 of a file's contents as lowercase hex. Convenience wrapper
+/// over `sha256_hex` for callers that have a path. Used by the lockfile
+/// module to detect drift between the lockfile-recorded body sha and
+/// the actual on-disk body.
+pub fn sha256_file(path: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+    Ok(sha256_hex(&bytes))
+}
+
 /// Atomically write `contents` to `path` with mode 0600 (data file).
 pub fn atomic_write_owner_only(path: &str, contents: &str) -> Result<(), String> {
     atomic_write_with_mode(path, contents, 0o600)

@@ -14,6 +14,7 @@ mod hook_server;
 mod hooks;
 mod ipc_server;
 mod keychain;
+mod lockfile;
 mod manifest;
 mod marketplace;
 mod mcp;
@@ -242,6 +243,9 @@ fn main() {
             manifest::list_profile_manifests,
             compiler::compile_profile_to_external_agents,
             compiler::dry_run_compile_profile,
+            // Lockfile (Phase 3)
+            lockfile::read_lockfile,
+            lockfile::restore_resource_version,
             // Cross-agent guard
             guard::scan_resource,
             guard::scan_profile,
