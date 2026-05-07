@@ -1067,16 +1067,62 @@ fn load_override_store_outcome(profile_dir: &str) -> LoadOutcome {
 /// `scan_resource`). v1 stores are silently re-saved as v2 — a one-time
 /// migration on first read after upgrade.
 ///
-/// Migration intentionally does NOT take the override lock. `save_override_store`
-/// writes atomically via tmp+rename, so even if a write races with the migration,
-/// the worst case is one of the two payloads wins atomically (both contain valid
-/// v2 envelopes with valid HMACs). Skipping the lock here also lets
-/// `set_override_decision` — which already holds the lock — call into the read
-/// path without re-entrant locking.
+/// The initial probe + read is lock-free (cheap, repeatable). Once v1 is
+/// detected, we acquire the override lock BEFORE rewriting so that a
+/// concurrent `set_override_decision` cannot race with the migration and
+/// silently lose decisions. Inside the locked window we re-probe — another
+/// process may have already migrated the file to v2 between our first read
+/// and lock acquisition. The lock window covers ONLY the write, not the
+/// happy-path verified read, to keep contention minimal.
 fn load_override_store(profile_dir: &str) -> Vec<OverrideDecision> {
     match load_override_store_outcome(profile_dir) {
         LoadOutcome::Empty => Vec::new(),
         LoadOutcome::Verified(d) => d,
+        LoadOutcome::NeedsMigration(_) => migrate_v1_under_lock(profile_dir),
+    }
+}
+
+/// Variant for callers that already hold the override lock (e.g.
+/// `set_override_decision`). Surfaces v1 decisions but skips the migration
+/// rewrite — the caller is about to overwrite the file anyway via
+/// `save_override_store`, which writes a fresh v2 envelope. Calling the
+/// regular `load_override_store` from a lock-holding caller would deadlock
+/// against itself when trying to re-acquire the lock for the migration.
+fn load_override_store_lock_held(profile_dir: &str) -> Vec<OverrideDecision> {
+    match load_override_store_outcome(profile_dir) {
+        LoadOutcome::Empty => Vec::new(),
+        LoadOutcome::Verified(d) => d,
+        LoadOutcome::NeedsMigration(d) => d,
+    }
+}
+
+/// Acquire the override lock and re-resolve the store under the lock so
+/// the v1->v2 migration is serialised against `set_override_decision`.
+/// If the file has already been migrated by another process between the
+/// initial detection and the lock acquisition, the v2 path runs and we
+/// just return the verified decisions. On lock failure we skip the
+/// rewrite and honour the v1 decisions for this read — a concurrent
+/// writer will eventually persist a v2 file.
+fn migrate_v1_under_lock(profile_dir: &str) -> Vec<OverrideDecision> {
+    let _lock = match acquire_override_lock(profile_dir) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!(
+                "[guard] override v1->v2 lock failed: {} — honouring v1 decisions for this read, leaving file unchanged",
+                e
+            );
+            // Re-read once more (lock-free) to surface the v1 decisions
+            // without rewriting. We can't migrate without the lock.
+            return match load_override_store_outcome(profile_dir) {
+                LoadOutcome::NeedsMigration(d) | LoadOutcome::Verified(d) => d,
+                LoadOutcome::Empty => Vec::new(),
+            };
+        }
+    };
+    // Re-read under the lock. Another process may have migrated for us.
+    match load_override_store_outcome(profile_dir) {
+        LoadOutcome::Verified(d) => d,
+        LoadOutcome::Empty => Vec::new(),
         LoadOutcome::NeedsMigration(d) => {
             if let Err(e) = save_override_store(profile_dir, &d) {
                 log::warn!(
@@ -1533,7 +1579,9 @@ pub fn set_override_decision(
     let profile_dir = validate_profile_dir_cmd(profile_config_dir)?;
     let _lock = acquire_override_lock(&profile_dir)
         .map_err(|e| redact_home(&e.to_string()))?;
-    let mut current = load_override_store(&profile_dir);
+    // Use the lock-held loader to avoid deadlocking on the migration's
+    // self-acquired lock. The save call below rewrites as v2 anyway.
+    let mut current = load_override_store_lock_held(&profile_dir);
     // Replace any existing decision for the same triple.
     current.retain(|d| {
         !(d.rule_id == decision.rule_id
@@ -1977,7 +2025,7 @@ mod tests {
     /// fixture.
     fn set_override_internal(profile_dir: &str, decision: OverrideDecision) -> Result<(), String> {
         let _lock = acquire_override_lock(profile_dir).map_err(|e| e.to_string())?;
-        let mut current = load_override_store(profile_dir);
+        let mut current = load_override_store_lock_held(profile_dir);
         current.retain(|d| {
             !(d.rule_id == decision.rule_id
                 && d.resource_path == decision.resource_path
