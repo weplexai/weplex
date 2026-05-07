@@ -107,6 +107,19 @@ fn read_commands_from_dir(dir_path: &str, scope: &str) -> Vec<CommandFile> {
     commands
 }
 
+/// Structured result of `ensure_default_commands`. The frontend currently
+/// ignores the value, but operators reading logs and tests asserting on
+/// sidecar self-heal need to see how many `.md` files we created, how
+/// many sidecars we wrote, and any non-fatal sidecar warnings — without
+/// having to grep `log::warn!` output.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureDefaultCommandsResult {
+    pub md_created: u32,
+    pub sidecars_created: u32,
+    pub sidecar_warnings: Vec<String>,
+}
+
 /// Create default command files in ~/.claude/commands/ if they don't exist.
 ///
 /// Each default ships with a sibling `<name>.weplex.yaml` cross-agent
@@ -115,7 +128,7 @@ fn read_commands_from_dir(dir_path: &str, scope: &str) -> Vec<CommandFile> {
 /// log a warning but keep the .md (backward-compat: .md alone still
 /// works as Claude-only).
 #[tauri::command]
-pub fn ensure_default_commands() -> Result<u32, String> {
+pub fn ensure_default_commands() -> Result<EnsureDefaultCommandsResult, String> {
     let home = crate::utils::get_home();
     let dir = format!("{}/.claude/commands", home);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -232,12 +245,16 @@ mcp_servers: []
         None
     };
 
-    let mut created = 0u32;
+    let mut result = EnsureDefaultCommandsResult {
+        md_created: 0,
+        sidecars_created: 0,
+        sidecar_warnings: Vec::new(),
+    };
     for (name, content) in defaults {
         let path = format!("{}/{}.md", dir, name);
         if !std::path::Path::new(&path).exists() {
             std::fs::write(&path, content).map_err(|e| e.to_string())?;
-            created += 1;
+            result.md_created += 1;
         }
 
         // Self-heal sidecar manifests independently from the .md write.
@@ -249,17 +266,23 @@ mcp_servers: []
         if let Some(sidecar_body) = sidecar_for(name) {
             let sidecar_path = format!("{}/{}.weplex.yaml", dir, name);
             if !std::path::Path::new(&sidecar_path).exists() {
-                if let Err(e) = std::fs::write(&sidecar_path, sidecar_body) {
-                    log::warn!(
-                        "ensure_default_commands: failed to write sidecar {}: {}",
-                        sidecar_path,
-                        e
-                    );
+                match std::fs::write(&sidecar_path, sidecar_body) {
+                    Ok(()) => result.sidecars_created += 1,
+                    Err(e) => {
+                        let msg = format!(
+                            "ensure_default_commands: failed to write sidecar {}: {}",
+                            sidecar_path, e
+                        );
+                        // Keep the log:warn for operators tailing logs,
+                        // AND surface the warning in the structured result.
+                        log::warn!("{}", msg);
+                        result.sidecar_warnings.push(msg);
+                    }
                 }
             }
         }
     }
-    Ok(created)
+    Ok(result)
 }
 
 /// List all Claude commands: user-level (~/.claude/commands/) + project-level ({cwd}/.claude/commands/).
@@ -361,4 +384,101 @@ pub fn delete_command(path: String) -> Result<(), String> {
         std::fs::remove_file(&canon).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::test_support::HOME_ENV_LOCK as ENV_LOCK;
+
+    fn tmpdir(label: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "weplex-commands-test-{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    #[test]
+    fn ensure_default_commands_creates_md_and_sidecars() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ensure-defaults");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let result = ensure_default_commands().unwrap();
+        // Three default commands ship: review, review-iterate, plan.
+        assert_eq!(result.md_created, 3);
+        assert_eq!(result.sidecars_created, 3);
+        assert!(result.sidecar_warnings.is_empty());
+
+        let cmd_dir = canon_home.join(".claude").join("commands");
+        for name in ["review", "review-iterate", "plan"] {
+            assert!(cmd_dir.join(format!("{}.md", name)).exists());
+            assert!(cmd_dir.join(format!("{}.weplex.yaml", name)).exists());
+        }
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn ensure_default_commands_self_heals_missing_sidecars() {
+        // Second call after .md files exist: md_created=0, but sidecars
+        // we delete by hand should be re-created.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ensure-self-heal");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        // First run: full creation.
+        let _ = ensure_default_commands().unwrap();
+        let cmd_dir = canon_home.join(".claude").join("commands");
+        // Delete one sidecar by hand.
+        std::fs::remove_file(cmd_dir.join("review.weplex.yaml")).unwrap();
+
+        // Second run: md untouched, only the deleted sidecar is re-created.
+        let result = ensure_default_commands().unwrap();
+        assert_eq!(result.md_created, 0);
+        assert_eq!(result.sidecars_created, 1);
+        assert!(result.sidecar_warnings.is_empty());
+        assert!(cmd_dir.join("review.weplex.yaml").exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn ensure_default_commands_idempotent_third_call() {
+        // After a full creation + self-heal, a third call must report
+        // zero work but still succeed.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ensure-idempotent");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let _ = ensure_default_commands().unwrap();
+        let result = ensure_default_commands().unwrap();
+        assert_eq!(result.md_created, 0);
+        assert_eq!(result.sidecars_created, 0);
+        assert!(result.sidecar_warnings.is_empty());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
