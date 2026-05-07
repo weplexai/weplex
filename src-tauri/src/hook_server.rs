@@ -188,8 +188,12 @@ fn now_secs() -> u64 {
 /// - All other failure modes are handled on the bash side (non-200 response,
 ///   timeout, malformed body → `exit 0`).
 pub fn decide_stop(state: &HookDecisionState, session_id: u32) -> StopDecision {
-    let summary = session_summary::read_summary(&session_id.to_string());
-    decide_stop_with_summary(state, session_id, summary.as_ref(), now_secs())
+    // Read only the `updated_at` field — that's all the freshness check needs.
+    // Keeping it plaintext on disk lets us avoid touching the Keychain on
+    // every Stop event (which would either trigger keychain prompts or stall
+    // when the Keychain is locked).
+    let updated_at = session_summary::read_updated_at_only(&session_id.to_string());
+    decide_stop_with_summary(state, session_id, updated_at, now_secs())
 }
 
 /// Pure decision function. Split out so unit tests don't need to manipulate
@@ -197,11 +201,11 @@ pub fn decide_stop(state: &HookDecisionState, session_id: u32) -> StopDecision {
 pub fn decide_stop_with_summary(
     state: &HookDecisionState,
     session_id: u32,
-    summary: Option<&session_summary::SessionSummary>,
+    summary_updated_at: Option<u64>,
     now: u64,
 ) -> StopDecision {
-    if let Some(s) = summary {
-        if now.saturating_sub(s.updated_at) < NOTE_FRESHNESS_SECS {
+    if let Some(updated_at) = summary_updated_at {
+        if now.saturating_sub(updated_at) < NOTE_FRESHNESS_SECS {
             return StopDecision::ExitOk;
         }
     }
@@ -363,17 +367,6 @@ fn run_hook_server(server: Arc<tiny_http::Server>, app: tauri::AppHandle, expect
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_summary::SessionSummary;
-
-    fn fresh_summary(at: u64) -> SessionSummary {
-        SessionSummary {
-            summary: String::new(),
-            files_changed: vec![],
-            decisions: vec![],
-            updated_at: at,
-            notes: vec![],
-        }
-    }
 
     fn is_request_notes(d: &StopDecision) -> bool {
         matches!(d, StopDecision::RequestNotes { .. })
@@ -395,9 +388,9 @@ mod tests {
     #[test]
     fn stale_summary_asks_once_then_silent() {
         let s = HookDecisionState::new();
-        let stale = fresh_summary(1_000_000 - NOTE_FRESHNESS_SECS - 1);
-        let d1 = decide_stop_with_summary(&s, 1, Some(&stale), 1_000_000);
-        let d2 = decide_stop_with_summary(&s, 1, Some(&stale), 1_000_001);
+        let stale = 1_000_000 - NOTE_FRESHNESS_SECS - 1;
+        let d1 = decide_stop_with_summary(&s, 1, Some(stale), 1_000_000);
+        let d2 = decide_stop_with_summary(&s, 1, Some(stale), 1_000_001);
         assert!(is_request_notes(&d1));
         assert!(is_exit_ok(&d2));
     }
@@ -406,13 +399,11 @@ mod tests {
     fn fresh_summary_returns_exit_ok_without_reserving() {
         let s = HookDecisionState::new();
         // Recent note → no ask needed.
-        let fresh = fresh_summary(1_000_000);
-        let d = decide_stop_with_summary(&s, 1, Some(&fresh), 1_000_000);
+        let d = decide_stop_with_summary(&s, 1, Some(1_000_000), 1_000_000);
         assert!(is_exit_ok(&d));
 
         // Slot must still be available: a later stale summary should ask.
-        let stale = fresh_summary(0);
-        let d_after = decide_stop_with_summary(&s, 1, Some(&stale), 1_000_000);
+        let d_after = decide_stop_with_summary(&s, 1, Some(0), 1_000_000);
         assert!(is_request_notes(&d_after), "freshness path must not consume the reservation");
     }
 
@@ -425,14 +416,17 @@ mod tests {
         assert!(is_request_notes(&d1));
 
         // Agent writes a fresh note — next stop is silent (freshness path).
-        let fresh = fresh_summary(1_000_050);
-        let d2 = decide_stop_with_summary(&s, 7, Some(&fresh), 1_000_060);
+        let d2 = decide_stop_with_summary(&s, 7, Some(1_000_050), 1_000_060);
         assert!(is_exit_ok(&d2));
 
         // Much later, the freshness window expires. We must STILL be silent —
         // the session already spent its one ask.
-        let old = fresh_summary(1_000_050);
-        let d3 = decide_stop_with_summary(&s, 7, Some(&old), 1_000_050 + NOTE_FRESHNESS_SECS + 10);
+        let d3 = decide_stop_with_summary(
+            &s,
+            7,
+            Some(1_000_050),
+            1_000_050 + NOTE_FRESHNESS_SECS + 10,
+        );
         assert!(is_exit_ok(&d3), "second ask in same session must never happen");
     }
 
@@ -450,8 +444,8 @@ mod tests {
     fn freshness_boundary_is_strictly_less_than_window() {
         let s = HookDecisionState::new();
         // Exactly at the boundary: not "less than" → should ask.
-        let at_boundary = fresh_summary(1_000_000 - NOTE_FRESHNESS_SECS);
-        let d = decide_stop_with_summary(&s, 1, Some(&at_boundary), 1_000_000);
+        let at_boundary = 1_000_000 - NOTE_FRESHNESS_SECS;
+        let d = decide_stop_with_summary(&s, 1, Some(at_boundary), 1_000_000);
         assert!(is_request_notes(&d));
     }
 
@@ -561,8 +555,7 @@ mod tests {
         // saturating_sub should clamp to 0, which is less than the window,
         // so we should take the freshness path (ExitOk) without panicking.
         let s = HookDecisionState::new();
-        let future = fresh_summary(2_000_000);
-        let d = decide_stop_with_summary(&s, 1, Some(&future), 1_000_000);
+        let d = decide_stop_with_summary(&s, 1, Some(2_000_000), 1_000_000);
         assert!(is_exit_ok(&d));
     }
 }

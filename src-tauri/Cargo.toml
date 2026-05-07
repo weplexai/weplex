@@ -20,7 +20,13 @@ base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-updater = "2.10.0"
 tauri-plugin-process = "2.3.1"
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Pinned to an exact version: notes_crypto.rs relies on the apple-native
+# backend creating keychain items with `kSecAttrAccessibleWhenUnlocked` and
+# the standard creator-binary ACL. A silent default change in a `keyring`
+# bump (e.g. to `kSecAttrAccessibleAlways` or an open ACL) would break the
+# encryption-at-rest property of activity notes. Bump deliberately, with a
+# fresh review of the apple-native backend's Security.framework calls.
+keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 tauri-plugin-notification = "2"
 aes-gcm = "0.10.3"
 ring = "0.17.14"

@@ -2,21 +2,35 @@
   import type { NoteEntry } from '../../types';
   import { invoke } from '@tauri-apps/api/core';
   import { timeAgo } from '../../utils/time';
+  import { sessionStore } from '../../stores/sessionStore';
+  import { resolveProfileEnvId } from '../../utils/profile';
 
   let { sessionId }: { sessionId: number } = $props();
 
   let notes = $state<NoteEntry[]>([]);
   let query = $state('');
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let unreadable = $state(false);
 
   async function fetchNotes() {
+    const session = sessionStore.sessions.find((s) => s.id === sessionId);
+    if (!session) {
+      notes = [];
+      unreadable = false;
+      return;
+    }
     try {
-      const data = await invoke<{ notes?: NoteEntry[] } | null>('get_session_summary', {
+      const data = await invoke<
+        { notes?: NoteEntry[]; unreadable?: boolean } | null
+      >('get_session_summary', {
         sessionId: String(sessionId),
+        profileId: resolveProfileEnvId(session),
       });
       notes = data?.notes ?? [];
+      unreadable = data?.unreadable === true;
     } catch {
       notes = [];
+      unreadable = false;
     }
   }
 
@@ -79,12 +93,21 @@
     </span>
   </div>
 
-  {#if notes.length === 0}
+  {#if unreadable}
+    <div class="empty">
+      <p class="empty-title">🔒 Notes are locked.</p>
+      <p class="empty-hint">
+        The encryption key for this profile isn't available right now — your
+        Keychain may be locked, or the key was rotated. The data on disk is
+        intact; unlock the Keychain and reopen this session to read it.
+      </p>
+    </div>
+  {:else if notes.length === 0}
     <div class="empty">
       <p class="empty-title">No activity yet.</p>
       <p class="empty-hint">
         Ask your agent to call <code>weplex_log_activity</code> with a short summary
-        of what it did. Entries are private to this session on this machine.
+        of what it did. Entries are encrypted and private to this profile on this machine.
       </p>
     </div>
   {:else if filtered.length === 0}

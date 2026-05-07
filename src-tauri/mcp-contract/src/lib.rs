@@ -29,6 +29,7 @@ pub const IPC_METHOD_CREATE_SESSION: &str = "create_session";
 pub const IPC_METHOD_READ_OUTPUT: &str = "read_output";
 pub const IPC_METHOD_SEND_INPUT: &str = "send_input";
 pub const IPC_METHOD_GET_CONTEXT: &str = "get_context";
+pub const IPC_METHOD_LOG_ACTIVITY: &str = "log_activity";
 
 // ── Stop-hook courier protocol (hook_server → stop-hook.sh) ───────────────────
 

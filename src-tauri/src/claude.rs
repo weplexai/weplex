@@ -155,9 +155,18 @@ pub fn get_claude_state(cwd: String, session_id: String) -> Result<Option<String
     Ok(Some(state.to_string()))
 }
 
-/// Get session summary by session ID.
+/// Get session summary by session ID. `profile_id` selects the Keychain key
+/// used to decrypt the file — the frontend must pass the same value it
+/// already uses to spawn PTYs (configDir absolute path, or "default").
+///
+/// `profile_id` is required, not optional: a forgotten parameter would
+/// silently default to the system profile and yield 🔒 for any non-default
+/// session — confusing to debug. Better to fail loudly at the IPC layer.
 #[tauri::command]
-pub fn get_session_summary(session_id: String) -> Option<crate::session_summary::SessionSummary> {
+pub fn get_session_summary(
+    session_id: String,
+    profile_id: String,
+) -> Option<crate::session_summary::SessionSummary> {
     // Validate session_id to prevent path traversal or injection
     if session_id.is_empty()
         || !session_id
@@ -166,5 +175,8 @@ pub fn get_session_summary(session_id: String) -> Option<crate::session_summary:
     {
         return None;
     }
-    crate::session_summary::read_summary(&session_id)
+    if profile_id.is_empty() {
+        return None;
+    }
+    crate::session_summary::read_summary(&session_id, &profile_id)
 }

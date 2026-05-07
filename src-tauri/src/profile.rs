@@ -99,6 +99,18 @@ pub fn discover_profiles() -> Result<Vec<DiscoveredProfile>, String> {
             let resolved = unquoted.replace("$HOME", &home).replace("${HOME}", &home);
             let resolved = crate::utils::resolve_cwd(&resolved);
 
+            // Canonicalize + require result under $HOME. A planted line
+            // `export CLAUDE_CONFIG_DIR=/tmp/evil` in ~/.zshrc must NOT make
+            // Weplex write `mcpServers.weplex` there — that would let any
+            // process touching the rc file gain MCP-loader persistence.
+            let resolved = match crate::utils::validate_config_dir(&resolved) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!("Skipping CLAUDE_CONFIG_DIR from {}: {}", filename, e);
+                    continue;
+                }
+            };
+
             if !std::path::Path::new(&resolved).is_dir() {
                 continue;
             }

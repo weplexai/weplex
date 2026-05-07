@@ -227,6 +227,7 @@ fn handle_global_connection(
             "read_output" => handle_read_output(&params, pty_manager),
             "send_input" => handle_send_input(&params, pty_manager),
             "get_context" => handle_get_context(app),
+            "log_activity" => handle_log_activity(&params),
             _ => rpc_error(-32601, format!("Unknown method: {}", method)),
         };
 
@@ -396,6 +397,86 @@ fn handle_get_context(_app: &AppHandle) -> serde_json::Value {
             "arch": std::env::consts::ARCH,
         }
     })
+}
+
+/// Append a session activity note. Encryption + Keychain access happen here
+/// (in the Tauri process) so the mcp-server sidecar doesn't need its own
+/// keychain ACL.
+///
+/// Params:
+///   session_id (string, required) — Weplex session id from WEPLEX_SESSION_ID
+///   profile_id (string, optional) — profile config_dir from WEPLEX_PROFILE_ID,
+///                                   defaults to "default"
+///   text (string, required) — note body, ≤10KB
+///   files_changed (array of string, optional)
+///   decisions (array of string, optional)
+fn handle_log_activity(params: &serde_json::Value) -> serde_json::Value {
+    const MAX_TEXT_LEN: usize = 10 * 1024;
+
+    let session_id = match params.get("session_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return rpc_error(-32602, "Missing or empty param: session_id"),
+    };
+    // Defence-in-depth: same allowlist as get_session_summary.
+    if !session_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return rpc_error(-32602, "Invalid session_id format");
+    }
+
+    let text = match params.get("text").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => return rpc_error(-32602, "Missing param: text"),
+    };
+    if text.len() > MAX_TEXT_LEN {
+        return rpc_error(-32602, format!("text exceeds {}B limit", MAX_TEXT_LEN));
+    }
+
+    // profile_id is required so that mcp-server invocations with a missing
+    // WEPLEX_PROFILE_ID env fail loudly here rather than silently writing
+    // notes under the system profile's key.
+    let profile_id = match params.get("profile_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return rpc_error(-32602, "Missing or empty param: profile_id"),
+    };
+
+    let files_changed: Vec<String> = params
+        .get("files_changed")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let decisions: Vec<String> = params
+        .get("decisions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let note = crate::session_summary::NoteEntry {
+        text,
+        files_changed,
+        decisions,
+        at: now,
+    };
+
+    match crate::session_summary::append_note(&session_id, &profile_id, note) {
+        Ok(()) => rpc_ok(serde_json::json!({ "ok": true, "at": now })),
+        Err(e) => rpc_error(-32603, e),
+    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ mod ipc_server;
 mod keychain;
 mod marketplace;
 mod mcp;
+mod notes_crypto;
 mod oauth_server;
 mod platform;
 mod plugin_host;

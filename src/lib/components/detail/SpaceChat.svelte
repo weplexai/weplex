@@ -3,6 +3,8 @@
   import { chatStore } from '../../stores/chatStore.svelte';
   import { authStore } from '../../stores/authStore.svelte';
   import { presenceStore } from '../../stores/presenceStore.svelte';
+  import { sessionStore } from '../../stores/sessionStore';
+  import { resolveProfileEnvId } from '../../utils/profile';
 
   let { serverId, sessionId }: { serverId: string; sessionId?: number } = $props();
 
@@ -316,7 +318,13 @@
         filesChanged: string[];
         decisions: string[];
         notes: { text: string; at: number }[];
-      } | null>('get_session_summary', { sessionId: String(sessionId) });
+      } | null>('get_session_summary', {
+        sessionId: String(sessionId),
+        profileId: (() => {
+          const sess = sessionStore.sessions.find((s) => s.id === sessionId);
+          return sess ? resolveProfileEnvId(sess) : 'default';
+        })(),
+      });
 
       if (!data) {
         chatStore.send(serverId, '📋 No activity recorded yet for this session.');

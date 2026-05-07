@@ -2,6 +2,7 @@
   import type { Session, NoteEntry } from '../../types';
   import { invoke } from '@tauri-apps/api/core';
   import { timeAgo } from '../../utils/time';
+  import { resolveProfileEnvId } from '../../utils/profile';
 
   // Svelte action: move the element into <body> on mount, remove on destroy.
   // Prevents position: fixed from being captured by an ancestor containing
@@ -41,6 +42,7 @@
     try {
       const data = await invoke<{ notes?: NoteEntry[] } | null>('get_session_summary', {
         sessionId: String(session.id),
+        profileId: resolveProfileEnvId(session),
       });
       notes = (data?.notes ?? []).slice(-3).reverse();
     } catch {

@@ -34,6 +34,9 @@
   } = $props();
 
   let effectiveStatus = $derived(statusOverride || session.status);
+  // Sessions restored from disk that haven't been spawned yet — distinguish in
+  // the sidebar so the dot color isn't misleading (no live PTY behind it).
+  let hibernated = $derived(sessionStore.isHibernated(session.id));
 
   let showMenu = $state(false);
   let showFolderMenu = $state(false);
@@ -284,8 +287,10 @@
   {/if}
   <span
     class="dot"
-    class:pulse={effectiveStatus === 'active' || effectiveStatus === 'thinking'}
-    style="background: {STATUS_COLORS[effectiveStatus]}"
+    class:pulse={!hibernated && (effectiveStatus === 'active' || effectiveStatus === 'thinking')}
+    class:hibernated
+    title={hibernated ? 'Sleeping — click to resume' : undefined}
+    style={hibernated ? undefined : `background: ${STATUS_COLORS[effectiveStatus]}`}
   ></span>
   {#if session.icon}
     <span class="icon"><SessionIcon icon={session.icon} /></span>
@@ -585,6 +590,13 @@
     border-radius: 50%;
     flex-shrink: 0;
     transition: background 0.3s ease;
+  }
+
+  /* Hibernated: outlined ring, no fill. Distinguishable from any live status
+     color and unambiguously communicates "no PTY yet". */
+  .dot.hibernated {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--weplex-text-muted, #6b6b80);
   }
 
   .dot.pulse {

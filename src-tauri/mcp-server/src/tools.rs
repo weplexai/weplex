@@ -1,10 +1,9 @@
 use crate::ipc_client::IpcClient;
 use serde_json::Value;
-use std::path::PathBuf;
 use weplex_mcp_contract::{
     IPC_METHOD_CREATE_SESSION, IPC_METHOD_GET_CONTEXT, IPC_METHOD_LIST_SESSIONS,
-    IPC_METHOD_READ_OUTPUT, IPC_METHOD_SEND_INPUT, TOOL_CREATE_SESSION, TOOL_GET_CONTEXT,
-    TOOL_LIST_SESSIONS, TOOL_LOG_ACTIVITY, TOOL_READ_OUTPUT, TOOL_SEND_INPUT,
+    IPC_METHOD_LOG_ACTIVITY, IPC_METHOD_READ_OUTPUT, IPC_METHOD_SEND_INPUT, TOOL_CREATE_SESSION,
+    TOOL_GET_CONTEXT, TOOL_LIST_SESSIONS, TOOL_LOG_ACTIVITY, TOOL_READ_OUTPUT, TOOL_SEND_INPUT,
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────
@@ -146,8 +145,15 @@ pub fn call_tool(
     global_ipc: &mut Option<IpcClient>,
 ) -> Result<Value, String> {
     match tool_name {
-        // Notes (always available)
-        name if name == TOOL_LOG_ACTIVITY => handle_log_activity(arguments, session_id),
+        // Notes — now goes through Tauri IPC so encryption + Keychain access
+        // happens in one trusted process. Requires Weplex running.
+        name if name == TOOL_LOG_ACTIVITY => {
+            let gipc = global_ipc.as_mut().ok_or(
+                "weplex_log_activity requires Weplex to be running (global socket not available)."
+                    .to_string(),
+            )?;
+            handle_log_activity(arguments, session_id, gipc)
+        }
         // Cross-session tools (v2) — require global socket
         name if name == TOOL_LIST_SESSIONS
             || name == TOOL_CREATE_SESSION
@@ -206,72 +212,30 @@ fn handle_v2_tool(
     }))
 }
 
-// ── Activity notes (file-based, no IPC) ───────────────────────────────────
+// ── Activity notes (delegated to Tauri over IPC) ───────────────────────────
+//
+// Encryption + Keychain access live in the main Tauri process. The sidecar
+// just validates and forwards. This is intentional: only one binary needs
+// keychain ACL and the cipher; if the user runs Claude without Weplex, notes
+// fail loudly instead of silently writing plaintext. The trade-off was made
+// explicitly — see CLAUDE.md / mcp-contract docs for the full rationale.
 
-/// Return the path to ~/.weplex/activity/
-fn activity_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".weplex/activity")
-}
-
-/// Atomically write `contents` to `path` with mode 0600 via tmp+rename.
-/// See `weplex/utils.rs::atomic_write_owner_only` for the long-form
-/// justification; this is a crate-local copy because `mcp-server` can't
-/// depend on the main Tauri crate. PID-suffixed tmp + `create_new`
-/// defends against symlink races.
-fn atomic_write_owner_only(path: &std::path::Path, contents: &str) -> Result<(), String> {
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "tmp".to_string());
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let tmp_path = parent.join(format!("{}.{}.tmp", file_name, std::process::id()));
-    let _ = std::fs::remove_file(&tmp_path);
-
-    #[cfg(unix)]
-    let write_result = {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)
-            .and_then(|mut f| f.write_all(contents.as_bytes()).and_then(|_| f.sync_all()))
-    };
-    #[cfg(not(unix))]
-    let write_result = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp_path)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, contents.as_bytes()));
-
-    if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("atomic_write: failed to write tmp: {}", e));
-    }
-
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("atomic_write: failed to rename: {}", e));
-    }
-
-    Ok(())
-}
-
-/// Append an activity note to the session summary file.
-/// Reads existing file, adds a new NoteEntry to the `notes` array, writes back.
-fn handle_log_activity(arguments: &Value, session_id: &str) -> Result<Value, String> {
-    if session_id.is_empty() {
-        return Err("WEPLEX_SESSION_ID not set — cannot save notes".to_string());
+/// Append an activity note by forwarding to Tauri IPC `log_activity`.
+fn handle_log_activity(
+    arguments: &Value,
+    session_id: &str,
+    ipc: &mut IpcClient,
+) -> Result<Value, String> {
+    if session_id.is_empty()
+        || !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Invalid or missing WEPLEX_SESSION_ID".to_string());
     }
 
     let summary = arguments
         .get("summary")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required argument: summary".to_string())?;
-
-    // Enforce 10KB limit on the note text
     if summary.len() > MAX_SUMMARY_SIZE {
         return Err(format!(
             "Note text exceeds {}KB limit ({} bytes)",
@@ -280,103 +244,56 @@ fn handle_log_activity(arguments: &Value, session_id: &str) -> Result<Value, Str
         ));
     }
 
-    let files_changed: Vec<String> = arguments
-        .get("filesChanged")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let decisions: Vec<String> = arguments
-        .get("decisions")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    // Build the new note entry
-    let new_note = serde_json::json!({
-        "text": summary,
-        "filesChanged": files_changed,
-        "decisions": decisions,
-        "at": now
-    });
-
-    // Validate session_id to prevent path traversal
-    if session_id.is_empty()
-        || !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("Invalid session ID format".to_string());
-    }
-
-    let dir = activity_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create activity dir: {}", e))?;
-
-    let path = dir.join(format!("{}.json", session_id));
-
-    // Read existing file or start fresh. Log when existing data is corrupt
-    // (we recover by resetting, but the user should know we dropped notes).
-    let mut payload: Value = match std::fs::read_to_string(&path) {
-        Ok(content) => match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!(
-                    "[weplex-mcp] session summary {} corrupt, resetting: {}",
-                    session_id, e
-                );
-                serde_json::json!({})
-            }
-        },
-        Err(_) => serde_json::json!({}),
+    // Profile id comes from WEPLEX_PROFILE_ID, set by TerminalView when it
+    // spawns the PTY. We accept "default" for the system profile but refuse
+    // an empty / unset env — the caller is using a Weplex build that doesn't
+    // know about this contract, and silently shoehorning notes into the
+    // default profile's Keychain key would scramble cross-profile reads.
+    let profile_id = match std::env::var("WEPLEX_PROFILE_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            return Err(
+                "WEPLEX_PROFILE_ID env not set — upgrade Weplex to a build that injects it"
+                    .to_string(),
+            );
+        }
     };
 
-    // Ensure notes array exists and append (max 200 entries to prevent unbounded growth)
-    if !payload.get("notes").map(|v| v.is_array()).unwrap_or(false) {
-        payload["notes"] = serde_json::json!([]);
+    let files_changed: Vec<Value> = arguments
+        .get("filesChanged")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let decisions: Vec<Value> = arguments
+        .get("decisions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let request = serde_json::json!({
+        "method": IPC_METHOD_LOG_ACTIVITY,
+        "params": {
+            "session_id": session_id,
+            "profile_id": profile_id,
+            "text": summary,
+            "files_changed": files_changed,
+            "decisions": decisions,
+        }
+    });
+
+    let response = ipc.send(request)?;
+    if let Some(err) = response.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown error");
+        return Err(msg.to_string());
     }
-    let notes = payload["notes"].as_array_mut().unwrap();
-    if notes.len() >= 200 {
-        notes.remove(0); // Drop oldest to stay within limit
-    }
-    notes.push(new_note);
-
-    // Update top-level fields for hook freshness check and backward compat
-    payload["updatedAt"] = serde_json::json!(now);
-    payload["summary"] = serde_json::json!(summary);
-    payload["filesChanged"] = serde_json::json!(files_changed);
-    payload["decisions"] = serde_json::json!(decisions);
-
-    let content = serde_json::to_string_pretty(&payload)
-        .map_err(|e| format!("Failed to serialize notes: {}", e))?;
-
-    atomic_write_owner_only(&path, &content)?;
-
-    let note_count = payload["notes"].as_array().map(|a| a.len()).unwrap_or(0);
-
-    eprintln!(
-        "[weplex-mcp] appended note #{} for session {} ({} bytes)",
-        note_count, session_id, content.len()
-    );
 
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
-            "text": format!(
-                "Activity note #{} recorded. Future you can read it back from this session's timeline.",
-                note_count
-            )
+            "text": "Activity note recorded. Future you can read it back from this session's timeline."
         }]
     }))
 }
