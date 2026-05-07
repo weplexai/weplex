@@ -5521,6 +5521,7 @@ dependencies = [
  "keyring",
  "log",
  "portable-pty",
+ "regex",
  "ring",
  "serde",
  "serde_json",
