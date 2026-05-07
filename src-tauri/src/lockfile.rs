@@ -283,6 +283,22 @@ pub fn load_lockfile(profile_config_dir: &str) -> Lockfile {
             if lf.generated_by.is_empty() {
                 lf.generated_by = default_generated_by();
             }
+            // W6: drop any entry whose `files` don't match what
+            // (kind, id, has_sidecar) implies. A tampered lockfile with
+            // `files: ["../escape.md"]` would otherwise have driven
+            // mutations and snapshots outside the profile dir. Treat
+            // bad entries as orphans rather than failing the whole
+            // load — the user can re-install the resource cleanly.
+            lf.resources.retain(|r| match validate_entry_paths(r) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!(
+                        "[weplex] dropping lockfile entry with invalid files: {}",
+                        e
+                    );
+                    false
+                }
+            });
             lf
         }
         Err(e) => {
@@ -407,6 +423,11 @@ pub fn apply_resource_mutation(
 
     if let Some(idx) = existing_idx {
         let entry = lf.resources[idx].clone();
+        // W6: defense-in-depth — `load_lockfile` already drops entries
+        // with bad `files`, but if a future code path inserts an entry
+        // without going through validation we still refuse to read or
+        // write paths derived from a malformed list.
+        validate_entry_paths(&entry)?;
         let sha16: String = entry.sha256.chars().take(16).collect();
         let cache_dir = cache_root(profile_config_dir).join(&sha16);
 
@@ -659,6 +680,33 @@ pub fn restore_resource(
             sidecar: sidecar_bytes,
         },
     )
+}
+
+/// W6: defense-in-depth path validation for a single LockfileEntry.
+///
+/// The lockfile lives in user-writable space, so a tampered or
+/// corrupted file could carry an entry like `files: ["../../etc/passwd"]`.
+/// While the user owns their own profile dir, we still refuse to act on
+/// such entries — it eliminates a whole class of accidental escapes
+/// (e.g. a buggy import that planted bad data) and turns a tamper
+/// attempt into a logged warning instead of a silent escape.
+///
+/// The single source of truth for files is `(kind, name, has_sidecar)`,
+/// so we recompute the expected list from the entry's own metadata and
+/// compare. Mismatch → reject.
+fn validate_entry_paths(entry: &LockfileEntry) -> Result<(), LockfileError> {
+    let (kind, name) = parse_resource_id(&entry.id)?;
+    sanitize_name(&name).map_err(LockfileError::Parse)?;
+    let expected = resource_files(kind, &name, entry.sidecar_sha256.is_some());
+    if entry.files.len() != expected.len()
+        || entry.files.iter().zip(&expected).any(|(a, b)| a != b)
+    {
+        return Err(LockfileError::Parse(format!(
+            "lockfile entry '{}' has unexpected files {:?}; expected {:?}",
+            entry.id, entry.files, expected,
+        )));
+    }
+    Ok(())
 }
 
 fn parse_resource_id(id: &str) -> Result<(ResourceKind, String), LockfileError> {
@@ -2015,6 +2063,66 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("agents/a1.md")).unwrap(),
             "v2"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_lockfile_drops_entries_with_tampered_files_paths() {
+        // W6 regression: a tampered lockfile carrying `files` outside the
+        // profile directory must be treated as an orphan, not driven
+        // through subsequent mutations and snapshots. The body file at
+        // its real location is untouched (we don't try to clean up
+        // unknown paths from a corrupt lockfile).
+        let dir = tmpdir("tampered-lockfile-files");
+        apply_resource_mutation(
+            dir.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "good".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let lockfile_path = dir.join(LOCKFILE_NAME);
+        let raw = std::fs::read_to_string(&lockfile_path).unwrap();
+        // Replace the legitimate files entry with a traversal one.
+        let tampered = raw.replace("agents/a1.md", "../../escape.md");
+        assert_ne!(raw, tampered, "expected to find files entry to tamper");
+        std::fs::write(&lockfile_path, tampered).unwrap();
+
+        // load_lockfile must drop the entry without erroring.
+        let lf = load_lockfile(dir.to_str().unwrap());
+        assert!(
+            lf.resources.is_empty(),
+            "tampered entry should have been dropped, got {:?}",
+            lf.resources
+        );
+
+        // A subsequent mutation with the same id should treat it as a
+        // fresh write — no snapshot of the orphan, no escape from the
+        // profile dir. The escape path must not have been created.
+        apply_resource_mutation(
+            dir.to_str().unwrap(),
+            ResourceKind::Agent,
+            "a1",
+            ResourceSource::User,
+            MutationKind::Upsert {
+                body: "new".into(),
+                sidecar: None,
+            },
+        )
+        .unwrap();
+        let parent = dir.parent().unwrap();
+        assert!(
+            !parent.parent().unwrap().join("escape.md").exists(),
+            "tampered ../../escape.md path must not be created"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("agents/a1.md")).unwrap(),
+            "new"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
