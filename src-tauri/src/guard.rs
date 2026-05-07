@@ -452,14 +452,40 @@ fn line_starts_with_key(line: &str, key: &str) -> bool {
     }
 }
 
+/// Parse the MCP URL and decide whether it's allowed. We accept any
+/// `https://` URL plus `http://` URLs whose host is exactly one of the
+/// loopback aliases. A `starts_with` check confused `http://localhost`
+/// with `http://localhost.evil.com/` (W-3) — host equality eliminates
+/// that class of bypass.
+fn is_mcp_url_allowed(url_str: &str) -> bool {
+    match url::Url::parse(url_str) {
+        Ok(u) => {
+            if u.scheme() == "https" {
+                return true;
+            }
+            if u.scheme() == "http" {
+                // Use `host()` (typed) and pattern-match the variants —
+                // `host_str()` returns the bracketed form `[::1]` for IPv6
+                // which makes string equality fragile. The typed
+                // `Host::Ipv6` matches `::1` cleanly.
+                use url::Host;
+                match u.host() {
+                    Some(Host::Domain(d)) => return d == "localhost",
+                    Some(Host::Ipv4(ip)) => return ip == std::net::Ipv4Addr::LOCALHOST,
+                    Some(Host::Ipv6(ip)) => return ip == std::net::Ipv6Addr::LOCALHOST,
+                    None => return false,
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 fn rule_mcp_url_not_https(ctx: &RuleCtx) -> Option<GuardFinding> {
     for s in ctx.mcp_servers {
         if let Some(u) = &s.url {
-            let allowed = u.starts_with("https://")
-                || u.starts_with("http://localhost")
-                || u.starts_with("http://127.0.0.1")
-                || u.starts_with("http://[::1]");
-            if !allowed {
+            if !is_mcp_url_allowed(u) {
                 return Some(GuardFinding {
                     rule_id: "mcp-url-not-https".into(),
                     severity: Severity::Block,
@@ -1203,6 +1229,42 @@ mod tests {
             command: None,
         }];
         assert!(rule_mcp_url_not_https(&mcp_ctx(&s)).is_none());
+    }
+
+    /// W-3 regression: `starts_with("http://localhost")` would have
+    /// accepted `http://localhost.evil.com/` because the prefix matches.
+    /// `is_mcp_url_allowed` parses the URL and compares the host string
+    /// for exact equality, so the spoofed host is rejected.
+    #[test]
+    fn mcp_url_localhost_evil_rejected() {
+        let s = vec![McpServerRef {
+            name: "x".into(),
+            url: Some("http://localhost.evil.com/mcp".into()),
+            command: None,
+        }];
+        let f = rule_mcp_url_not_https(&mcp_ctx(&s)).unwrap();
+        assert_eq!(f.rule_id, "mcp-url-not-https");
+        // 127.0.0.1 prefix bypass attempt
+        let s2 = vec![McpServerRef {
+            name: "y".into(),
+            url: Some("http://127.0.0.1.evil.com/mcp".into()),
+            command: None,
+        }];
+        let f2 = rule_mcp_url_not_https(&mcp_ctx(&s2)).unwrap();
+        assert_eq!(f2.rule_id, "mcp-url-not-https");
+    }
+
+    #[test]
+    fn mcp_url_ipv6_loopback_ok() {
+        let s = vec![McpServerRef {
+            name: "ok".into(),
+            url: Some("http://[::1]:3000/path".into()),
+            command: None,
+        }];
+        assert!(
+            rule_mcp_url_not_https(&mcp_ctx(&s)).is_none(),
+            "::1 loopback should pass"
+        );
     }
 
     // ── MCP unknown command rule ────────────────────────────────────
