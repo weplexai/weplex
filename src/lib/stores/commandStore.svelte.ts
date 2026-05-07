@@ -21,16 +21,22 @@ const VALID_ICON_COLORS = new Set([
   'text', 'text-secondary', 'text-muted',
 ]);
 
-/** Raw command file from Rust backend. */
+/** Discriminator for command vs pipeline. Mirrors Rust enum value. */
+export type CommandType = 'command' | 'pipeline';
+
+/** Raw command file from Rust backend. Rust struct uses
+ *  `#[serde(rename_all = "camelCase")]` so JSON keys are camelCase. */
 interface CommandFile {
   name: string;
-  file_path: string;
+  filePath: string;
   scope: string;
   description: string;
-  argument_hint: string;
-  allowed_tools: string[];
+  argumentHint: string;
+  allowedTools: string[];
   model: string;
   body: string;
+  /** "command" (default) or "pipeline". Backend defaults missing values to "command". */
+  commandType: CommandType;
 }
 
 /** Weplex display metadata overlay. */
@@ -51,6 +57,7 @@ export interface Command {
   allowedTools: string[];
   model: string;
   body: string;
+  commandType: CommandType;
   // Weplex display
   icon: string;
   iconColor: string;
@@ -93,22 +100,45 @@ function saveMeta(meta: Record<string, CommandMeta>) {
   localStorage.setItem(META_STORE_KEY, JSON.stringify(meta));
 }
 
+/** Coerce an unknown command_type value to the CommandType union.
+ *  Backend whitelist already enforces this, but we defensively normalize
+ *  for forward-compat. */
+function normalizeCommandType(v: unknown): CommandType {
+  return v === 'pipeline' ? 'pipeline' : 'command';
+}
+
 /** Merge raw command file with Weplex display metadata. */
 function mergeCommand(file: CommandFile, meta: CommandMeta | undefined): Command {
   return {
     name: file.name,
-    filePath: file.file_path,
+    filePath: file.filePath,
     scope: file.scope as 'user' | 'project',
     description: file.description,
-    argumentHint: file.argument_hint,
-    allowedTools: file.allowed_tools,
+    argumentHint: file.argumentHint,
+    allowedTools: file.allowedTools,
     model: file.model,
     body: file.body,
+    commandType: normalizeCommandType(file.commandType),
     icon: meta?.icon || file.name.charAt(0).toUpperCase(),
     iconColor: meta?.iconColor || 'text-muted',
     showInPanel: meta?.showInPanel ?? true,
     adapters: meta?.adapters || {},
   };
+}
+
+/** Argument shape for save(). Single object so callers don't have to track
+ *  positional ordering, and adding fields later is non-breaking. */
+export interface SaveCommandArgs {
+  name: string;
+  scope: 'user' | 'project';
+  cwd: string | undefined;
+  description: string;
+  argumentHint: string;
+  allowedTools: string[];
+  model: string;
+  body: string;
+  commandType: CommandType;
+  meta: CommandMeta;
 }
 
 class CommandStore {
@@ -151,12 +181,24 @@ class CommandStore {
     return VALID_ICON_COLORS.has(cmd.iconColor) ? cmd.iconColor : 'text-muted';
   }
 
+  /** User-scope, regular commands only (excludes pipelines). */
   get userCommands(): Command[] {
-    return this.commands.filter((c) => c.scope === 'user');
+    return this.commands.filter((c) => c.scope === 'user' && c.commandType === 'command');
   }
 
+  /** Project-scope, regular commands only (excludes pipelines). */
   get projectCommands(): Command[] {
-    return this.commands.filter((c) => c.scope === 'project');
+    return this.commands.filter((c) => c.scope === 'project' && c.commandType === 'command');
+  }
+
+  /** User-scope pipelines. */
+  get userPipelines(): Command[] {
+    return this.commands.filter((c) => c.scope === 'user' && c.commandType === 'pipeline');
+  }
+
+  /** Project-scope pipelines. */
+  get projectPipelines(): Command[] {
+    return this.commands.filter((c) => c.scope === 'project' && c.commandType === 'pipeline');
   }
 
   getByName(name: string, scope?: 'user' | 'project'): Command | undefined {
@@ -166,35 +208,47 @@ class CommandStore {
       || this.commands.find((c) => c.name === name && c.scope === 'user');
   }
 
-  /** Get commands visible in DetailPanel. */
-  getPanelCommands(): { user: Command[]; project: Command[] } {
+  /** Get commands visible in DetailPanel, split by scope and type. */
+  getPanelCommands(): {
+    userCommands: Command[];
+    userPipelines: Command[];
+    projectCommands: Command[];
+    projectPipelines: Command[];
+  } {
     return {
-      user: this.commands.filter((c) => c.scope === 'user' && c.showInPanel),
-      project: this.commands.filter((c) => c.scope === 'project' && c.showInPanel),
+      userCommands: this.commands.filter(
+        (c) => c.scope === 'user' && c.commandType === 'command' && c.showInPanel,
+      ),
+      userPipelines: this.commands.filter(
+        (c) => c.scope === 'user' && c.commandType === 'pipeline' && c.showInPanel,
+      ),
+      projectCommands: this.commands.filter(
+        (c) => c.scope === 'project' && c.commandType === 'command' && c.showInPanel,
+      ),
+      projectPipelines: this.commands.filter(
+        (c) => c.scope === 'project' && c.commandType === 'pipeline' && c.showInPanel,
+      ),
     };
   }
 
   /** Save a command to disk (creates/updates .md file). */
-  async save(
-    name: string,
-    scope: 'user' | 'project',
-    cwd: string | undefined,
-    description: string,
-    argumentHint: string,
-    allowedTools: string[],
-    model: string,
-    body: string,
-    meta: CommandMeta,
-  ): Promise<string | null> {
+  async save(args: SaveCommandArgs): Promise<string | null> {
     try {
       await invoke('save_command', {
-        name, scope, cwd: cwd || null,
-        description, argumentHint: argumentHint, allowedTools, model, body,
+        name: args.name,
+        scope: args.scope,
+        cwd: args.cwd || null,
+        description: args.description,
+        argumentHint: args.argumentHint,
+        allowedTools: args.allowedTools,
+        model: args.model,
+        body: args.body,
+        commandType: args.commandType,
       });
       // Save Weplex metadata
-      this.meta[name] = meta;
+      this.meta[args.name] = args.meta;
       saveMeta(this.meta);
-      await this.load(cwd);
+      await this.load(args.cwd);
       return null;
     } catch (e) {
       return e instanceof Error ? e.message : String(e);
@@ -222,7 +276,17 @@ class CommandStore {
     // Update in-memory
     this.commands = this.commands.map((c) =>
       c.name === name ? mergeCommand(
-        { name: c.name, file_path: c.filePath, scope: c.scope, description: c.description, argument_hint: c.argumentHint, allowed_tools: c.allowedTools, model: c.model, body: c.body },
+        {
+          name: c.name,
+          filePath: c.filePath,
+          scope: c.scope,
+          description: c.description,
+          argumentHint: c.argumentHint,
+          allowedTools: c.allowedTools,
+          model: c.model,
+          body: c.body,
+          commandType: c.commandType,
+        },
         this.meta[name],
       ) : c,
     );
