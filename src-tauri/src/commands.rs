@@ -395,8 +395,23 @@ pub fn save_command(
     allowed_tools: Vec<String>,
     model: String,
     body: String,
+    command_type: Option<String>,
 ) -> Result<String, String> {
     let safe_name = crate::utils::sanitize_name(&name)?;
+
+    // Whitelist: None or Some("command") = command, Some("pipeline") = pipeline.
+    // Anything else is rejected with a clear error so the frontend can't
+    // smuggle arbitrary frontmatter through this field.
+    let is_pipeline = match command_type.as_deref() {
+        None | Some("command") => false,
+        Some("pipeline") => true,
+        Some(other) => {
+            return Err(format!(
+                "invalid command_type {:?}: expected \"command\" or \"pipeline\"",
+                other
+            ));
+        }
+    };
 
     // Sanitize frontmatter values: strip newlines and "---" to prevent injection
     let sanitize_fm = |s: &str| -> String {
@@ -406,6 +421,12 @@ pub fn save_command(
     let mut frontmatter = String::from("---\n");
     if !description.is_empty() {
         frontmatter.push_str(&format!("description: {}\n", sanitize_fm(&description)));
+    }
+    if is_pipeline {
+        // Emit `type: pipeline` right after description (or at the top of
+        // the frontmatter if no description). Only "pipeline" is ever
+        // emitted — the implicit default is "command" so we don't write it.
+        frontmatter.push_str("type: pipeline\n");
     }
     if !argument_hint.is_empty() {
         frontmatter.push_str(&format!("argument-hint: {}\n", sanitize_fm(&argument_hint)));
@@ -572,6 +593,117 @@ mod tests {
         let content = "---\ndescription: x\n---\nbody";
         let f = parse_command_file(content, "/x.md", "user");
         assert_eq!(f.command_type, "command");
+    }
+
+    #[test]
+    fn save_command_pipeline_emits_type_in_frontmatter() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("save-pipeline");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let path = save_command(
+            None,
+            "my-pipe".to_string(),
+            "user".to_string(),
+            None,
+            "demo pipeline".to_string(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            "step 1\nstep 2".to_string(),
+            Some("pipeline".to_string()),
+        )
+        .expect("save_command should succeed");
+
+        let written = std::fs::read_to_string(&path).expect("read written .md");
+        assert!(
+            written.contains("type: pipeline\n"),
+            "expected 'type: pipeline' in frontmatter, got: {}",
+            written
+        );
+
+        // Round-trip through parse_command_file to confirm.
+        let parsed = parse_command_file(&written, &path, "user");
+        assert_eq!(parsed.command_type, "pipeline");
+        assert_eq!(parsed.description, "demo pipeline");
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn save_command_command_type_omits_type_in_frontmatter() {
+        // Default and explicit "command" must NOT emit a `type:` line —
+        // existing .md files have never had one, and we don't want to
+        // start writing it for the implicit case.
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("save-default");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let path = save_command(
+            None,
+            "plain".to_string(),
+            "user".to_string(),
+            None,
+            "regular command".to_string(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            "do thing".to_string(),
+            None,
+        )
+        .expect("save_command should succeed");
+
+        let written = std::fs::read_to_string(&path).expect("read written .md");
+        assert!(
+            !written.contains("type:"),
+            "expected no 'type:' line for default command, got: {}",
+            written
+        );
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn save_command_invalid_type_returns_error() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("save-invalid");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let err = save_command(
+            None,
+            "bogus".to_string(),
+            "user".to_string(),
+            None,
+            "x".to_string(),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            "body".to_string(),
+            Some("garbage".to_string()),
+        )
+        .expect_err("invalid command_type must return Err");
+        assert!(
+            err.contains("invalid command_type") && err.contains("garbage"),
+            "expected clear error mentioning the bad value, got: {}",
+            err
+        );
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
