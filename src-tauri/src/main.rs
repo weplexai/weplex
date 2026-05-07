@@ -242,6 +242,12 @@ fn main() {
             manifest::list_profile_manifests,
             compiler::compile_profile_to_external_agents,
             compiler::dry_run_compile_profile,
+            // Cross-agent guard
+            guard::scan_resource,
+            guard::scan_profile,
+            guard::scan_mcp_server,
+            guard::set_override_decision,
+            guard::list_overrides,
             // Git & project config
             git::get_project_config,
             git::get_git_branch,
