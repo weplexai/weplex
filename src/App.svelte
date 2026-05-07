@@ -35,6 +35,7 @@
   import { initNotifications } from './lib/services/notificationService';
   import { pluginStore } from './lib/stores/pluginStore.svelte';
   import { loadActivePlugins } from './lib/services/pluginLoader';
+  import { migrateLegacyWeplex } from './lib/services/profileArchive';
   import { invoke } from '@tauri-apps/api/core';
 
   onMount(() => {
@@ -78,6 +79,28 @@
 
     // Discover resources from all profiles (unified view)
     resourceStore.discover();
+
+    // One-shot legacy `~/.weplex/` migration into the default profile.
+    // Idempotent on the backend (flag file), so calling on every launch
+    // is cheap. Fire-and-forget — UI must not block on this. If anything
+    // is migrated, surface a console hint so the user knows where their
+    // old agents/skills went.
+    const defaultProfile =
+      profileStore.profiles.find((p) => p.isDefault) ?? profileStore.profiles[0];
+    if (defaultProfile?.configDir) {
+      migrateLegacyWeplex(defaultProfile.configDir)
+        .then((report) => {
+          if (
+            !report.alreadyDone &&
+            report.migratedAgents + report.migratedSkills > 0
+          ) {
+            console.info(
+              `[weplex] Imported ${report.migratedAgents + report.migratedSkills} legacy resources into ${defaultProfile.name}`,
+            );
+          }
+        })
+        .catch((e) => console.warn('[weplex] legacy migration failed:', e));
+    }
 
     window.addEventListener('keydown', handleGlobalKeydown);
 

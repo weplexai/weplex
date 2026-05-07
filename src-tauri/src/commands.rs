@@ -120,17 +120,22 @@ pub struct EnsureDefaultCommandsResult {
     pub sidecar_warnings: Vec<String>,
 }
 
-/// Create default command files in ~/.claude/commands/ if they don't exist.
+/// Create default command files in the profile's commands/ directory if
+/// they don't exist.
+///
+/// `profile_config_dir = None` defaults to `~/.claude` (default profile).
 ///
 /// Each default ships with a sibling `<name>.weplex.yaml` cross-agent
-/// manifest. The sidecar is written ONLY when the .md is freshly created
-/// — we never overwrite a user-edited file. If sidecar write fails we
-/// log a warning but keep the .md (backward-compat: .md alone still
-/// works as Claude-only).
+/// manifest. Both files route through the lockfile (`source: builtin`)
+/// so installs are tracked and any prior version lands in history.
+/// Existing files are not overwritten — the lockfile's same-sha no-op
+/// short-circuits.
 #[tauri::command]
-pub fn ensure_default_commands() -> Result<EnsureDefaultCommandsResult, String> {
-    let home = crate::utils::get_home();
-    let dir = format!("{}/.claude/commands", home);
+pub fn ensure_default_commands(
+    profile_config_dir: Option<String>,
+) -> Result<EnsureDefaultCommandsResult, String> {
+    let profile_dir = resolve_profile_config_dir(profile_config_dir)?;
+    let dir = format!("{}/commands", profile_dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let defaults: Vec<(&str, &str)> = vec![
@@ -251,38 +256,84 @@ mcp_servers: []
         sidecar_warnings: Vec::new(),
     };
     for (name, content) in defaults {
-        let path = format!("{}/{}.md", dir, name);
-        if !std::path::Path::new(&path).exists() {
-            std::fs::write(&path, content).map_err(|e| e.to_string())?;
-            result.md_created += 1;
-        }
+        let md_path = format!("{}/{}.md", dir, name);
+        let sidecar_path = format!("{}/{}.weplex.yaml", dir, name);
+        let md_existed = std::path::Path::new(&md_path).exists();
+        let sidecar_existed = std::path::Path::new(&sidecar_path).exists();
+        let want_sidecar = sidecar_for(name).is_some();
 
-        // Self-heal sidecar manifests independently from the .md write.
-        // If a previous run created the .md but failed (or was skipped)
-        // for the sidecar — e.g. the .weplex.yaml story was added in a
-        // later release, or the sidecar was deleted by hand — write it
-        // now. Best-effort: never fail the whole call on a sidecar
-        // write error, the .md alone still works as Claude-only.
-        if let Some(sidecar_body) = sidecar_for(name) {
-            let sidecar_path = format!("{}/{}.weplex.yaml", dir, name);
-            if !std::path::Path::new(&sidecar_path).exists() {
-                match std::fs::write(&sidecar_path, sidecar_body) {
-                    Ok(()) => result.sidecars_created += 1,
-                    Err(e) => {
-                        let msg = format!(
-                            "ensure_default_commands: failed to write sidecar {}: {}",
-                            sidecar_path, e
-                        );
-                        // Keep the log:warn for operators tailing logs,
-                        // AND surface the warning in the structured result.
-                        log::warn!("{}", msg);
-                        result.sidecar_warnings.push(msg);
+        // Self-heal semantics: never clobber a user-edited .md, but
+        // re-write a missing sidecar even when the .md is present.
+        // Three cases:
+        // 1) Neither exists → install both via lockfile.
+        // 2) .md exists, sidecar missing (or no sidecar in defaults) →
+        //    write only the missing piece directly. Don't touch the
+        //    lockfile when the user already owns the .md.
+        // 3) Both exist → no-op.
+        if !md_existed {
+            // Case 1: full install through lockfile.
+            let body_for_install = content.to_string();
+            let sidecar_body = sidecar_for(name).map(|s| s.to_string());
+            match crate::lockfile::apply_resource_mutation(
+                &profile_dir,
+                crate::manifest::ResourceKind::Command,
+                name,
+                crate::lockfile::ResourceSource::Builtin,
+                crate::lockfile::MutationKind::Upsert {
+                    body: body_for_install,
+                    sidecar: sidecar_body,
+                },
+            ) {
+                Ok(_) => {
+                    result.md_created += 1;
+                    if want_sidecar {
+                        result.sidecars_created += 1;
                     }
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "ensure_default_commands: failed to install {}: {}",
+                        name, e
+                    );
+                    log::warn!("{}", msg);
+                    result.sidecar_warnings.push(msg);
+                }
+            }
+        } else if want_sidecar && !sidecar_existed {
+            // Case 2: self-heal a missing sidecar without touching the
+            // user's .md. Write it directly — best-effort, never fail
+            // the whole call.
+            let sidecar_body = sidecar_for(name).expect("checked above");
+            match std::fs::write(&sidecar_path, sidecar_body) {
+                Ok(()) => result.sidecars_created += 1,
+                Err(e) => {
+                    let msg = format!(
+                        "ensure_default_commands: failed to write sidecar {}: {}",
+                        sidecar_path, e
+                    );
+                    log::warn!("{}", msg);
+                    result.sidecar_warnings.push(msg);
                 }
             }
         }
+        // Case 3 (both exist): nothing to do.
     }
     Ok(result)
+}
+
+/// Resolve a profile_config_dir argument. None = default `~/.claude`.
+fn resolve_profile_config_dir(profile_config_dir: Option<String>) -> Result<String, String> {
+    match profile_config_dir {
+        None => {
+            let home = crate::utils::get_home();
+            Ok(format!("{}/.claude", home))
+        }
+        Some(p) if p.is_empty() => {
+            let home = crate::utils::get_home();
+            Ok(format!("{}/.claude", home))
+        }
+        Some(p) => crate::utils::validate_config_dir(&p),
+    }
 }
 
 /// List all Claude commands: user-level (~/.claude/commands/) + project-level ({cwd}/.claude/commands/).
@@ -305,8 +356,17 @@ pub fn list_commands(cwd: Option<String>) -> Result<Vec<CommandFile>, String> {
 }
 
 /// Save a Claude command file (frontmatter + body).
+///
+/// `scope = "user"` routes through the lockfile so the install is
+/// tracked with `source: User`. `profile_config_dir = None` defaults to
+/// `~/.claude`.
+///
+/// `scope = "project"` keeps the legacy behavior: writes to
+/// `<cwd>/.claude/commands/` without lockfile bookkeeping. Project
+/// commands are not part of any profile.
 #[tauri::command]
 pub fn save_command(
+    profile_config_dir: Option<String>,
     name: String,
     scope: String,
     cwd: Option<String>,
@@ -317,18 +377,6 @@ pub fn save_command(
     body: String,
 ) -> Result<String, String> {
     let safe_name = crate::utils::sanitize_name(&name)?;
-    let home = crate::utils::get_home();
-
-    let dir = if scope == "project" {
-        let cwd = cwd.ok_or("cwd required for project commands")?;
-        let resolved = crate::utils::resolve_cwd(&cwd);
-        format!("{}/.claude/commands", resolved)
-    } else {
-        format!("{}/.claude/commands", home)
-    };
-
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = format!("{}/{}.md", dir, safe_name);
 
     // Sanitize frontmatter values: strip newlines and "---" to prevent injection
     let sanitize_fm = |s: &str| -> String {
@@ -349,15 +397,53 @@ pub fn save_command(
         frontmatter.push_str(&format!("model: {}\n", sanitize_fm(&model)));
     }
     frontmatter.push_str("---\n\n");
-
     let content = format!("{}{}", frontmatter, body);
-    std::fs::write(&path, content).map_err(|e| e.to_string())?;
-    Ok(path)
+
+    if scope == "project" {
+        // Project-scoped commands live with the repo and are not part
+        // of any profile. Keep the legacy behavior.
+        let cwd = cwd.ok_or("cwd required for project commands")?;
+        let resolved = crate::utils::resolve_cwd(&cwd);
+        let dir = format!("{}/.claude/commands", resolved);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = format!("{}/{}.md", dir, safe_name);
+        std::fs::write(&path, content).map_err(|e| e.to_string())?;
+        return Ok(path);
+    }
+
+    // User scope: route through lockfile.
+    let profile_dir = resolve_profile_config_dir(profile_config_dir)?;
+    crate::lockfile::apply_resource_mutation(
+        &profile_dir,
+        crate::manifest::ResourceKind::Command,
+        &safe_name,
+        crate::lockfile::ResourceSource::User,
+        crate::lockfile::MutationKind::Upsert {
+            body: content,
+            sidecar: None,
+        },
+    )
+    .map_err(|e| format!("{}", e))?;
+
+    Ok(format!("{}/commands/{}.md", profile_dir, safe_name))
 }
 
 /// Delete a Claude command file.
+///
+/// `profile_config_dir = None` is interpreted as either:
+///   - the default `~/.claude` profile (user-scope command), OR
+///   - a project-scope command living in `<cwd>/.claude/commands/`.
+///
+/// For user-scope commands routed through a known profile (the lockfile
+/// has an entry for them), the deletion goes through the lockfile so
+/// the previous version lands in history (rollback-able). For
+/// project-scope and unrecorded commands, falls back to a direct
+/// filesystem delete after the same path validations as before.
 #[tauri::command]
-pub fn delete_command(path: String) -> Result<(), String> {
+pub fn delete_command(
+    profile_config_dir: Option<String>,
+    path: String,
+) -> Result<(), String> {
     let canon = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     let canon_str = canon.to_string_lossy().to_string();
 
@@ -366,19 +452,61 @@ pub fn delete_command(path: String) -> Result<(), String> {
         return Err("Can only delete .md files".to_string());
     }
 
-    // Validate: parent dir must be named "commands" and grandparent must be ".claude"
+    // Validate: parent dir must be named "commands"
     let parent = canon.parent().ok_or("Invalid path")?;
-    let grandparent = parent.parent().ok_or("Invalid path")?;
     let parent_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let grandparent_name = grandparent.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if parent_name != "commands" || grandparent_name != ".claude" {
-        return Err("Path is not within a .claude/commands/ directory".to_string());
+    if parent_name != "commands" {
+        return Err("Path is not within a commands/ directory".to_string());
     }
 
     // Additionally verify it's under $HOME
     let home = crate::utils::get_home();
     if !canon_str.starts_with(&home) {
         return Err("Path must be under home directory".to_string());
+    }
+
+    // Try lockfile routing if a profile dir is supplied.
+    if let Some(p) = profile_config_dir.as_ref()
+        && !p.is_empty()
+    {
+        let profile_dir = crate::utils::validate_config_dir(p)?;
+        let expected_dir = format!("{}/commands", profile_dir);
+        if let Some(parent_str) = parent.to_str()
+            && parent_str == expected_dir
+        {
+            // Compute the resource name from the file stem.
+            let name = canon
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("Invalid filename")?
+                .to_string();
+            // Check the lockfile actually has it.
+            let lf = crate::lockfile::load_lockfile(&profile_dir);
+            let id = format!("commands/{}", name);
+            if lf.resources.iter().any(|r| r.id == id) {
+                crate::lockfile::apply_resource_mutation(
+                    &profile_dir,
+                    crate::manifest::ResourceKind::Command,
+                    &name,
+                    crate::lockfile::ResourceSource::User,
+                    crate::lockfile::MutationKind::Delete,
+                )
+                .map_err(|e| format!("{}", e))?;
+                return Ok(());
+            }
+        }
+    }
+
+    // Fallback: direct delete (project-scope or unrecorded user-scope).
+    // We still require the grandparent to be `.claude` for the
+    // project-scope safety check, which the original code enforced.
+    let grandparent = parent.parent().ok_or("Invalid path")?;
+    let grandparent_name = grandparent
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if grandparent_name != ".claude" && profile_config_dir.is_none() {
+        return Err("Path is not within a .claude/commands/ directory".to_string());
     }
     if canon.exists() {
         std::fs::remove_file(&canon).map_err(|e| e.to_string())?;
@@ -413,7 +541,7 @@ mod tests {
         let prev = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", &canon_home); }
 
-        let result = ensure_default_commands().unwrap();
+        let result = ensure_default_commands(None).unwrap();
         // Three default commands ship: review, review-iterate, plan.
         assert_eq!(result.md_created, 3);
         assert_eq!(result.sidecars_created, 3);
@@ -442,17 +570,43 @@ mod tests {
         unsafe { std::env::set_var("HOME", &canon_home); }
 
         // First run: full creation.
-        let _ = ensure_default_commands().unwrap();
+        let _ = ensure_default_commands(None).unwrap();
         let cmd_dir = canon_home.join(".claude").join("commands");
         // Delete one sidecar by hand.
         std::fs::remove_file(cmd_dir.join("review.weplex.yaml")).unwrap();
 
         // Second run: md untouched, only the deleted sidecar is re-created.
-        let result = ensure_default_commands().unwrap();
+        let result = ensure_default_commands(None).unwrap();
         assert_eq!(result.md_created, 0);
         assert_eq!(result.sidecars_created, 1);
         assert!(result.sidecar_warnings.is_empty());
         assert!(cmd_dir.join("review.weplex.yaml").exists());
+
+        if let Some(p) = prev {
+            unsafe { std::env::set_var("HOME", p); }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn ensure_default_commands_writes_lockfile_with_source_builtin() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let home = tmpdir("ensure-lockfile");
+        let canon_home = std::fs::canonicalize(&home).unwrap();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &canon_home); }
+
+        let _ = ensure_default_commands(None).unwrap();
+
+        // Read the lockfile and confirm each builtin landed with the
+        // Builtin source marker.
+        let profile_dir = canon_home.join(".claude");
+        let lf = crate::lockfile::load_lockfile(profile_dir.to_str().unwrap());
+        assert_eq!(lf.resources.len(), 3);
+        for entry in &lf.resources {
+            assert_eq!(entry.source, crate::lockfile::ResourceSource::Builtin);
+            assert!(entry.id.starts_with("commands/"));
+        }
 
         if let Some(p) = prev {
             unsafe { std::env::set_var("HOME", p); }
@@ -470,8 +624,8 @@ mod tests {
         let prev = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", &canon_home); }
 
-        let _ = ensure_default_commands().unwrap();
-        let result = ensure_default_commands().unwrap();
+        let _ = ensure_default_commands(None).unwrap();
+        let result = ensure_default_commands(None).unwrap();
         assert_eq!(result.md_created, 0);
         assert_eq!(result.sidecars_created, 0);
         assert!(result.sidecar_warnings.is_empty());

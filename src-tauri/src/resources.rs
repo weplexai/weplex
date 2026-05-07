@@ -293,6 +293,10 @@ pub fn copy_all_to_profile(
 // ─── Create / Delete ────────────────────────────────────────────────────
 
 /// Create a new resource file in a specific profile.
+///
+/// Non-lockfile-aware primitive kept for tests and rare callers that need
+/// a direct write; production paths go through the lockfile.
+#[allow(dead_code)]
 pub fn create_resource(
     config_dir: &str,
     resource_type: ResourceType,

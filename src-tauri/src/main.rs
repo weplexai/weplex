@@ -14,6 +14,7 @@ mod hook_server;
 mod hooks;
 mod ipc_server;
 mod keychain;
+mod lockfile;
 mod manifest;
 mod marketplace;
 mod mcp;
@@ -82,6 +83,52 @@ fn resize_pty(state: State<AppState>, session_id: u32, cols: u16, rows: u16) -> 
 fn kill_pty(state: State<AppState>, session_id: u32) -> Result<(), String> {
     let mut manager = state.pty_manager.lock().map_err(|e| e.to_string())?;
     manager.kill(session_id).map_err(|e| e.to_string())
+}
+
+/// Discover every Claude profile dir and run lockfile cache GC for each.
+/// Best-effort: every error is logged and skipped — startup must not
+/// block on this. Runs ~/.claude plus every ~/.claude-* directory.
+fn run_lockfile_gc_for_all_profiles() {
+    let home = utils::get_home();
+    let mut profiles: Vec<String> = Vec::new();
+
+    let default = format!("{}/.claude", home);
+    if std::path::Path::new(&default).is_dir() {
+        profiles.push(default);
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&home) {
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else { continue };
+            if !name.starts_with(".claude-") || name.len() <= 8 {
+                continue;
+            }
+            let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            profiles.push(format!("{}/{}", home, name));
+        }
+    }
+
+    for p in profiles {
+        match lockfile::run_cache_gc(&p) {
+            Ok(deleted) if deleted > 0 => {
+                info!("lockfile gc: removed {} stale cache dir(s) in {}", deleted, p);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // "lockfile already in use" isn't an error worth shouting
+                // about — another instance is mutating; that's fine.
+                let msg = format!("{}", e);
+                if msg.contains("already in use") {
+                    log::debug!("lockfile gc skipped (busy) for {}: {}", p, msg);
+                } else {
+                    log::warn!("lockfile gc failed for {}: {}", p, msg);
+                }
+            }
+        }
+    }
 }
 
 /// Clean stale session-map files on startup.
@@ -215,6 +262,13 @@ fn main() {
                 let _ = clean_session_map();
             });
 
+            // Best-effort cache GC for every discoverable profile.
+            // Errors are logged, never propagated — a stale cache dir
+            // is annoying but not fatal.
+            std::thread::spawn(|| {
+                run_lockfile_gc_for_all_profiles();
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -242,6 +296,13 @@ fn main() {
             manifest::list_profile_manifests,
             compiler::compile_profile_to_external_agents,
             compiler::dry_run_compile_profile,
+            // Lockfile (Phase 3)
+            lockfile::read_lockfile,
+            lockfile::restore_resource_version,
+            lockfile::export_profile,
+            lockfile::import_profile,
+            lockfile::inspect_profile_archive_cmd,
+            lockfile::migrate_legacy_weplex,
             // Cross-agent guard
             guard::scan_resource,
             guard::scan_profile,
@@ -265,8 +326,7 @@ fn main() {
             // Platform
             platform::open_url,
             // Marketplace
-            marketplace::save_marketplace_package,
-            marketplace::save_marketplace_skill,
+            marketplace::install_marketplace_package,
             // Plugins & browser
             list_installed_plugins,
             activate_plugin,
@@ -299,6 +359,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .build(tauri::generate_context!())
         .expect("error while building Weplex")
         .run(|app, event| {

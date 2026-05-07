@@ -10,6 +10,7 @@
   import { profileStore } from '../../stores/profileStore.svelte';
   import { settingsStore } from '../../stores/settingsStore.svelte';
   import { guardStore } from '../../stores/guardStore.svelte';
+  import { lockfileStore } from '../../stores/lockfileStore.svelte';
   import { schedule as scheduleCompile } from '../../utils/compileScheduler';
   import type { CompileReport } from '../../types/guard';
   import {
@@ -23,16 +24,24 @@
     Send,
     ShieldAlert,
     Eye,
+    Upload,
   } from 'lucide-svelte';
   import { initial } from '../overlays/helpers';
   import ResourceGuardBadge from './ResourceGuardBadge.svelte';
+  import HubResourceHistory from './HubResourceHistory.svelte';
   import GuardWarningDialog from '../overlays/GuardWarningDialog.svelte';
+  import ExportProfileButton from '../overlays/ExportProfileButton.svelte';
+  import ImportProfileArchiveDialog from '../overlays/ImportProfileArchiveDialog.svelte';
 
   // ─── State ────────────────────────────────────────────────────────────
 
   let activeTab = $state<ResourceType>('agent');
   let selectedResource = $state<UnifiedResource | null>(null);
   let selectedProfileTab = $state<string | null>(null);
+  // Right-pane secondary tab strip: Content (current view) | History (lockfile).
+  let detailTab = $state<'content' | 'history'>('content');
+  // Toggles the import-archive flow opened from the sidebar footer.
+  let showImportArchiveDialog = $state(false);
 
   // Editor
   let editMode = $state<'view' | 'new'>('view');
@@ -74,14 +83,35 @@
 
   let activeTabInfo = $derived(tabs.find((t) => t.id === activeTab)!);
 
+  /**
+   * Profile to target for export/import — prefer the profile that owns
+   * the currently-selected resource so the archive flow follows the
+   * user's gaze. Falls back to the first profile with a configDir.
+   */
+  let archiveTargetProfile = $derived.by(() => {
+    if (selectedResource) {
+      const owning = selectedResource.profiles.find(
+        (p) => p.profileId === selectedProfileTab,
+      ) ?? selectedResource.profiles[0];
+      if (owning) {
+        const profile = profileStore.profiles.find(
+          (p) => p.id === owning.profileId,
+        );
+        if (profile?.configDir) return profile;
+      }
+    }
+    return profileStore.profiles.find((p) => !!p.configDir) ?? null;
+  });
+
   // ─── Lifecycle ────────────────────────────────────────────────────────
 
   onMount(() => {
     resourceStore.discover();
-    // Initial guard scan for every profile that has a configDir.
+    // Initial guard scan + lockfile load for every profile that has a configDir.
     for (const p of profileStore.profiles) {
       if (p.configDir) {
         guardStore.refresh(p.configDir, settingsStore.settings.agentshieldDeepScan);
+        lockfileStore.refresh(p.configDir);
       }
     }
 
@@ -104,6 +134,23 @@
     selectedResource = r;
     selectedProfileTab = r.profiles[0]?.profileId ?? null;
     editMode = 'view';
+    // Always start on Content — History tab is opt-in per selection.
+    detailTab = 'content';
+  }
+
+  /**
+   * Lockfile resource id is `<kindDir>/<name>` — e.g. `agents/architect`.
+   * Mirrors the backend's `ResourceKind::dir_name` mapping. Resource type
+   * pluralisation differs only for `skill` vs the directory `skills`, so
+   * keep this in sync with manifest.rs.
+   */
+  function lockfileIdFor(r: UnifiedResource): string {
+    const dir = r.resourceType === 'agent'
+      ? 'agents'
+      : r.resourceType === 'rule'
+        ? 'rules'
+        : 'skills';
+    return `${dir}/${r.name}`;
   }
 
   function startNew() {
@@ -337,6 +384,10 @@
         {#each tabResources as r}
           {@const guardPath = profilePathFor(r)}
           {@const guardProfileDir = guardPath ? configDirFor(guardPath) : null}
+          {@const lockfileId = lockfileIdFor(r)}
+          {@const drifted = guardProfileDir
+            ? lockfileStore.isDrifted(guardProfileDir, lockfileId)
+            : false}
           <button
             class="resource-row"
             class:selected={selectedResource?.name === r.name && editMode === 'view'}
@@ -345,13 +396,21 @@
             <span class="row-icon">{initial(r.name)}</span>
             <div class="row-content">
               <span class="row-name">{r.name}</span>
-              {#if hasMultipleProfiles}
+              {#if hasMultipleProfiles || drifted}
                 <span class="row-badges">
-                  <span class="badge" class:differs={r.differs}>
-                    {profileBadgeText(r)}
-                  </span>
-                  {#if r.differs}
-                    <span class="differs-icon" title="Content differs between profiles">⚠️</span>
+                  {#if hasMultipleProfiles}
+                    <span class="badge" class:differs={r.differs}>
+                      {profileBadgeText(r)}
+                    </span>
+                    {#if r.differs}
+                      <span class="differs-icon" title="Content differs between profiles">⚠️</span>
+                    {/if}
+                  {/if}
+                  {#if drifted}
+                    <span
+                      class="drift-pill"
+                      title="On-disk file differs from the lockfile — see History"
+                    >drifted</span>
                   {/if}
                 </span>
               {/if}
@@ -385,6 +444,22 @@
         <Send size={13} />
         <span>Sync to external agents</span>
       </button>
+      <!-- Phase 3: portable profile archives. Both buttons act on the
+           profile that owns the currently-selected resource if any, else
+           fall back to the default profile. -->
+      {#if archiveTargetProfile}
+        <ExportProfileButton
+          profileConfigDir={archiveTargetProfile.configDir!}
+          profileName={archiveTargetProfile.name}
+        />
+        <button
+          class="resources-action-btn"
+          onclick={() => (showImportArchiveDialog = true)}
+        >
+          <Upload size={13} />
+          <span>Import archive</span>
+        </button>
+      {/if}
     </div>
   </div>
 
@@ -461,63 +536,98 @@
           </div>
         </div>
 
-        {#if selectedResource.differs && selectedResource.profiles.length > 1}
-          <div class="profile-tabs">
-            {#each selectedResource.profiles as p}
-              <button
-                class="profile-tab"
-                class:active={selectedProfileTab === p.profileId}
-                onclick={() => (selectedProfileTab = p.profileId)}
-              >
-                {p.profileName}
-              </button>
-            {/each}
-          </div>
-        {/if}
+        <!-- Secondary tab strip: Content (existing view) | History (lockfile). -->
+        <div class="detail-tabs">
+          <button
+            class="detail-tab"
+            class:active={detailTab === 'content'}
+            onclick={() => (detailTab = 'content')}
+          >Content</button>
+          <button
+            class="detail-tab"
+            class:active={detailTab === 'history'}
+            onclick={() => (detailTab = 'history')}
+          >History</button>
+        </div>
 
-        {#if selectedResource.description}
-          <p class="detail-description">{selectedResource.description}</p>
-        {/if}
-
-        {#each [selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]] as activeProfile}
-          {#if activeProfile}
-            {@const activeProfileDir = configDirFor(activeProfile.filePath)}
-            {@const activeVerdict = activeProfileDir
-              ? guardStore.verdictForInProfile(activeProfileDir, activeProfile.filePath)
-              : guardStore.verdictFor(activeProfile.filePath)}
-            <div class="detail-meta">
-              <span class="meta-path">{activeProfile.filePath}</span>
-              <div class="meta-actions">
+        {#if detailTab === 'content'}
+          {#if selectedResource.differs && selectedResource.profiles.length > 1}
+            <div class="profile-tabs">
+              {#each selectedResource.profiles as p}
                 <button
-                  class="meta-btn"
-                  title="Preview compile"
-                  disabled={operating}
-                  onclick={() => runPreview(activeProfile.filePath)}
+                  class="profile-tab"
+                  class:active={selectedProfileTab === p.profileId}
+                  onclick={() => (selectedProfileTab = p.profileId)}
                 >
-                  <Eye size={13} />
+                  {p.profileName}
                 </button>
-                {#if activeVerdict !== 'green'}
-                  <button
-                    class="meta-btn meta-btn-guard"
-                    title="Guard details"
-                    disabled={operating}
-                    onclick={() => openGuardDialog(activeProfile.filePath)}
-                  >
-                    <ShieldAlert size={13} />
-                  </button>
-                {/if}
-                <button
-                  class="meta-btn"
-                  title="Delete"
-                  disabled={operating}
-                  onclick={() => (confirmDelete = { name: selectedResource!.name, filePath: activeProfile.filePath })}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
+              {/each}
             </div>
           {/if}
-        {/each}
+
+          {#if selectedResource.description}
+            <p class="detail-description">{selectedResource.description}</p>
+          {/if}
+
+          {#each [selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]] as activeProfile}
+            {#if activeProfile}
+              {@const activeProfileDir = configDirFor(activeProfile.filePath)}
+              {@const activeVerdict = activeProfileDir
+                ? guardStore.verdictForInProfile(activeProfileDir, activeProfile.filePath)
+                : guardStore.verdictFor(activeProfile.filePath)}
+              <div class="detail-meta">
+                <span class="meta-path">{activeProfile.filePath}</span>
+                <div class="meta-actions">
+                  <button
+                    class="meta-btn"
+                    title="Preview compile"
+                    disabled={operating}
+                    onclick={() => runPreview(activeProfile.filePath)}
+                  >
+                    <Eye size={13} />
+                  </button>
+                  {#if activeVerdict !== 'green'}
+                    <button
+                      class="meta-btn meta-btn-guard"
+                      title="Guard details"
+                      disabled={operating}
+                      onclick={() => openGuardDialog(activeProfile.filePath)}
+                    >
+                      <ShieldAlert size={13} />
+                    </button>
+                  {/if}
+                  <button
+                    class="meta-btn"
+                    title="Delete"
+                    disabled={operating}
+                    onclick={() => (confirmDelete = { name: selectedResource!.name, filePath: activeProfile.filePath })}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            {/if}
+          {/each}
+        {:else}
+          <!-- History tab: per-resource lockfile entries.
+               Use the active profile's configDir (the one whose body is currently
+               displayed) so history matches what the user is looking at. -->
+          {@const activeProfile = selectedResource.profiles.find((p) => p.profileId === selectedProfileTab) ?? selectedResource.profiles[0]}
+          {@const historyProfileDir = activeProfile ? configDirFor(activeProfile.filePath) : null}
+          {@const lockfileId = lockfileIdFor(selectedResource)}
+          {#if historyProfileDir}
+            <HubResourceHistory
+              profileConfigDir={historyProfileDir}
+              resourceId={lockfileId}
+              current={lockfileStore.entryForResource(historyProfileDir, lockfileId)}
+              history={lockfileStore.historyFor(historyProfileDir, lockfileId)}
+            />
+          {:else}
+            <p class="detail-description">
+              No profile config directory for this resource — history is unavailable.
+            </p>
+          {/if}
+        {/if}
       </div>
 
     {:else}
@@ -641,6 +751,21 @@
 
 {#if toast}
   <div class="toast toast-{toast.type}">{toast.text}</div>
+{/if}
+
+{#if showImportArchiveDialog && archiveTargetProfile?.configDir}
+  <ImportProfileArchiveDialog
+    targetConfigDir={archiveTargetProfile.configDir}
+    open={showImportArchiveDialog}
+    onclose={() => {
+      showImportArchiveDialog = false;
+      // Refresh after import so the Hub catches up with the new lockfile state.
+      if (archiveTargetProfile?.configDir) {
+        lockfileStore.refresh(archiveTargetProfile.configDir);
+        resourceStore.discover();
+      }
+    }}
+  />
 {/if}
 
 <style>
@@ -896,6 +1021,41 @@
     flex-shrink: 0;
     flex-wrap: wrap;
   }
+
+  /* Phase 3: drift pill in the resource list — subtle warning tint. */
+  .drift-pill {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
+    border-radius: var(--weplex-radius-sm);
+    background: color-mix(in srgb, var(--weplex-warning, #f59e0b) 16%, transparent);
+    color: var(--weplex-warning, #f59e0b);
+  }
+
+  /* Phase 3: secondary tab strip inside the right detail pane.
+     Mirrors the .profile-tabs visual language but sits directly under the
+     header, separating Content (existing view) from History (lockfile). */
+  .detail-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--weplex-border);
+  }
+  .detail-tab {
+    padding: 6px 14px;
+    border: none;
+    background: transparent;
+    color: var(--weplex-text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all var(--weplex-duration-fast);
+  }
+  .detail-tab:hover { color: var(--weplex-text); }
+  .detail-tab.active { color: var(--weplex-accent); border-bottom-color: var(--weplex-accent); }
 
   /* Profile tabs (for differs) */
   .profile-tabs {
