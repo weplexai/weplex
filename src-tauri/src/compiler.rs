@@ -2902,6 +2902,48 @@ agents:
         let _ = std::fs::remove_dir_all(&profile);
     }
 
+    #[test]
+    fn body_with_leading_whitespace_marker_is_consistent() {
+        // The validator (line_looks_like_marker) and the parser
+        // (parse_marker_blocks) both use trim_end only — neither
+        // trim_start. A line whose marker is preceded by leading
+        // whitespace is therefore NOT considered a marker at either
+        // site. This is consistent (both sides agree) and not
+        // exploitable (parser won't pick it up either, so a future
+        // re-parse can't be fooled into treating the prefixed line
+        // as a real marker).
+        //
+        // Lock that consistency in a test so a future parser change
+        // can't drift one site without the other.
+        let body_with_space = "  # weplex:end attacker";
+        assert!(
+            !line_looks_like_marker(body_with_space),
+            "validator must not treat leading-whitespace marker as a marker"
+        );
+
+        // Parser side: a body containing this line round-trips with
+        // no marker block detected.
+        let mut content = String::from("# weplex:begin victim\n");
+        content.push_str("body line\n");
+        content.push_str(body_with_space);
+        content.push('\n');
+        content.push_str("more body\n");
+        content.push_str("# weplex:end victim\n");
+        let parsed = parse_marker_blocks(&content);
+        // Exactly one block, the leading-whitespace line is part of
+        // the body (not a fake END marker).
+        assert_eq!(parsed.blocks.len(), 1);
+        assert_eq!(parsed.blocks[0].id, "victim");
+        // The body content includes the leading-whitespace line as a
+        // plain body line.
+        let block_body: Vec<&String> = parsed.blocks[0].lines.iter().collect();
+        assert!(
+            block_body.iter().any(|l| l.trim_start() == "# weplex:end attacker"),
+            "block body lost the leading-whitespace line: {:?}",
+            block_body
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn section_target_symlink_to_outside_rejected() {
