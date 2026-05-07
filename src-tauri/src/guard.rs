@@ -216,28 +216,98 @@ fn extract_frontmatter(body: &str) -> Option<&str> {
 
 // ─── Snippet helpers ────────────────────────────────────────────────────
 
+/// Maximum context window on each side of the matched secret. Keeps the
+/// snippet tight so a long line containing multiple secrets doesn't drag
+/// extra adjacent material into the UI logs.
+const SNIPPET_CONTEXT_CHARS: usize = 60;
+
 /// Build a redacted snippet by replacing the matched substring with a
-/// `<redacted:N chars>` placeholder. Used for every secrets-* rule so
-/// raw secret bytes never reach the UI logs.
+/// `<redacted:N chars>` placeholder, then run a second pass over the
+/// surrounding window that redacts ANY other secret that happens to live
+/// on the same line (multi-secret-on-one-line leak — W-1).
 fn redacted_snippet(body: &str, m_start: usize, m_end: usize) -> String {
-    // Take a small window around the match for context, but redact the
-    // match itself. The window is intentionally tight (≤ 60 chars total
-    // each side) — too much context risks pulling in *other* secrets on
-    // adjacent lines.
     let len = m_end - m_start;
     let placeholder = format!("<redacted:{} chars>", len);
     // Safe slicing: m_start / m_end are byte offsets coming straight
     // from regex `Match::start/end()`, which are guaranteed UTF-8
     // boundaries. No need to round.
-    let pre_start = body[..m_start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let post_end = body[m_end..]
+    let line_start = body[..m_start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = body[m_end..]
         .find('\n')
         .map(|i| m_end + i)
         .unwrap_or(body.len());
+
+    // Tighten the window to ±SNIPPET_CONTEXT_CHARS bytes around the match,
+    // staying within line boundaries and on UTF-8 char boundaries.
+    let pre_start = clamp_to_char_boundary(
+        body,
+        m_start.saturating_sub(SNIPPET_CONTEXT_CHARS).max(line_start),
+    );
+    let post_end = clamp_to_char_boundary(
+        body,
+        m_end.saturating_add(SNIPPET_CONTEXT_CHARS).min(line_end),
+    );
+
     let mut out = String::new();
     out.push_str(&body[pre_start..m_start]);
     out.push_str(&placeholder);
     out.push_str(&body[m_end..post_end]);
+    // Second pass: redact any other secrets that happen to share the line.
+    redact_all_secrets(&out)
+}
+
+/// Round `idx` down to the nearest UTF-8 character boundary in `s` to
+/// avoid panicking when the byte offset falls in the middle of a multi-byte
+/// codepoint.
+fn clamp_to_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx > s.len() {
+        idx = s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+/// Run every secrets regex over `s` and replace each match with a
+/// `<redacted:N chars>` placeholder. Used as a second-pass over snippet
+/// strings so a snippet generated for rule A can never leak a secret that
+/// rule B would have caught.
+fn redact_all_secrets(s: &str) -> String {
+    let mut out = re_aws_key()
+        .replace_all(s, |c: &regex::Captures| {
+            format!(
+                "<redacted:{} chars>",
+                c.get(0).map(|m| m.as_str().len()).unwrap_or(0)
+            )
+        })
+        .into_owned();
+    out = re_github_token()
+        .replace_all(&out, |c: &regex::Captures| {
+            format!(
+                "<redacted:{} chars>",
+                c.get(0).map(|m| m.as_str().len()).unwrap_or(0)
+            )
+        })
+        .into_owned();
+    redact_private_key_lines(&out)
+}
+
+/// PEM private-key markers can straddle a line break and aren't a single
+/// token, so the regex pass can't catch them. Replace any line that holds
+/// a `-----BEGIN ` token with a placeholder.
+fn redact_private_key_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.split_inclusive('\n') {
+        if line.contains("-----BEGIN ") || line.contains("PRIVATE KEY-----") {
+            out.push_str("<redacted: pem private key line>");
+            if line.ends_with('\n') {
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
     out
 }
 
@@ -570,6 +640,11 @@ fn rule_mcp_tos_agent_cli(ctx: &RuleCtx) -> Vec<GuardFinding> {
             .find('\n')
             .map(|i| m.end() + i)
             .unwrap_or(ctx.body.len());
+        // Build the line-window snippet, then redact any secrets that
+        // happen to share the line — a body like
+        // `claude --print AKIA...` must not leak the AKIA key just
+        // because the primary match here was the agent CLI invocation.
+        let raw = &ctx.body[pre_start..post_end];
         out.push(GuardFinding {
             rule_id: "mcp-tos-agent-cli".into(),
             severity: Severity::Block,
@@ -580,7 +655,7 @@ fn rule_mcp_tos_agent_cli(ctx: &RuleCtx) -> Vec<GuardFinding> {
                  MCP terms-of-service guideline against Claude-on-Claude \
                  spawning. Use a tool / MCP server boundary instead."
                     .into(),
-            snippet: Some(ctx.body[pre_start..post_end].to_string()),
+            snippet: Some(redact_all_secrets(raw)),
             location: Some(locate(ctx.body, m.start())),
         });
     }
@@ -1374,6 +1449,64 @@ mod tests {
         let body = "config: AKIAIOSFODNN7EXAMPLE plus AKIA1234567890ABCDEF";
         let aws = rule_secrets_aws_key(&ctx(body));
         assert_eq!(aws.len(), 2);
+    }
+
+    // ── W-1: multi-secret-on-one-line redaction ─────────────────────
+
+    /// Two AWS keys on one line: scanner produces one finding per match
+    /// (W-5), and each snippet redacts ALL secrets that share the line
+    /// (W-1) — not just the rule's primary match.
+    #[test]
+    fn redacted_snippet_redacts_all_secrets_on_same_line() {
+        let body = "config: AKIAIOSFODNN7EXAMPLE plus AKIA1234567890ABCDEF";
+        let findings = scan_body_internal(body);
+        let aws: Vec<_> = findings
+            .iter()
+            .filter(|f| f.rule_id == "secrets-aws-key")
+            .collect();
+        assert_eq!(aws.len(), 2, "expected one finding per AKIA match");
+        for f in &aws {
+            let s = f.snippet.as_deref().unwrap();
+            assert!(
+                !s.contains("AKIAIOSFODNN7EXAMPLE"),
+                "first secret leaked in snippet: {}",
+                s
+            );
+            assert!(
+                !s.contains("AKIA1234567890ABCDEF"),
+                "second secret leaked in snippet: {}",
+                s
+            );
+        }
+    }
+
+    /// AKIA + ghp_ on one line: each rule redacts the OTHER rule's
+    /// finding too, so neither snippet leaks either secret.
+    #[test]
+    fn redacted_snippet_redacts_cross_rule_secrets() {
+        let body =
+            "leak AKIAIOSFODNN7EXAMPLE then ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let findings = scan_body_internal(body);
+        for f in &findings {
+            let s = f.snippet.as_deref().unwrap_or("");
+            assert!(!s.contains("AKIAIOSFODNN7EXAMPLE"), "AKIA leaked in {}: {}", f.rule_id, s);
+            assert!(!s.contains("ghp_aaaa"), "ghp_ leaked in {}: {}", f.rule_id, s);
+        }
+    }
+
+    /// W-4 regression: when the agent CLI invocation lives on the same
+    /// line as a secret, the snippet must NOT leak the secret text.
+    #[test]
+    fn mcp_tos_snippet_redacts_secret_on_same_line() {
+        let body = "claude --print AKIAIOSFODNN7EXAMPLE";
+        let f = first(rule_mcp_tos_agent_cli(&ctx(body)));
+        let s = f.snippet.as_deref().unwrap();
+        assert!(
+            !s.contains("AKIAIOSFODNN7EXAMPLE"),
+            "MCP-ToS snippet leaked secret: {}",
+            s
+        );
+        assert!(s.contains("claude --print"));
     }
 
     // ── Verdict math ────────────────────────────────────────────────
