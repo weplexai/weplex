@@ -36,8 +36,9 @@
 
 use crate::manifest::{McpServerRef, ResourceKind};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 // ─── Errors ─────────────────────────────────────────────────────────────
 
@@ -108,6 +109,24 @@ pub struct ResourceVerdict {
     pub overridden_findings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverrideKind {
+    Accept,
+    Reject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverrideDecision {
+    pub rule_id: String,
+    pub resource_path: String,
+    pub body_sha256: String,
+    pub decision: OverrideKind,
+    pub decided_at: String,
+    pub decided_by: Option<String>,
+}
+
 // ─── Verdict math ───────────────────────────────────────────────────────
 
 fn severity_to_verdict(s: Severity) -> GuardVerdict {
@@ -128,12 +147,29 @@ fn worst_verdict(a: GuardVerdict, b: GuardVerdict) -> GuardVerdict {
 }
 
 /// Pick the worst verdict implied by a flat list of findings. Empty
-/// findings → Green. Used to compute a per-resource verdict when no
-/// override mask is in play (override-aware variant lands in the
-/// follow-up commit that wires the override store into the scanner).
+/// findings → Green. Sibling to `verdict_from_active_findings`, kept
+/// for the verdict math test that exercises the bare reduction without
+/// override masking.
+#[cfg(test)]
 fn verdict_from_findings(findings: &[GuardFinding]) -> GuardVerdict {
     findings
         .iter()
+        .map(|f| severity_to_verdict(f.severity))
+        .fold(GuardVerdict::Green, worst_verdict)
+}
+
+/// Pick the worst verdict implied by findings, ignoring any rule_id
+/// listed in `overridden`. This is the load-bearing entry point for
+/// computing a resource's effective verdict — overridden findings
+/// remain in the list (so the UI can render "you accepted this earlier")
+/// but they no longer steer the verdict.
+fn verdict_from_active_findings(
+    findings: &[GuardFinding],
+    overridden: &[String],
+) -> GuardVerdict {
+    findings
+        .iter()
+        .filter(|f| !overridden.iter().any(|id| id == &f.rule_id))
         .map(|f| severity_to_verdict(f.severity))
         .fold(GuardVerdict::Green, worst_verdict)
 }
@@ -558,6 +594,7 @@ fn scan_one(
 fn scan_resource_inner(
     profile_dir: &str,
     manifest_path: &str,
+    overrides: &[OverrideDecision],
 ) -> Result<ResourceVerdict, GuardError> {
     let manifest = crate::manifest::Manifest::load(manifest_path, profile_dir)
         .map_err(|e| GuardError::Manifest(e.to_string()))?;
@@ -576,7 +613,9 @@ fn scan_resource_inner(
 
     let resource_path = manifest.body_path.clone();
     let findings = scan_one(&body, &manifest.permissions, &manifest.mcp_servers);
-    let verdict = verdict_from_findings(&findings);
+    let (findings, overridden) =
+        apply_overrides(findings, overrides, &body_sha, &resource_path);
+    let verdict = verdict_from_active_findings(&findings, &overridden);
 
     Ok(ResourceVerdict {
         resource_path,
@@ -586,8 +625,148 @@ fn scan_resource_inner(
         body_sha256: body_sha,
         verdict,
         findings,
-        overridden_findings: Vec::new(),
+        overridden_findings: overridden,
     })
+}
+
+// ─── Override store ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct OverrideStoreOnDisk {
+    version: u32,
+    decisions: Vec<OverrideDecision>,
+}
+
+const OVERRIDE_STORE_VERSION: u32 = 1;
+
+fn override_store_path(profile_dir: &str) -> PathBuf {
+    PathBuf::from(profile_dir)
+        .join(".weplex")
+        .join("guard-overrides.json")
+}
+
+fn override_lock_path(profile_dir: &str) -> PathBuf {
+    PathBuf::from(profile_dir).join(".weplex").join("overrides.lock")
+}
+
+/// Load the override store. Missing file = empty store (treated as
+/// "user has not made any decisions yet"). Corrupt JSON degrades to
+/// empty + warning rather than a hard error — guard scans should never
+/// fail because of a bad overrides file.
+fn load_override_store(profile_dir: &str) -> Vec<OverrideDecision> {
+    let path = override_store_path(profile_dir);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    match serde_json::from_str::<OverrideStoreOnDisk>(&raw) {
+        Ok(s) => s.decisions,
+        Err(e) => {
+            log::warn!(
+                "guard override store at {} is corrupt: {} — treating as empty",
+                path.display(),
+                e
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Acquire an exclusive lock on `overrides.lock` for the duration of a
+/// read-modify-write cycle. Retries up to 3 times across ~100ms before
+/// giving up. Pattern mirrors `compiler::acquire_compile_lock` but uses
+/// a separate lock file so a guard write does not block a compile.
+fn acquire_override_lock(profile_dir: &str) -> Result<std::fs::File, GuardError> {
+    use fs2::FileExt;
+    let lock_dir = PathBuf::from(profile_dir).join(".weplex");
+    std::fs::create_dir_all(&lock_dir)
+        .map_err(|e| GuardError::Io(format!("create lock dir: {}", e)))?;
+    let lock_path = override_lock_path(profile_dir);
+
+    let mut last_err: Option<String> = None;
+    for attempt in 0..3 {
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .map_err(|e| GuardError::Io(format!(
+                "open override lock {}: {}", lock_path.display(), e
+            )))?;
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => return Ok(lock_file),
+            Err(e) => {
+                last_err = Some(format!("{}", e));
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+            }
+        }
+    }
+    Err(GuardError::OverrideStore(format!(
+        "could not acquire override lock after 3 attempts: {}",
+        last_err.unwrap_or_else(|| "unknown".into())
+    )))
+}
+
+/// Persist the store back to disk with mode 0600 + atomic rename. The
+/// caller MUST hold the override lock around this call.
+fn save_override_store(
+    profile_dir: &str,
+    decisions: &[OverrideDecision],
+) -> Result<(), GuardError> {
+    let path = override_store_path(profile_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| GuardError::Io(format!("create parent: {}", e)))?;
+    }
+    let payload = OverrideStoreOnDisk {
+        version: OVERRIDE_STORE_VERSION,
+        decisions: decisions.to_vec(),
+    };
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| GuardError::OverrideStore(format!("serialize: {}", e)))?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| GuardError::Io(format!("non-utf8 path: {}", path.display())))?;
+    crate::utils::atomic_write_owner_only(path_str, &json)
+        .map_err(GuardError::OverrideStore)?;
+    Ok(())
+}
+
+/// Apply the override store to a list of findings: any finding whose
+/// `(rule_id, body_sha256, resource_path)` triple matches an active
+/// `Accept` decision is downgraded — the finding stays in the list (so
+/// the UI can render "you accepted this earlier") but its rule_id is
+/// added to `overridden`. The verdict computation downstream consults
+/// `overridden` to ignore those rule_ids.
+///
+/// **Override invalidation**: if the body content changes, the sha256
+/// changes, and the override no longer matches — the finding is back to
+/// active. This is the load-bearing invariant: editing a body silently
+/// revokes any "I trust this" decision.
+fn apply_overrides(
+    findings: Vec<GuardFinding>,
+    overrides: &[OverrideDecision],
+    body_sha: &str,
+    resource_path: &str,
+) -> (Vec<GuardFinding>, Vec<String>) {
+    let mut overridden: Vec<String> = Vec::new();
+    for o in overrides {
+        if matches!(o.decision, OverrideKind::Accept)
+            && o.body_sha256 == body_sha
+            && o.resource_path == resource_path
+        {
+            // For every accept-override, find any matching finding and
+            // record it as overridden (deduped).
+            if findings.iter().any(|f| f.rule_id == o.rule_id)
+                && !overridden.contains(&o.rule_id)
+            {
+                overridden.push(o.rule_id.clone());
+            }
+        }
+    }
+    (findings, overridden)
 }
 
 // ─── Tauri commands ─────────────────────────────────────────────────────
@@ -617,8 +796,38 @@ pub fn scan_resource(
     manifest_path: String,
 ) -> Result<ResourceVerdict, String> {
     let profile_dir = validate_profile_dir_cmd(profile_config_dir)?;
-    scan_resource_inner(&profile_dir, &manifest_path)
+    let overrides = load_override_store(&profile_dir);
+    scan_resource_inner(&profile_dir, &manifest_path, &overrides)
         .map_err(|e| redact_home(&e.to_string()))
+}
+
+#[tauri::command]
+pub fn set_override_decision(
+    profile_config_dir: String,
+    decision: OverrideDecision,
+) -> Result<(), String> {
+    let profile_dir = validate_profile_dir_cmd(profile_config_dir)?;
+    let _lock = acquire_override_lock(&profile_dir)
+        .map_err(|e| redact_home(&e.to_string()))?;
+    let mut current = load_override_store(&profile_dir);
+    // Replace any existing decision for the same triple.
+    current.retain(|d| {
+        !(d.rule_id == decision.rule_id
+            && d.resource_path == decision.resource_path
+            && d.body_sha256 == decision.body_sha256)
+    });
+    current.push(decision);
+    save_override_store(&profile_dir, &current)
+        .map_err(|e| redact_home(&e.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_overrides(
+    profile_config_dir: String,
+) -> Result<Vec<OverrideDecision>, String> {
+    let profile_dir = validate_profile_dir_cmd(profile_config_dir)?;
+    Ok(load_override_store(&profile_dir))
 }
 
 #[tauri::command]
@@ -859,5 +1068,172 @@ mod tests {
     #[test]
     fn worst_severity_no_findings_green() {
         assert_eq!(verdict_from_findings(&[]), GuardVerdict::Green);
+    }
+
+    // ── Override application ────────────────────────────────────────
+
+    fn tmpdir(label: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "weplex-guard-test-{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    #[test]
+    fn apply_overrides_removes_for_matching_sha() {
+        let findings = vec![GuardFinding {
+            rule_id: "secrets-aws-key".into(),
+            severity: Severity::Block,
+            message: "".into(),
+            explanation: "".into(),
+            snippet: None,
+            location: None,
+        }];
+        let body_sha = "abc123";
+        let resource_path = "/tmp/foo.md";
+        let overrides = vec![OverrideDecision {
+            rule_id: "secrets-aws-key".into(),
+            resource_path: resource_path.into(),
+            body_sha256: body_sha.into(),
+            decision: OverrideKind::Accept,
+            decided_at: "2026-01-01T00:00:00Z".into(),
+            decided_by: None,
+        }];
+        let (filtered, overridden) =
+            apply_overrides(findings.clone(), &overrides, body_sha, resource_path);
+        assert_eq!(filtered.len(), 1, "finding stays in list");
+        assert_eq!(overridden, vec!["secrets-aws-key".to_string()]);
+        let v = verdict_from_active_findings(&filtered, &overridden);
+        assert_eq!(v, GuardVerdict::Green, "verdict downgraded");
+    }
+
+    #[test]
+    fn apply_overrides_skips_after_body_edit() {
+        let findings = vec![GuardFinding {
+            rule_id: "secrets-aws-key".into(),
+            severity: Severity::Block,
+            message: "".into(),
+            explanation: "".into(),
+            snippet: None,
+            location: None,
+        }];
+        let resource_path = "/tmp/foo.md";
+        let overrides = vec![OverrideDecision {
+            rule_id: "secrets-aws-key".into(),
+            resource_path: resource_path.into(),
+            body_sha256: "old-sha".into(),
+            decision: OverrideKind::Accept,
+            decided_at: "2026-01-01T00:00:00Z".into(),
+            decided_by: None,
+        }];
+        // Caller passes the *new* sha. Override should not match.
+        let (filtered, overridden) =
+            apply_overrides(findings, &overrides, "new-sha", resource_path);
+        assert!(overridden.is_empty(), "override invalidated by sha drift");
+        let v = verdict_from_active_findings(&filtered, &overridden);
+        assert_eq!(v, GuardVerdict::Red);
+    }
+
+    /// Wrapper for `set_override_decision` that bypasses the Tauri
+    /// command's HOME-containment check. Tests put profile dirs in
+    /// `/tmp` (macOS canonicalises to `/private/var/folders/...`),
+    /// outside HOME — using the internal API exercises the same
+    /// read-modify-write flow without re-creating an entire HOME
+    /// fixture.
+    fn set_override_internal(profile_dir: &str, decision: OverrideDecision) -> Result<(), String> {
+        let _lock = acquire_override_lock(profile_dir).map_err(|e| e.to_string())?;
+        let mut current = load_override_store(profile_dir);
+        current.retain(|d| {
+            !(d.rule_id == decision.rule_id
+                && d.resource_path == decision.resource_path
+                && d.body_sha256 == decision.body_sha256)
+        });
+        current.push(decision);
+        save_override_store(profile_dir, &current).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn override_persistence_roundtrip() {
+        let dir = tmpdir("override-rt");
+        let profile = dir.to_str().unwrap().to_string();
+        let dec = OverrideDecision {
+            rule_id: "secrets-aws-key".into(),
+            resource_path: "/tmp/foo.md".into(),
+            body_sha256: "abc".into(),
+            decision: OverrideKind::Accept,
+            decided_at: "2026-05-07T00:00:00Z".into(),
+            decided_by: Some("user".into()),
+        };
+        set_override_internal(&profile, dec.clone()).unwrap();
+        let listed = load_override_store(&profile);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].rule_id, dec.rule_id);
+        assert_eq!(listed[0].body_sha256, dec.body_sha256);
+        assert_eq!(listed[0].decision, dec.decision);
+        // Round-trip must round-trip byte-equal-ish: deserialise +
+        // re-serialise must produce the same shape (modulo JSON whitespace).
+        let path = override_store_path(&profile);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: OverrideStoreOnDisk = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
+        assert_eq!(parsed.decisions.len(), 1);
+        assert_eq!(parsed.decisions[0].rule_id, dec.rule_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn override_atomic_write_under_concurrent_set() {
+        // Two threads call set with different decisions targeting the
+        // same profile. Final JSON must be parseable (no torn writes).
+        // The lock-protected RMW means each thread serialises against
+        // the other; we don't assert order, only that the file is
+        // valid JSON and non-empty at the end.
+        let dir = tmpdir("override-concurrent");
+        let profile = dir.to_str().unwrap().to_string();
+        let p1 = profile.clone();
+        let p2 = profile.clone();
+        let h1 = std::thread::spawn(move || {
+            for i in 0..10 {
+                let d = OverrideDecision {
+                    rule_id: "secrets-aws-key".into(),
+                    resource_path: format!("/tmp/a-{}.md", i),
+                    body_sha256: "sha-a".into(),
+                    decision: OverrideKind::Accept,
+                    decided_at: "2026-05-07T00:00:00Z".into(),
+                    decided_by: None,
+                };
+                let _ = set_override_internal(&p1, d);
+            }
+        });
+        let h2 = std::thread::spawn(move || {
+            for i in 0..10 {
+                let d = OverrideDecision {
+                    rule_id: "wildcard-tools".into(),
+                    resource_path: format!("/tmp/b-{}.md", i),
+                    body_sha256: "sha-b".into(),
+                    decision: OverrideKind::Accept,
+                    decided_at: "2026-05-07T00:00:00Z".into(),
+                    decided_by: None,
+                };
+                let _ = set_override_internal(&p2, d);
+            }
+        });
+        h1.join().unwrap();
+        h2.join().unwrap();
+        // Final read must succeed (no JSON corruption).
+        let path = override_store_path(&profile);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: OverrideStoreOnDisk = serde_json::from_str(&raw)
+            .expect("final override store must be valid JSON");
+        assert_eq!(parsed.version, OVERRIDE_STORE_VERSION);
+        assert!(!parsed.decisions.is_empty(), "expected at least one decision saved");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
