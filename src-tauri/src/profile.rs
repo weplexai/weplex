@@ -295,7 +295,61 @@ pub fn copy_resource_to_profile(
 ) -> Result<bool, String> {
     let validated_source = validate_resource_path(&source_path)?;
     let validated_target = resolve_config_dir(&target_config_dir)?;
-    crate::resources::copy_resource(&validated_source, &validated_target, resource_type, &name, overwrite)
+
+    // Read body. The legacy resources::copy_resource handles "identical
+    // → skip" via FNV-1a hashing and "different → require overwrite";
+    // we replicate the contract here while routing through the lockfile.
+    let body = std::fs::read_to_string(&validated_source)
+        .map_err(|e| format!("Failed to read source: {}", e))?;
+
+    let kind = resource_type_to_kind(resource_type);
+    let safe_name = crate::resources::sanitize_name(&name)?;
+
+    // If target exists and !overwrite and content differs, surface the
+    // same error message the old API returned. apply_resource_mutation
+    // would happily replace it.
+    let target_path = format!(
+        "{}/{}/{}.md",
+        validated_target,
+        kind.dir_name(),
+        safe_name
+    );
+    if std::path::Path::new(&target_path).exists() {
+        let existing = std::fs::read_to_string(&target_path)
+            .map_err(|e| format!("Failed to read target: {}", e))?;
+        if existing == body {
+            // Identical content → no-op, mirror legacy return.
+            return Ok(false);
+        }
+        if !overwrite {
+            return Err("Target exists with different content".to_string());
+        }
+    }
+
+    // Optional sibling sidecar — copy it through the same mutation.
+    let sidecar_src = std::path::Path::new(&validated_source)
+        .with_file_name(format!("{}.weplex.yaml", safe_name));
+    let sidecar = if sidecar_src.exists() {
+        Some(
+            std::fs::read_to_string(&sidecar_src)
+                .map_err(|e| format!("Failed to read sidecar: {}", e))?,
+        )
+    } else {
+        None
+    };
+
+    crate::lockfile::apply_resource_mutation(
+        &validated_target,
+        kind,
+        &safe_name,
+        crate::lockfile::ResourceSource::User,
+        crate::lockfile::MutationKind::Upsert {
+            body,
+            sidecar,
+        },
+    )
+    .map_err(|e| format!("{}", e))?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -316,11 +370,112 @@ pub fn create_resource_in_profile(
     content: String,
 ) -> Result<String, String> {
     let validated = resolve_config_dir(&config_dir)?;
-    crate::resources::create_resource(&validated, resource_type, &name, &content)
+    let kind = resource_type_to_kind(resource_type);
+    let safe_name = crate::resources::sanitize_name(&name)?;
+
+    // Match the legacy "already exists" error.
+    let path = format!(
+        "{}/{}/{}.md",
+        validated,
+        kind.dir_name(),
+        safe_name
+    );
+    if std::path::Path::new(&path).exists() {
+        return Err(format!("Resource already exists: {}", safe_name));
+    }
+
+    crate::lockfile::apply_resource_mutation(
+        &validated,
+        kind,
+        &safe_name,
+        crate::lockfile::ResourceSource::User,
+        crate::lockfile::MutationKind::Upsert {
+            body: content,
+            sidecar: None,
+        },
+    )
+    .map_err(|e| format!("{}", e))?;
+    Ok(path)
 }
 
 #[tauri::command]
 pub fn delete_resource_file(file_path: String) -> Result<(), String> {
     let validated = validate_resource_path(&file_path)?;
+
+    // Locate the owning profile + resource by walking up the path. The
+    // file lives at `<profile>/<kind_dir>/<name>.md` (or
+    // `<profile>/skills/<name>/SKILL.md`). When we find a profile that
+    // has a lockfile entry for this resource, route the delete through
+    // the lockfile so the prior version lands in history. Otherwise
+    // fall back to a direct unlink.
+    if let Some((profile_dir, kind, name)) = derive_owner(&validated) {
+        let lf = crate::lockfile::load_lockfile(&profile_dir);
+        let id = format!("{}/{}", kind.dir_name(), name);
+        if lf.resources.iter().any(|r| r.id == id) {
+            crate::lockfile::apply_resource_mutation(
+                &profile_dir,
+                kind,
+                &name,
+                crate::lockfile::ResourceSource::User,
+                crate::lockfile::MutationKind::Delete,
+            )
+            .map_err(|e| format!("{}", e))?;
+            return Ok(());
+        }
+    }
+
     crate::resources::delete_resource(&validated)
+}
+
+/// Map a `ResourceType` (legacy) to the cross-agent `ResourceKind`.
+fn resource_type_to_kind(rt: crate::resources::ResourceType) -> crate::manifest::ResourceKind {
+    match rt {
+        crate::resources::ResourceType::Agent => crate::manifest::ResourceKind::Agent,
+        crate::resources::ResourceType::Rule => crate::manifest::ResourceKind::Rule,
+        crate::resources::ResourceType::Skill => crate::manifest::ResourceKind::Skill,
+    }
+}
+
+/// Best-effort owner derivation from an absolute resource file path.
+/// Returns `(profile_config_dir, kind, name)` when the path matches the
+/// expected `<profile>/<kind_dir>/<name>.md` (or skills) layout.
+fn derive_owner(
+    file_path: &str,
+) -> Option<(String, crate::manifest::ResourceKind, String)> {
+    let p = std::path::Path::new(file_path);
+    let file_stem = p.file_stem().and_then(|s| s.to_str())?;
+    let parent = p.parent()?;
+    let parent_name = parent.file_name().and_then(|n| n.to_str())?;
+
+    // Skill: <profile>/skills/<name>/SKILL.md
+    if parent_name != "agents" && parent_name != "rules" && parent_name != "commands" {
+        // This may be the skill's leaf dir.
+        if file_stem == "SKILL" {
+            let name = parent_name.to_string();
+            let grand = parent.parent()?;
+            let grand_name = grand.file_name().and_then(|n| n.to_str())?;
+            if grand_name == "skills" {
+                let profile = grand.parent()?;
+                return Some((
+                    profile.to_string_lossy().into_owned(),
+                    crate::manifest::ResourceKind::Skill,
+                    name,
+                ));
+            }
+        }
+        return None;
+    }
+
+    let kind = match parent_name {
+        "agents" => crate::manifest::ResourceKind::Agent,
+        "rules" => crate::manifest::ResourceKind::Rule,
+        "commands" => crate::manifest::ResourceKind::Command,
+        _ => return None,
+    };
+    let profile = parent.parent()?;
+    Some((
+        profile.to_string_lossy().into_owned(),
+        kind,
+        file_stem.to_string(),
+    ))
 }
